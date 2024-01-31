@@ -1,0 +1,17 @@
+{
+    "Author": "Markus Schuster",
+    "Description": "Just the first config file containing the paths from Stanislav.",
+    "version": "2024-01-04",
+    "path": {
+    	"cache": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/mschuster/SimulationMRSI/cache/", 
+        "fid": {
+            "metabolites": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/FID_simulated/NoApodization/FID_7_noApo.m",
+            "lipids": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/FID_simulated/NoApodization/Lipids/FID_7_noApo_lip.m"
+        },
+        "mask": {
+            "metabolites": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/B0maps/Manualy_unwrapped_all_vol/Vol_004_mask_slab.nii",
+            "lipids": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/B0maps/Manualy_unwrapped_all_vol/Vol_004_fatmask_slab.nii",
+            "B0_inhomogeneity": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/B0maps/Manualy_unwrapped_all_vol/Vol_004_7T_b0maps_hand_correc.nii"
+        }
+    }
+}

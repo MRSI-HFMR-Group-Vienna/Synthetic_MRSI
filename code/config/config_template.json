@@ -1,0 +1,17 @@
+{
+    "Author": "Markus Schuster",
+    "Description": "Config file that should contain the used paths. This is just a template. Please add your paths! ;)",
+    "version": "2024-01-04",
+    "path": {
+    	"cache": "path/where/simulation/cache/is/stored/on/disc", 
+        "fid": {
+            "metabolites": "path/to/metabolites/data/m/file",
+            "lipids": "path/to/lipids/data/m/file"
+        },
+        "mask": {
+            "metabolites": "path/to/metabolites/mask",
+            "lipids": "path/to/lipids/mask",
+            "B0_inhomogeneity": "path/to/B0/mask"
+        }
+    }
+}
