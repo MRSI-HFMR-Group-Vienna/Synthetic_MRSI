@@ -12,32 +12,32 @@ class FID:
     necessary, decrease the memory load.
     """
 
-    def __init__(self, amplitude: np.ndarray, time: np.ndarray, name: str, amplitude_data_type: np.dtype = np.complex256):
-        if not amplitude.shape == time.shape:
+    def __init__(self, signal: np.ndarray, time: np.ndarray, name: list[str], signal_data_type: np.dtype = np.complex64):
+        if not signal.shape[-1] == time.shape[-1]:
             Console.printf("error",
-                           f"Shape of signal and time vector does not match! Amplitude shape is {amplitude.shape} while time shape is {time.shape}. Terminating the program!")
+                           f"Shape of signal and time vector does not match! Signal length is {signal.shape[-1]} while time length is {time.shape[-1]}. Terminating the program!")
             sys.exit()
 
-        self.signal: np.ndarray = amplitude  # signal vector
-        self.time: np.ndarray = time  # time vector
-        self.name: str = name  # name, e.g., of the respective metabolite
+        self.signal: np.ndarray = signal  # signal vector
+        self.time: np.ndarray = time      # time vector
+        self.name: list = name            # name, e.g., of the respective metabolite
         self.concentration: float = None
         self.t2_value: float = None
-        # TODO: Extend required functionalities!
 
-    def get_signal(self, amplitude_data_type: np.dtype, mute=True):
+
+    def get_signal(self, signal_data_type: np.dtype, mute=True):
         """
         To get the signal with a certain precision. Useful to reduce the required space.
 
-        :param amplitude_data_type:
+        :param signal_data_type:
         :param mute: By default, True. If False, then the precision, according to the data type, is printed to the console.
         :return: Amplitude of chosen data type and thus precision.
         """
-        amplitude = self.signal.astype(dtype=amplitude_data_type)
+        signal = self.signal.astype(dtype=signal_data_type)
         if not mute:
-            Console.printf("info", f"Get Amplitude of {self.name} with precision of {np.finfo(amplitude.dtype).precision} decimal places")
+            Console.printf("info", f"Get Amplitude of {self.name} with precision of {np.finfo(signal.dtype).precision} decimal places")
 
-        return amplitude
+        return signal
 
     def show_signal_shape(self) -> None:
         """
@@ -53,13 +53,20 @@ class FID:
         :param other:
         :return:
         """
-        if not self.time == other.time:
-            Console.printf("error", "Not possible to sum the two FIDs since the time vectors are different!")
-        if not len(self.signal) == len(other.signal):
+        if not np.array_equal(self.time, other.time):
+            Console.printf("error", f"Not possible to sum the two FIDs since the time vectors are different! Vector 1: {self.time.shape}, Vector 2; {other.times.shape}")
+            return
+        if not self.signal.shape[-1] == other.signal.shape[-1]:
             Console.printf("error", "Not possible to sum the two FIDs since the length does not match!")
+            return
         else:
-            self.signal += other.signal
-            return self
+            fid = FID(signal=self.signal, time=self.time, name=self.name) # new empty fid object
+            fid.signal = np.vstack((self.signal, other.signal))           # vertical stack signals, thus add row vectors
+            #fid.name.extend(["other.name"])
+            return fid
+
+    def __str__(self):
+        return f"FID of chemical compound '{self.name}' with signal shape: {self.signal.shape}"
 
 
 class Spectrum:
@@ -70,7 +77,7 @@ class Spectrum:
 
     def __init__(self, fid: FID):
         self.fid = fid
-        self.amplitude: np.ndarray = np.array([])  # TODO: in frequency domain, from FT from FID
+        self.signal: np.ndarray = np.array([])  # TODO: in frequency domain, from FT from FID
         self.frequency: np.ndarray = np.array([])  # TODO: in frequency domain, from FT from FID
 
     def __add__(self, other):
@@ -159,5 +166,3 @@ class Simulator:
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 
-# TODO: An idea would be to create a "Loader" class that loads (on a higher abstraction
-#       level) similiar things than the Simulator simulates. maybe for comparison reasons.

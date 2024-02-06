@@ -97,7 +97,7 @@ class Simulator:
             Console.printf("error", f"Terminating the program. Path does not exist: {path_cache}")
             sys.exit()
 
-    def metabolite_map(self, #TODO -> mrsi_data -> add_dimensions
+    def mrsi_data(self,
                        mask: np.memmap | np.ndarray,
                        concentration: np.ndarray,
                        values_to_add: np.ndarray,
@@ -107,10 +107,13 @@ class Simulator:
         # TODO: values_to_add -> can be an array containing a scalar for each voxel, or also possible: a vector (e.g., FID)
         # TODO:   --> rows should be the dimension (metabolite1, metabolite2,...) and columns the data vector or e.g., metabolite1
         # TODO:   --> does not consider the time vector
+        Console.printf_section("MRSI spatial simulation")
 
-        # Set path where memmap file should be created and create memmap
+        # (a) Set path where memmap file should be created and create memmap
         path_cache_file = self.path_cache + '/simulated_metabolite_map.npy'
+        Console.printf("info", f"Using cache path: {path_cache_file}")
 
+        # (b) Get required shape depending on the dimensionality
         if values_to_add.ndim == 0:
             Console.printf("error", f"The values to add has dimension {0}. Terminate program!")
             sys.exit()
@@ -130,77 +133,53 @@ class Simulator:
             Console.printf("error", f"The values to add has dimension {values_to_add.ndim}. Not yet supported. Terminate program!")
             sys.exit()
 
-        metabolite_map = np.memmap(path_cache_file, dtype=data_type, mode='w+', shape=shape)  # TODO: Do I also have to define the shape first?!!!
+        Console.printf("info", f"Using mask shape: {mask.shape}")
 
+        # (c) Set path for storing the memmap on hard drive
+        metabolite_map = np.memmap(path_cache_file, dtype=data_type, mode='w+', shape=shape)
+
+        # (d) Estimate space required on hard drive
         # metabolite_map.size returns the number of elements in the memmap array.
         # metabolite_map.itemsize returns the size (in bytes) of each element
         space_required_mb = metabolite_map.size * metabolite_map.itemsize * 1 / (1024 * 1024)
 
+        # (e) Ask the user for agreement of the required space
         # Check if the simulation does not exceed a certain size
         # Console.check_condition(space_required_mb < 30000, ask_continue=True)
         Console.ask_user(f"Estimated required space [MB]: {space_required_mb}")
 
-        # Assign desired values to each pixel (can be a signal or just a scalar)
+        # (f) Find indices where mask is not 0
         indices = np.where(mask != 0)
 
-        # TODO TODO TODO TODO ===> memmap x,y,z, !!!!, : -> instead of 0 change for respective metabolite?
-
-        # The v could be a value or also a vector of values
+        # (g) Check if just one vector or multiple vectors are added to one voxel
+        #     -> If just one vector:     dimension (1, vector or scalar) is added
+        #     -> if two or more vectors: dimension (number_of_vectors, vectors) are added
+        #
+        #     This is for maintaining the following shape: (x, y, z, v, s) with x,y,z as the
+        #     voxel position and v as the number of vector and s the signal
         if values_to_add.ndim == 1:
             iterator_signals = range(1)
             values_to_add = np.expand_dims(values_to_add, axis=0)  # to get shape e.g., (1, 1536) instead of only 1536
-            print(values_to_add.shape)
+            #print(values_to_add.shape)
         else:
             iterator_signals = range(len(values_to_add))
 
-        Console.start_timer()
+        #Console.start_timer()
 
+        # (h) Assign desired values to the voxels
         for v in iterator_signals:
             for y, x, z in tqdm(zip(*indices), total=len(indices[0]), desc="Assigning values to volume"):
                 metabolite_map[x, y, z, v, :] = ((mask[x, y, z] * concentration[x, y, z] * values_to_add[v])
                                                  .astype(data_type))
 
-        Console.stop_timer()
+        Console.printf("success", f"Created volume of shape : {metabolite_map.shape}")
 
-        print(metabolite_map.shape)
+        #Console.stop_timer()
+
+        return metabolite_map
+
+        #print(metabolite_map.shape)
 
 
 if __name__ == "__main__":
-    configurator = file.Configurator(path_folder="/home/mschuster/projects/SimulationMRSI/config",
-                                     file_name="config_04012024.json")
-    configurator.load()
-    configurator.print_formatted()
-
-    metabolic_mask = file.Mask.load(configurator=configurator,
-                                    mask_name="metabolites")
-
-    # Create random distribution with values in the range [0.0, 1.0]
-    random_concentration = np.random.uniform(low=0.0, high=1.0, size=metabolic_mask.data.shape)
-
-    # Load FID of metabolites
-    metabolites = file.FIDs(configurator=configurator,
-                            concentrations=np.asarray([1, 1, 4, 10, 1, 2.5, 1, 6, 12, 4, 1]),
-                            t2_values=np.asarray([170, 131, 121, 105, 170, 105, 131, 170, 170, 121, 131]) / 1000)
-    metabolites.load(fid_name="metabolites",
-                     signal_data_type=np.complex64)
-
-    # Extract from the FID objects the signal data (np.ndarray), merge it to a new numpy array object.
-    fids_list: list = []
-
-    time_vector = metabolites.fids[0].time
-    [fids_list.append(fid.signal) for fid in metabolites.fids]
-    metabolites_fid_data = np.asarray(fids_list)
-
-    # Plotting all FIDs
-    fids_dict: dict = {}
-    for fid in metabolites.fids:
-        fids_dict[fid.name] = fid.signal
-    plot_FIDs(amplitude=fids_dict, time=time_vector, save_to_file=True)
-
-    # Simulate map including desired FIDs according to mask with random scaling
-    path_cache = configurator.data["path"]["cache"]
-    simulator = Simulator(path_cache=path_cache)
-    simulator.metabolite_map(mask=metabolic_mask.data,
-                             concentration=random_concentration,
-                             values_to_add=metabolites_fid_data[0],  # TODO: Try to add all!!!,
-                             data_type=np.complex64)
+    pass

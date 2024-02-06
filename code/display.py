@@ -10,7 +10,6 @@ if not matplotlib.rcParams['backend']: # TODO TODO TODO
     matplotlib.use('Agg')
 
 
-
 # TODO remove: https://stackoverflow.com/questions/66711586/is-there-any-difference-between-multimethod-and-multipledispatch
 
 #@multimethod # uses for achieving some kind of "overload". However, keyword function call is then not supported anymore.
@@ -53,8 +52,26 @@ def plot_FIDs(amplitude: dict[str, np.ndarray], time: np.ndarray, save_to_file: 
     # Display the plot
     plt.savefig('plot.svg') if (matplotlib.rcParams['backend'] == 'agg' or save_to_file is True) else plt.show()
 
-## TODO:
-# display single FID
-# display FID, signals, names from .m File
+## Plot frontal, sagittal, transverse plane
+#    import matplotlib.pyplot as plt
+#    import matplotlib
+
+#    # Use Agg backend when running without a GUI
+#    if not matplotlib.rcParams['backend']:  # TODO TODO TODO
+#        matplotlib.use('Agg')
+
+#    # x, y
+#    plt.imshow(np.abs(mrsi_data[:,:,0,0,50]))
+#    plt.savefig('plot1.svg')
+
+#    # x, z
+#    plt.imshow(np.abs(mrsi_data[:,20,:,0,50]))
+#    plt.savefig('plot2.svg')
+
+#    # y, z
+#    plt.imshow(np.abs(mrsi_data[20,:,:,0,50]))
+#    plt.savefig('plot3.svg')
+
+## Maybe 3D Plot
 # display brain planes of 3d image --> https://www.geeksforgeeks.org/three-dimensional-plotting-in-python-using-matplotlib/
 # maybe class: Plot::FID -> FID(dictionary with key and values as np.arrays, time_vector)

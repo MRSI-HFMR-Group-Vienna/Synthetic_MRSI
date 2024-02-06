@@ -106,7 +106,7 @@ class Console:
 
         :return:
         """
-        answer = input(f"{Back.LIGHTYELLOW_EX + Fore.BLACK + '[CONTINUE (y/n) ?]' + Style.RESET_ALL + ' >> '} {message} -> ").lower()
+        answer = input(f"{Back.LIGHTYELLOW_EX + Fore.BLACK + '[CONTINUE (y/n) ?]' + Style.RESET_ALL + ' >> '}{message} -> ").lower()
         if answer == "n":
             Console.printf("error", "The user has terminated the program!")
             sys.exit()

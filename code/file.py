@@ -375,11 +375,11 @@ class FIDs:
         jmrui = JMRUI2(path=path, signal_data_type=signal_data_type)
         data = jmrui.load_m_file()
 
-        parameters, amplitude, time = data["parameters"], data["signal"], data["time"]
+        parameters, signal, time = data["parameters"], data["signal"], data["time"]
         self.parameters = parameters
 
-        amplitude_complex = self.__transform_signal_complex(amplitude, time)
-        self.__assign_signal_to_compound(amplitude_complex, time)
+        signal_complex = self.__transform_signal_complex(signal, time)
+        self.__assign_signal_to_compound(signal_complex, time)
 
     def __transform_signal_complex(self, amplitude: np.ndarray, conjugate: bool = True) -> np.ndarray:
         """
@@ -416,7 +416,7 @@ class FIDs:
         # the put into a list containing all FID objects
         Console.add_lines("Assigned FID parts:")
         for column_number, name in enumerate(self.parameters['DIM_VALUES'][2]):
-            fid = spectral.FID(amplitude=signal_reshaped[column_number],
+            fid = spectral.FID(signal=signal_reshaped[column_number],
                                time=time,
                                name=name)
             self.fids.append(fid)
