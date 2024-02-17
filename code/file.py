@@ -7,8 +7,7 @@ import sys
 import numpy as np
 from oct2py import Oct2Py
 
-import spatial
-import spectral
+import spectral_spatial_simulation
 from printer import Console
 from more_itertools import collapse
 
@@ -362,7 +361,7 @@ class FIDs:
     def load(self, fid_name: str, signal_data_type: np.dtype = np.float64):
         """
         For loading and splitting the FIDs according to the respective chemical compound (metabolites, lipids).
-        Then, create on :class: `spectral.FID` for each chemical compound and store it into a list.
+        Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.
         Additional: since the complex signal is represented in two columns (one for real and one for imaginary),
         it has to be transformed to a complex signal.
 
@@ -416,7 +415,7 @@ class FIDs:
         # the put into a list containing all FID objects
         Console.add_lines("Assigned FID parts:")
         for column_number, name in enumerate(self.parameters['DIM_VALUES'][2]):
-            fid = spectral.FID(signal=signal_reshaped[column_number],
+            fid = spectral_spatial_simulation.FID(signal=signal_reshaped[column_number],
                                time=time,
                                name=name)
             self.fids.append(fid)

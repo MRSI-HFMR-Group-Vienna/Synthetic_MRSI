@@ -1,7 +1,7 @@
 import default
-from spectral import FID
+from spectral_spatial_simulation import FID
 import numpy as np
-import spatial
+import spectral_spatial_simulation
 import file
 
 
@@ -85,7 +85,6 @@ if __name__ == '__main__':
     print("First column of FID 4:")
     print(fid4.signal[:,0])
 
-    input()
 
 
     #zen_of_python()
@@ -99,8 +98,9 @@ if __name__ == '__main__':
     metabolic_mask = file.Mask.load(configurator=configurator,
                                     mask_name="metabolites")
 
+
     # Create random distribution with values in the range [0.0, 1.0]
-    random_concentration = np.random.uniform(low=0.0, high=1.0, size=metabolic_mask.data.shape)
+    random_scaling = np.random.uniform(low=0.0, high=1.0, size=metabolic_mask.data.shape)
 
     # Load FID of metabolites
     metabolites = file.FIDs(configurator=configurator,
@@ -122,23 +122,11 @@ if __name__ == '__main__':
     #    fids_dict[fid.name] = fid.signal
     #plot_FIDs(amplitude=fids_dict, time=time_vector, save_to_file=True)
 
-    # Simulate map including desired FIDs according to mask with random scaling
-    load_cache = False
-    mrsi_data = None
-    if not load_cache:
-        path_cache = configurator.data["path"]["cache"]
-        simulator = spatial.Simulator(path_cache=path_cache)
-
-        mrsi_data = simulator.mrsi_data(mask=metabolic_mask.data,
-                            concentration=random_concentration,
-                            values_to_add=metabolites_fid_data[0:2],  # TODO: Try to add all!!!,
-                            data_type=np.complex64)
-    else:
-        mrsi_data = np.memmap('/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/mschuster/SimulationMRSI/cache//simulated_metabolite_map.npy', dtype='complex64', mode='r')
-
-
-
-
-
-
+    # Simulate volume with desired FIDs
+    path_cache = '/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/mschuster/SimulationMRSI/cache/'
+    spectral_model = spectral_spatial_simulation.Model(path_cache=path_cache)
+    spectral_model.add_fid(metabolites.fids[0] + metabolites.fids[1])
+    spectral_model.add_mask(metabolic_mask.data)
+    spectral_model.add_fid_scaling_map(random_scaling)
+    spectral_model.build()
 
