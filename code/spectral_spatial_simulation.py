@@ -37,7 +37,7 @@ class FID:
         self.time: np.ndarray = time      # time vector
         self.name: list = name            # name, e.g., of the respective metabolite
         self.concentration: float = None
-        self.t2_value: float = None
+        self.t2_value: np.ndarray = None # TODO
         self.sampling_period = sampling_period # it is just 1/(sampling frequency)
 
 
@@ -51,9 +51,10 @@ class FID:
         """
         signal = self.signal.astype(dtype=signal_data_type)
         if not mute:
-            Console.printf("info", f"Get Amplitude of {self.name} with precision of {np.finfo(signal.dtype).precision} decimal places")
+            Console.printf("info", f"Get signal of {self.name} with precision of {np.finfo(signal.dtype).precision} decimal places")
 
         return signal
+
 
     def show_signal_shape(self) -> None:
         """
@@ -63,38 +64,6 @@ class FID:
         """
         Console.printf("info", f"FID Signal shape: {self.signal.shape}")
 
-    def __add__(self, other):
-        """
-        For merging different FID signals. Add two together with just "+"
-        :param other:
-        :return:
-        """
-
-        # Case 1: The self object is empty (e.g., used as initial object) and the other object to sum has values.
-        if self.signal is None and self.time is None and self.name is None:
-            # The other object need to have not None attributes!
-            if other.signal is None or other.time is None or other.name is None:
-                Console.printf("error", f"Not possible to sum the two FIDs since the 'other' object includes None in one of this attributes: signal, time, name!")
-                return
-            # If the other object does have not None attributes: set attributes from other object
-            self.signal = other.signal
-            self.time = other.time
-            self.name = other.name
-            return self
-
-        # Case 2: The self and other object both do not have None attributes and need to be summed
-        if not np.array_equal(self.time, other.time):
-            Console.printf("error", f"Not possible to sum the two FIDs since the time vectors are different! Vector 1: {self.time.shape}, Vector 2; {other.times.shape}")
-            return
-        if not self.signal.shape[-1] == other.signal.shape[-1]:
-            Console.printf("error", "Not possible to sum the two FIDs since the length does not match!")
-            return
-        else:
-            # TODO: Do I not need to merge also the names??
-            fid = FID(signal=self.signal, time=self.time, name=self.name) # new fid object containing the information of this object
-            fid.signal = np.vstack((self.signal, other.signal))           # vertical stack signals, thus add row vectors
-            #fid.name.extend(["other.name"])
-            return fid
 
     def get_spectrum(self) -> np.ndarray:
         """
@@ -110,14 +79,73 @@ class FID:
     def change_signal_data_type(self, signal_data_type: np.dtype) -> None:
         """
         For changing the data type of the FID. Possible usecase: convert FID signals to lower bit signal, thus reduce required space.
-        :param signal_data_type: numpy data type
+
+        :param signal_data_type: Numpy data type
         :return: Nothing
         """
         self.signal = self.signal.astype(signal_data_type)
 
-    def __str__(self):
-        return f"FID of chemical compound '{self.name}' with signal shape: {self.signal.shape}"
 
+    def get_partially_FID(self, fid_indices: list[int]): # TODO define FID as return type -> FID doe snot work
+        """
+        To get only a fraction of the original FID.
+
+        :param fid_indices: List of indices of the respective FIDs in the self object.
+        :return: FID object
+        """
+
+        signal_partially = self.signal[fid_indices]
+        name_partially = [self.name[i] for i in fid_indices]
+        time = self.time
+        #t2_values TODO
+        #sampling_period TODO
+
+        return FID(signal=signal_partially, name=name_partially, time=time)
+
+    def __add__(self, other):
+        """
+        For merging different FID signals. Add two together with just "+"
+        :param other:
+        :return:
+        """
+
+        # Case 1: The self object is empty (e.g., used as initial object) and the other object to sum has values.
+        if self.signal is None and self.time is None and self.name is None:
+            # The other object need to have not None attributes!
+            if other.signal is None or other.time is None or other.name is None:
+                Console.printf("error", f"Not possible to sum the two FID since the 'other' object includes None in one of this attributes: signal, time, name!")
+                return
+            # If the other object does have not None attributes: set attributes from other object
+            self.signal = other.signal
+            self.time = other.time
+            self.name = other.name
+            return self
+
+        # Case 2: The self and other object both do not have None attributes and need to be summed
+        if not np.array_equal(self.time, other.time):
+            Console.printf("error", f"Not possible to sum the two FID since the time vectors are different! Vector 1: {self.time.shape}, Vector 2; {other.times.shape}")
+            return
+        if not self.signal.shape[-1] == other.signal.shape[-1]:
+            Console.printf("error", "Not possible to sum the two FID since the length does not match!")
+            return
+        else:
+            fid = FID(signal=self.signal, time=self.time, name=self.name)     # new fid object containing the information of this object
+            fid.signal = np.vstack((self.signal, other.signal))               # vertical stack signals, thus add row vectors
+            fid.name = self.name.copy() + other.name.copy()                   # since lists not immutable, copy() is required!
+
+            return fid
+
+    def __str__(self):
+        """
+        Print to the console the name(s) of the chemical compounds in the FID and the signal shape.
+        """
+        Console.add_lines(f"FID contains of chemical compound(s):")
+        for i, compound_name in enumerate(self.name):
+            Console.add_lines(f"  {i}: {compound_name}")
+
+        Console.add_lines(f"=> with signal shape {self.signal.shape}")
+        Console.printf_collected_lines("info")
+        return "\n"
 
 class B0Inhomogeneities:
     # TODO: It should be one map per volunteer
@@ -144,8 +172,8 @@ class Model:
 
     def add_fid(self, fid: FID) -> None:
         """
-        Add a FID from the class `~FID`, which can contain multiple signals, to the Model. All further added FIDs will perform the
-        implemented __add__ in the `~FID` class. Thus, the fids will be merged. Resulting in just one fid object containing all
+        Add a FID from the class `~FID`, which can contain multiple signals, to the Model. All further added FID will perform the
+        implemented __add__ in the `~FID` class. Thus, the loaded_fid will be merged. Resulting in just one fid object containing all
         signals.
 
         Example usage 1:
@@ -179,9 +207,9 @@ class Model:
 
     def add_fid_scaling_map(self, fid_scaling_map: np.ndarray):
         """
-        For scaling the FIDs at the respective position in the volume. TODO: Right way? Maybe rename?
+        For scaling the FID at the respective position in the volume. TODO: Right way? Maybe rename?
 
-        :param fid_scaling_map: Values to scale the FIDs at the respective position in the volume
+        :param fid_scaling_map: Values to scale the FID at the respective position in the volume
         :return: Nothing
         """
 
@@ -194,7 +222,7 @@ class Model:
 
     def build(self, data_type: np.dtype = np.complex64):
         Console.printf_section("Spectral-spatial-simulation")
-        # For building the model: This includes at the current moment mask * map * FIDs -> (x,y,z, metabolite, FID(s))
+        # For building the model: This includes at the current moment mask * map * FID -> (x,y,z, metabolite, FID(s))
         # Thus, required is:
         #   self.mask
         #   self.FID
@@ -229,9 +257,9 @@ class Model:
         # (e) Find non zero elements in the mask
         mask_nonzero_indices = np.nonzero(self.mask)
 
-        Console.printf("info", "Begin assigning FIDs to volume:")
+        Console.printf("info", "Begin assigning FID to volume:")
         indent = " " * 22
-        for x,y,z in tqdm(zip(*mask_nonzero_indices), total=len(mask_nonzero_indices[0]), desc=indent+"Assigning FIDs to volume"):
+        for x,y,z in tqdm(zip(*mask_nonzero_indices), total=len(mask_nonzero_indices[0]), desc=indent+"Assigning FID to volume"):
             for fid_signal_index in range(self.fid.signal.ndim):
                 volume[x,y,z,fid_signal_index,:] = self.fid.signal[fid_signal_index] * self.fid_scaling_map[x,y,z]
 

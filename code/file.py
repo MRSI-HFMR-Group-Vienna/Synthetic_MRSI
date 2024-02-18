@@ -346,7 +346,7 @@ class T1Image:
         pass
 
 
-class FIDs:
+class FID:
     """
     This class is for creating an FID containing several attributes. The FID signal and parameters can be
     either added from e.g., a simulation or loaded from a MATLAB file (.m). Moreover, it is able to convert
@@ -356,18 +356,18 @@ class FIDs:
     def __init__(self, configurator: Configurator, concentrations: np.ndarray = None, t2_values: np.ndarray = None):
         self.configurator = configurator
         self.parameters: dict = {}
-        self.fids: list = []
+        self.loaded_fid: spectral_spatial_simulation.FID = spectral_spatial_simulation.FID()
 
     def load(self, fid_name: str, signal_data_type: np.dtype = np.float64):
         """
-        For loading and splitting the FIDs according to the respective chemical compound (metabolites, lipids).
+        For loading and splitting the FID according to the respective chemical compound (metabolites, lipids).
         Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.
         Additional: since the complex signal is represented in two columns (one for real and one for imaginary),
         it has to be transformed to a complex signal.
 
         :param fid_name: Name of the FID (e.g., 'metabolites', 'lipids')
         :param signal_data_type: Desired data type of the signal signal (numpy data types).
-        :return: Nothing. Access the list fids of the object for the signals!
+        :return: Nothing. Access the list loaded_fid of the object for the signals!
         """
         self.configurator.load()
         path = self.configurator.data["path"]["fid"][fid_name]
@@ -414,12 +414,10 @@ class FIDs:
         # Create for each part of the signal (signal) corresponding to one compound an FID object,
         # the put into a list containing all FID objects
         Console.add_lines("Assigned FID parts:")
-        for column_number, name in enumerate(self.parameters['DIM_VALUES'][2]):
-            fid = spectral_spatial_simulation.FID(signal=signal_reshaped[column_number],
-                               time=time,
-                               name=name)
-            self.fids.append(fid)
 
+        # Merge the signals into one FID, thus also the names
+        for column_number, name in enumerate(self.parameters['DIM_VALUES'][2]):
+            self.loaded_fid += spectral_spatial_simulation.FID(signal=signal_reshaped[column_number], time=time, name=[name])
             Console.add_lines(f"{column_number}. {name + ' ':-<30}-> shape: {signal_reshaped[column_number].shape}")
 
         Console.printf_collected_lines("success")
