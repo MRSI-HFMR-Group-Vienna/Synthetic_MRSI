@@ -4,7 +4,6 @@ import numpy as np
 import os, sys
 
 
-
 class FID:
     """
     The FID includes the basic attributes, including the signal and time vector, as
@@ -63,6 +62,15 @@ class FID:
         :return: None
         """
         Console.printf("info", f"FID Signal shape: {self.signal.shape}")
+
+
+    def sum_all_signals(self):
+        """
+        To sum up all signals.
+        """
+        self.signal = np.sum(self.signal, axis=0) # To sum up all signals
+        self.name = [" + ".join(self.name)]       # To put all compound names in one string (in a list)
+        return self
 
 
     def get_spectrum(self) -> np.ndarray:
@@ -158,17 +166,19 @@ class B0Inhomogeneities:
 class Model:
     # TODO What should it contain?
 
-    def __init__(self, path_cache: str):
+    def __init__(self, path_cache: str, file_name_cache: str):
         if os.path.exists(path_cache):
             self.path_cache = path_cache
         else:
             Console.printf("error", f"Terminating the program. Path does not exist: {path_cache}")
             sys.exit()
 
+        self.file_name_cache = file_name_cache
         self.fid = FID() # instantiate an empty FID to be able to sum it ;)
         self.fid_scaling_map = None
         self.mask = None
         self.volume = None # TODO: Rename -> basically the output of the model -> is it a metabolic map?
+        self.model_shape = None # shape of volume
 
     def add_fid(self, fid: FID) -> None:
         """
@@ -228,25 +238,37 @@ class Model:
         #   self.FID
         #   self.fid_scaling_map -> TODO: contains at the moment values in the range [0,1].
 
+
         # (a) Set path where memmap file should be created and create memmap
-        path_cache_file = os.path.join(self.path_cache, 'simulated_metabolite_map.npy')
+        #     Or load memmap if file already exits.
+        path_cache_file = os.path.join(self.path_cache, f"{self.file_name_cache}_array.npy")
         Console.printf("info", f"Using cache path: {path_cache_file}")
+
+        if (os.path.exists(path_cache_file)
+                and (Console.ask_user(f"(y) Overwrite existing file '{self.file_name_cache}'? Or (n) load old one instead", exit_if_false=False) is not True)):
+            Console.printf("info", f"loading the file '{self.file_name_cache}' instead because it already exits in the selected path!")
+            self.model_shape = np.load(f"{self.file_name_cache}_shape.npy")
+            self.volume = np.memmap(path_cache_file, dtype=data_type, mode='r+', shape=tuple(self.model_shape)) # TODO TODO TODO save somewhere the shape!
+            Console.printf("success", f"Loaded volume of shape: {self.volume.shape}")
+            return
+
 
         # (b) Get the required shape of the model & create cache file
         # -> if only one FID signal is added, then add one dimension
         # -> if multiple FID signals are added, then don't add dimensions
         # => final dimension need to be (x,y,z, Metabolite, FID)
         fid_shape = (1,) + self.fid.signal.shape if self.fid.signal.ndim == 1 else self.fid.signal.shape
-        model_shape = (self.mask.shape + fid_shape)
+        self.model_shape = (self.mask.shape + fid_shape)
+        np.save(os.path.join(f"{self.file_name_cache}_shape.npy"), np.array(self.model_shape))
 
         # (c) Create memmap on disk with 0s
-        volume = np.memmap(path_cache_file, dtype=data_type, mode='w+', shape=model_shape)
+        self.volume = np.memmap(path_cache_file, dtype=data_type, mode='w+', shape=self.model_shape)
         #volume[:] = 0
 
         # (c) Estimate space required on hard drive
-        #  -> model_shape.size returns the shape and np.prod the number of elements in the planned memmap array.
+        #  -> self.model_shape.size returns the shape and np.prod the number of elements in the planned memmap array.
         #  -> the np.dtype(data_type) creates and object and .itemsize returns the size (in bytes) of each element
-        space_required_mb = np.prod(model_shape) * np.dtype(data_type).itemsize * 1 / (1024 * 1024)
+        space_required_mb = np.prod(self.model_shape) * np.dtype(data_type).itemsize * 1 / (1024 * 1024)
 
         # (d) Ask the user for agreement of the required space
         # Check if the simulation does not exceed a certain size
@@ -261,10 +283,10 @@ class Model:
         indent = " " * 22
         for x,y,z in tqdm(zip(*mask_nonzero_indices), total=len(mask_nonzero_indices[0]), desc=indent+"Assigning FID to volume"):
             for fid_signal_index in range(self.fid.signal.ndim):
-                volume[x,y,z,fid_signal_index,:] = self.fid.signal[fid_signal_index] * self.fid_scaling_map[x,y,z]
+                self.volume[x,y,z,fid_signal_index,:] = self.fid.signal[fid_signal_index] * self.fid_scaling_map[x,y,z]
 
-        Console.printf("success", f"Created volume of shape: {volume.shape}")
-        volume.flush() # Write any changes in the array to the file on disk.
+        Console.printf("success", f"Created volume of shape: {self.volume.shape}")
+        self.volume.flush() # Write any changes in the array to the file on disk.
         Console.printf("success", f"Flushed updated volume to path: {self.path_cache}. Actual used space [MB]: {os.path.getsize(path_cache_file) / (1024*1024)}")
 
         # Option 2: However: volume at end is not a memmap any more!

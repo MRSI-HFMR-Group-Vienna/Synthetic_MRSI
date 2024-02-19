@@ -99,17 +99,23 @@ class Console:
         print(f"{Back.WHITE + title + Style.RESET_ALL}")
 
     @staticmethod
-    def ask_user(message: str) -> None:
+    def ask_user(message: str, exit_if_false: bool = True) -> bool:
         """
-        To ask the user to continue or terminate the program. For example useful if
-        the required estimated space exceeds the desired limit.
+        To ask the user to continue or terminate the program. Another option is to return either True or False.
+        Example usage: if the required estimated space exceeds the desired limit.
 
         :return:
         """
         answer = input(f"{Back.LIGHTYELLOW_EX + Fore.BLACK + '[CONTINUE (y/n) ?]' + Style.RESET_ALL + ' >> '}{message} -> ").lower()
         if answer == "n":
-            Console.printf("error", "The user has terminated the program!")
-            sys.exit()
+
+            if exit_if_false is True:
+                Console.printf("error", "The user has terminated the program!")
+                sys.exit()
+            else:
+                return False
+
+        return True
 
     @staticmethod
     def check_condition(logic_operation: bool, ask_continue: bool = False) -> None:

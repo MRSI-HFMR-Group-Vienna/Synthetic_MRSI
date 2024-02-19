@@ -3,6 +3,7 @@ from spectral_spatial_simulation import FID
 import numpy as np
 import spectral_spatial_simulation
 import file
+from display import plot_FID, plot_FIDs
 
 
 def zen_of_python():
@@ -37,50 +38,7 @@ def zen_of_python():
 
 
 if __name__ == '__main__':
-    fid1 = FID(signal=np.array([1, 1, 1, 1, 1]), time=np.array([1, 2, 3, 4, 5]), name=["CreatineX"])
-    print("FID 1 name:")
-    print(fid1.name)
-    print("FID 1 signal and time shape:")
-    #print(fid1.signal.shape)
-    #print(fid1.time.shape)
-    #print("FID 1 signal:")
-    #print(fid1.signal)
 
-    fid2 = FID(signal=np.array([2, 1, 2, 1, 2]), time=np.array([1, 2, 3, 4, 5]), name=["NAA"])
-    print("FID 2 name:")
-    print(fid2.name)
-    #print("FID 2 signal and time shape:")
-    #print(fid2.signal.shape)
-    #print(fid2.time.shape)
-    #print("FID 2 signal:")
-    #print(fid2.signal)
-
-
-    fid3 = fid1+fid2
-    print("FID 3 name:")
-    print(fid3.name)
-    #print("FID 3 signal and time shape:")
-    #print(fid3.signal.shape)
-    #print(fid3.time.shape)
-    #print("FID 3 signal:")
-    #print(fid3.signal)
-
-    fid4 = fid1+fid3 # str + list
-    print("FID 4 name:")
-    print(fid4.name)
-
-    fid5 = fid3+fid1
-    print("FID 5 name: (should be: ['CreatineX', 'NAA', CreatineX])")
-    print(fid5.name)
-
-    fid6 = fid4+fid5
-    print("FID 6 name: ['CreatineX', 'CreatineX', 'NAA'] + ['CreatineX', 'NAA', 'CreatineX']")
-    print(fid6.name)
-    print(fid6.signal)
-
-
-
-    input("-----------------")
     #zen_of_python()
 
     # Load defined paths in the configurator
@@ -104,28 +62,29 @@ if __name__ == '__main__':
                      signal_data_type=np.complex64)
 
 
-    fid = metabolites.loaded_fid
-    # Extract from the FID objects the signal data (np.ndarray), merge it to a new numpy array object.
-    #fids_list: list = []
+    loaded_fid = metabolites.loaded_fid
+    print(loaded_fid)
+    #plot_FID(signal=fid.signal[0], time=fid.time)
+    #print(metabolites.loaded_fid.get_partially_FID([1,5]))
 
-    #time_vector = metabolites.loaded_fid[0].time
-    #[fids_list.append(fid.signal) for fid in metabolites.loaded_fid]
-    #metabolites_fid_data = np.asarray(fids_list)
+    #plot_FID(signal=loaded_fid.signal, time=loaded_fid.time)
 
-    ## Plotting all FID
-    #fids_dict: dict = {}
-    #for fid in metabolites.loaded_fid:
-    #    fids_dict[fid.name] = fid.signal
-    #plot_FIDs(amplitude=fids_dict, time=time_vector, save_to_file=True)
 
-    print(metabolites.loaded_fid.get_partially_FID([1,5]))
-
-    input("------------")
     # Simulate volume with desired FID
     path_cache = '/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/mschuster/SimulationMRSI/cache/'
-    spectral_model = spectral_spatial_simulation.Model(path_cache=path_cache)
-    spectral_model.add_fid(metabolites.loaded_fid)
+    spectral_model = spectral_spatial_simulation.Model(path_cache=path_cache, file_name_cache="simulated_metabolite_map")
+    #spectral_model.add_fid(metabolites.loaded_fid)
+    #spectral_model.add_mask(metabolic_mask.data)
+    #spectral_model.add_fid_scaling_map(random_scaling)
+    #spectral_model.build()
+
+
+    loaded_fid.sum_all_signals()
+
+    spectral_model.add_fid(loaded_fid)
     spectral_model.add_mask(metabolic_mask.data)
     spectral_model.add_fid_scaling_map(random_scaling)
     spectral_model.build()
 
+    import sampling
+    sampling.cartesian_FT(spectral_model)
