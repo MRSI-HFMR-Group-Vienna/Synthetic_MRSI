@@ -1,5 +1,6 @@
 # Ignore all files in the code/config/ folder
 code/config/*
+cache
 
 # Except for config_template.json
 !code/config/config_template.json

@@ -177,7 +177,7 @@ class Model:
         self.fid = FID() # instantiate an empty FID to be able to sum it ;)
         self.fid_scaling_map = None
         self.mask = None
-        self.volume = None # TODO: Rename -> basically the output of the model -> is it a metabolic map?
+        self.volume: np.ndarray | np.memmap = None # TODO: Rename -> basically the output of the model -> is it a metabolic map?
         self.model_shape = None # shape of volume
 
     def add_fid(self, fid: FID) -> None:
@@ -241,7 +241,7 @@ class Model:
 
         # (a) Set path where memmap file should be created and create memmap
         #     Or load memmap if file already exits.
-        path_cache_file = os.path.join(self.path_cache, f"{self.file_name_cache}_array.npy")
+        path_cache_file = os.path.join(self.path_cache, f"{self.file_name_cache}_spectral_spatial_volume.npy")
         Console.printf("info", f"Using cache path: {path_cache_file}")
 
         if (os.path.exists(path_cache_file)

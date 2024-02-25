@@ -3,7 +3,9 @@ from spectral_spatial_simulation import FID
 import numpy as np
 import spectral_spatial_simulation
 import file
+from printer import Console
 from display import plot_FID, plot_FIDs
+import sampling
 
 
 def zen_of_python():
@@ -42,8 +44,10 @@ if __name__ == '__main__':
     #zen_of_python()
 
     # Load defined paths in the configurator
+    Console.printf_section("Load and prepare data")
     configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/code/config/",
-                                     file_name="config_04012024.json")
+                                     file_name="config_25022024.json")
+                                     #file_name="config_04012024.json")
     configurator.load()
     configurator.print_formatted()
 
@@ -71,8 +75,11 @@ if __name__ == '__main__':
 
 
     # Simulate volume with desired FID
-    path_cache = '/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/mschuster/SimulationMRSI/cache/'
-    spectral_model = spectral_spatial_simulation.Model(path_cache=path_cache, file_name_cache="simulated_metabolite_map")
+    #path_cache = '/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/mschuster/SimulationMRSI/cache/'
+
+
+    path_cache = "/home/mschuster/projects/Synthetic_MRSI/cache/" # TODO: use configurator, or at least config file for it!!!! DOnt define it manually!
+    spectral_model = spectral_spatial_simulation.Model(path_cache=path_cache, file_name_cache="25022024")
     #spectral_model.add_fid(metabolites.loaded_fid)
     #spectral_model.add_mask(metabolic_mask.data)
     #spectral_model.add_fid_scaling_map(random_scaling)
@@ -86,5 +93,4 @@ if __name__ == '__main__':
     spectral_model.add_fid_scaling_map(random_scaling)
     spectral_model.build()
 
-    import sampling
-    sampling.cartesian_FT(spectral_model)
+    sampling.cartesian_FT(spectral_model, auto_gpu=False, path_cache=path_cache, file_name_cache="25022024")
