@@ -14,9 +14,79 @@ import os
 
 # Class FourierTransform
 
-class CustomDataset(Dataset):
+class SubVolumeDataset(Dataset):
     """
-    Does the Dataset automaticall reduces the shape?
+    For getting sub-volumes from the main volume. It inherits the PyTorch Dataset, thus it can be used together with
+    the PyTorch dataloader. The sub volumes do not need to be isotropic!
+    Example usage 1: Iterate over each sub volume
+    Example usage 2: Get sub-volume by index (index_x, index_y, index_z) in main volume
+    Example usage 2: Get batch of sub-volumes (e.g., [3, 50, 50, 50, 30]). Useful, if put on GPU and limited space is available there.
+                     Thus, put batch on GPU, process it and then put back to CPU.
+    """
+    def __init__(self, volume: np.ndarray | np.memmap, sub_volume_shape: tuple):
+        self.volume = volume
+        self.sub_volume_shape = sub_volume_shape
+        self.indices = self._initialize_indices()
+
+    def get_by_index(self, i_x: int, i_y: int, i_z: int) -> torch.Tensor:
+        """
+        Get sub-volume by indices in the main volume. Thus, if the main volume, e.g., is divided into eight sub-volumes, maximum
+        indices are (7,7,7).
+
+        :param i_x: sub-volume index in the main volume in x direction
+        :param i_y: sub-volume index in the main volume in y direction
+        :param i_z: sub-volume index in the main volume in z direction
+
+        :return: sub-volume as PyTorch Tensor
+        """
+        sx, sy, sz = self.sub_volume_shape
+        sub_volume = self.volume[i_x:i_x + sx, i_y:i_y + sy, i_z:i_z + sz, :]
+        return sub_volume
+
+    def _initialize_indices(self):
+        """
+        Find starting indices for sub-volumes in whole volume. Then, append it to a list containing all possible starting indices of
+        the sub volumes.
+        """
+
+        # (1) Get target shape of sub volumes.
+        sx, sy, sz = self.sub_volume_shape
+        unfolded = self.volume.unfold(0, sx, sx).unfold(1, sy, sy).unfold(2, sz, sz)  # creates shape: [sub_x_index, sub_y_index, sub_z_index, t_vector, sub_x_volume, sub_y_volume, sub_z_volume]
+        # e.g., [0,0,0,:,:,:,:] -> get x,y,z with t of index 0 (=index of sub volume)
+
+        # Get starting indices of sub-volumes (e.g., x=0,y=0,z=50). Create it for each sub-volume and append to a list as tuple.
+        indices = []
+
+        u = 0
+        # Get each possible starting index for each sub-volume in the whole volume (e.g., x=0,y=0,z=50)
+        for i_x in range(unfolded.shape[0]):
+            for i_y in range(unfolded.shape[1]):
+                for i_z in range(unfolded.shape[2]):
+                    # print(f"indices new = {x,y,z}")
+                    indices.append((i_x * sx, i_y * sy, i_z * sz))
+
+        return indices
+
+    def __len__(self):
+        """
+        To get the number of sub-volumes.
+        """
+        return len(self.indices)
+
+    def __getitem__(self, index):
+        """
+        Cut sub volumes out of the whole volume using starting indices and size of sub volumes.
+        """
+        i_x, i_y, i_z = self.indices[index]
+        sx, sy, sz = self.sub_volume_shape
+        sub_volume = self.volume[i_x:i_x + sx, i_y:i_y + sy, i_z:i_z + sz, :]  # start and end index to cut out sub-volume of whole volume
+        sub_volume = torch.from_numpy(sub_volume).detach()
+        return sub_volume
+
+
+class VolumeForFFTDataset(Dataset):
+    """
+    TODO: Does the Dataset automatically reduces the shape?
     """
 
     def __init__(self, data: np.ndarray | np.memmap, device: str):
@@ -62,7 +132,6 @@ class ConfiguratorGPU():
             percentage_free_space = space_free_cuda / space_total_cuda
             free_space_devices.append(percentage_free_space)
 
-        Console.printf_collected_lines("info")
         self.selected_gpu = free_space_devices.index(max(free_space_devices))
 
         torch.cuda.set_device(self.selected_gpu)
@@ -150,8 +219,21 @@ class ConfiguratorGPU():
 ##
 ##     return space_required_mb_cuda <= space_free_cuda
 
+#class Model:
+#    def __init__(self, model): # TODO class Type
+#        self.spectral_spatial_model = model
+#        self.volume: np.memmap = None
+#        self.sub_volume_iterator
 
-def cartesian_FT(model: SpectralSpatialModel, path_cache: str, file_name_cache: str, auto_gpu: bool = True, custom_batch_size: int = 0):
+    # build() -> arguments: cartesian, non-cartesian
+    # cartesian_FT
+    # non-cartesian_FT
+
+    # get_sub_volume(i_x,i_y,i_z)
+    # get_sub_volume_iterator()
+
+
+def cartesian_FT(model: SpectralSpatialModel, path_cache: str, file_name_cache: str, auto_gpu: bool = True, custom_batch_size: int = None):
     Console.printf_section("Sampling -> FFT")
 
     # Get the new shape of the target volume ([x,y,z,1,t] -> [x,y,z,t])
@@ -175,12 +257,19 @@ def cartesian_FT(model: SpectralSpatialModel, path_cache: str, file_name_cache: 
 
         # (b) Create custom dataset, it transforms the numpy memmap to a torch tensor
         #     Also, calculate max batch size that fits on GPU.
-        dataset = CustomDataset(data=model.volume, device="cuda")
+        dataset = VolumeForFFTDataset(data=model.volume, device="cuda")
         number_of_batches = np.ceil(configurator_gpu.required_space_gpu / configurator_gpu.free_space_selected_gpu)
         size_of_batches = int(np.floor(len(dataset) / number_of_batches))
 
         # (c) Create the Dataloader with the Custom Dataset. Based on the batch size, the DataLoader creates a
         #     number n batches.
+        size_of_batches = size_of_batches if custom_batch_size is None else custom_batch_size
+        Console.add_lines(f"Performing cartesian FFT on CPU")
+        if custom_batch_size is not None:
+            Console.add_lines(f"Manual user selected batch size: {custom_batch_size}")
+        else:
+            Console.add_lines(f"Automatically set batch size (based on free GPU space): {size_of_batches}")
+        Console.printf_collected_lines("info")
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=size_of_batches,
                                 shuffle=False,
@@ -188,15 +277,21 @@ def cartesian_FT(model: SpectralSpatialModel, path_cache: str, file_name_cache: 
 
     # OPTION 2: Use the CPU
     else:
-        dataset = CustomDataset(data=model.volume, device="cpu")
+        dataset = VolumeForFFTDataset(data=model.volume, device="cpu")
+        size_of_batches = len(dataset) if custom_batch_size is None else custom_batch_size
+        if custom_batch_size is not None:
+            Console.add_lines(f"Manual chosen batch size by user: {custom_batch_size}")
+        else:
+            Console.add_lines(f"Automatically set batch size: {size_of_batches}")
+        Console.printf_collected_lines("info")
         dataloader = DataLoader(dataset=dataset,
-                                batch_size=len(dataset),
+                                batch_size=size_of_batches,
                                 shuffle=False,
                                 drop_last=False)
 
     # The following fits for GPU and CPU:
     indent = " " * 22
-    # (1) Iterate through each batch. If GPU is chosen, then the respective batch is put on the GPU (see CustomDataset)
+    # (1) Iterate through each batch. If GPU is chosen, then the respective batch is put on the GPU (see VolumeForFFTDataset)
     for i, (batch, indices) in tqdm(enumerate(dataloader), total=len(dataloader), desc=indent + "3D FFT of batches (each t in [:,:,:,t])", position=0):
         # change order of batch from [t,x,y,z] back to [x,y,z,t] because DataLoader changes it automatically!
         batch = batch.permute(1, 2, 3, 0)

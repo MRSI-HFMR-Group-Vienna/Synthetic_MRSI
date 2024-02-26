@@ -90,7 +90,7 @@ if __name__ == '__main__':
 
     spectral_model.add_fid(loaded_fid)
     spectral_model.add_mask(metabolic_mask.data)
-    spectral_model.add_fid_scaling_map(random_scaling)
+    spectral_model.add_fid_scaling_map(random_scaling) # add ScalingMap (for each metabolite)
     spectral_model.build()
 
-    sampling.cartesian_FT(spectral_model, auto_gpu=False, path_cache=path_cache, file_name_cache="25022024")
+    sampling.cartesian_FT(spectral_model, auto_gpu=True, path_cache=path_cache, file_name_cache="25022024", custom_batch_size=200)
