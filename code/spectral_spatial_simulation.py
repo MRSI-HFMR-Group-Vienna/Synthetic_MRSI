@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from printer import Console
 from tqdm import tqdm
 import numpy as np
@@ -33,12 +34,11 @@ class FID:
         else:
             self.signal: np.ndarray = signal  # signal vector
 
-        self.time: np.ndarray = time      # time vector
-        self.name: list = name            # name, e.g., of the respective metabolite
+        self.time: np.ndarray = time  # time vector
+        self.name: list = name  # name, e.g., of the respective metabolite
         self.concentration: float = None
-        self.t2_value: np.ndarray = None # TODO
-        self.sampling_period = sampling_period # it is just 1/(sampling frequency)
-
+        self.t2_value: np.ndarray = None  # TODO
+        self.sampling_period = sampling_period  # it is just 1/(sampling frequency)
 
     def get_signal(self, signal_data_type: np.dtype, mute=True):
         """
@@ -54,7 +54,6 @@ class FID:
 
         return signal
 
-
     def show_signal_shape(self) -> None:
         """
         Print the shape of the FID signal to the console.
@@ -63,15 +62,13 @@ class FID:
         """
         Console.printf("info", f"FID Signal shape: {self.signal.shape}")
 
-
     def sum_all_signals(self):
         """
         To sum up all signals.
         """
-        self.signal = np.sum(self.signal, axis=0) # To sum up all signals
-        self.name = [" + ".join(self.name)]       # To put all compound names in one string (in a list)
+        self.signal = np.sum(self.signal, axis=0)  # To sum up all signals
+        self.name = [" + ".join(self.name)]  # To put all compound names in one string (in a list)
         return self
-
 
     def get_spectrum(self) -> np.ndarray:
         """
@@ -81,8 +78,8 @@ class FID:
         # TODO: Also think about the return type! Maybe just return magnitude?
         frequency = np.fft.fftfreq(self.time.size, self.sampling_period)
         magnitude = np.fft.fft(self.signal, axis=1)
-        return {'frequency' : frequency,
-                'magnitude' : magnitude}
+        return {'frequency': frequency,
+                'magnitude': magnitude}
 
     def change_signal_data_type(self, signal_data_type: np.dtype) -> None:
         """
@@ -93,8 +90,7 @@ class FID:
         """
         self.signal = self.signal.astype(signal_data_type)
 
-
-    def get_partially_FID(self, fid_indices: list[int]): # TODO define FID as return type -> FID doe snot work
+    def get_partially_FID(self, fid_indices: list[int]):  # TODO define FID as return type -> FID doe snot work
         """
         To get only a fraction of the original FID.
 
@@ -105,8 +101,8 @@ class FID:
         signal_partially = self.signal[fid_indices]
         name_partially = [self.name[i] for i in fid_indices]
         time = self.time
-        #t2_values TODO
-        #sampling_period TODO
+        # t2_values TODO
+        # sampling_period TODO
 
         return FID(signal=signal_partially, name=name_partially, time=time)
 
@@ -137,9 +133,9 @@ class FID:
             Console.printf("error", "Not possible to sum the two FID since the length does not match!")
             return
         else:
-            fid = FID(signal=self.signal, time=self.time, name=self.name)     # new fid object containing the information of this object
-            fid.signal = np.vstack((self.signal, other.signal))               # vertical stack signals, thus add row vectors
-            fid.name = self.name.copy() + other.name.copy()                   # since lists not immutable, copy() is required!
+            fid = FID(signal=self.signal, time=self.time, name=self.name)  # new fid object containing the information of this object
+            fid.signal = np.vstack((self.signal, other.signal))  # vertical stack signals, thus add row vectors
+            fid.name = self.name.copy() + other.name.copy()  # since lists not immutable, copy() is required!
 
             return fid
 
@@ -155,6 +151,7 @@ class FID:
         Console.printf_collected_lines("info")
         return "\n"
 
+
 class B0Inhomogeneities:
     # TODO: It should be one map per volunteer
     def __init__(self):
@@ -162,6 +159,18 @@ class B0Inhomogeneities:
         # data -> a map?
         # unit -> can be Hz, ppm, arbitrary
         raise NotImplementedError("This method is not yet implemented")
+
+
+@dataclass
+class MetabolicScalingMap:
+    """
+    Data Class automatically keeps track of the items. Also, automatically implements
+    __init__ and all items -> e.g., data will automatically implement self.data = data
+    """
+    map: np.ndarray  # 3D volume of a scaling map for FID of respective chemical compound
+    name: str  # name of chemical compound (e.g., coline)
+    unit: str  # unit of the map -> TODO: but I do not check it when adding to the model!
+
 
 class Model:
     # TODO What should it contain?
@@ -174,11 +183,11 @@ class Model:
             sys.exit()
 
         self.file_name_cache = file_name_cache
-        self.fid = FID() # instantiate an empty FID to be able to sum it ;)
-        self.fid_scaling_map = None
+        self.fid = FID()  # instantiate an empty FID to be able to sum it ;)
+        self.fid_scaling_maps: dict[str, np.ndarray] = {}
         self.mask = None
-        self.volume: np.ndarray | np.memmap = None # TODO: Rename -> basically the output of the model -> is it a metabolic map?
-        self.model_shape = None # shape of volume
+        self.volume: np.ndarray | np.memmap = None  # TODO: Rename -> basically the output of the model -> is it a metabolic map?
+        self.model_shape = None  # shape of volume
 
     def add_fid(self, fid: FID) -> None:
         """
@@ -199,7 +208,7 @@ class Model:
         :return: Nothing
         """
         try:
-            self.fid + fid # sum fid according to the __add__ implementation in the FID class
+            self.fid + fid  # sum fid according to the __add__ implementation in the FID class
             Console.printf("success", f"Added compound '{fid.name} to the spectral spatial model.")
         except Exception as e:
             Console.printf("error", f"Error in adding compound '{fid.name} to the spectral spatial model. Exception: {e}")
@@ -215,16 +224,27 @@ class Model:
         """
         self.mask = mask
 
-    def add_fid_scaling_map(self, fid_scaling_map: np.ndarray):
+    def add_fid_scaling_map(self, fid_scaling_map: MetabolicScalingMap):
         """
+        TODO: Change description
         For scaling the FID at the respective position in the volume. TODO: Right way? Maybe rename?
 
         :param fid_scaling_map: Values to scale the FID at the respective position in the volume
         :return: Nothing
         """
 
-        self.fid_scaling_map = fid_scaling_map
+        Console.printf("info", f"Adding metabolic scaling map of compound {fid_scaling_map.name}")
+        self.fid_scaling_maps[fid_scaling_map.name] = fid_scaling_map.map
 
+        # self.fid_scaling_map = fid_scaling_map
+
+    def add_fid_scaling_maps(self, fid_scaling_maps: list[MetabolicScalingMap]):
+        Console.add_lines("Adding the following metabolic scaling maps:")
+        for i, fid_scaling_map in enumerate(fid_scaling_maps):
+            Console.add_lines(f"{i}: {fid_scaling_map.name}")
+            self.fid_scaling_maps[fid_scaling_map.name] = fid_scaling_map.map
+
+        Console.printf_collected_lines("success")
 
     def line_broader(self):
         # TODO: Here or in Simulator?
@@ -238,7 +258,6 @@ class Model:
         #   self.FID
         #   self.fid_scaling_map -> TODO: contains at the moment values in the range [0,1].
 
-
         # (a) Set path where memmap file should be created and create memmap
         #     Or load memmap if file already exits.
         path_cache_file = os.path.join(self.path_cache, f"{self.file_name_cache}_spectral_spatial_volume.npy")
@@ -248,10 +267,9 @@ class Model:
                 and (Console.ask_user(f"(y) Overwrite existing file '{self.file_name_cache}'? Or (n) load old one instead", exit_if_false=False) is not True)):
             Console.printf("info", f"loading the file '{self.file_name_cache}' instead because it already exits in the selected path!")
             self.model_shape = np.load(f"{self.file_name_cache}_shape.npy")
-            self.volume = np.memmap(path_cache_file, dtype=data_type, mode='r+', shape=tuple(self.model_shape)) # TODO TODO TODO save somewhere the shape!
+            self.volume = np.memmap(path_cache_file, dtype=data_type, mode='r+', shape=tuple(self.model_shape))  # TODO TODO TODO save somewhere the shape!
             Console.printf("success", f"Loaded volume of shape: {self.volume.shape}")
             return
-
 
         # (b) Get the required shape of the model & create cache file
         # -> if only one FID signal is added, then add one dimension
@@ -263,7 +281,7 @@ class Model:
 
         # (c) Create memmap on disk with 0s
         self.volume = np.memmap(path_cache_file, dtype=data_type, mode='w+', shape=self.model_shape)
-        #volume[:] = 0
+        # volume[:] = 0
 
         # (c) Estimate space required on hard drive
         #  -> self.model_shape.size returns the shape and np.prod the number of elements in the planned memmap array.
@@ -275,31 +293,41 @@ class Model:
         # Console.check_condition(space_required_mb < 30000, ask_continue=True)
         Console.ask_user(f"Estimated required space [MB]: {space_required_mb}")
 
-
         # (e) Find non zero elements in the mask
         mask_nonzero_indices = np.nonzero(self.mask)
 
+        # (d) Check if each FID has a respective scaling map!
+        compounds_FIDs = self.fid.name
+        compounds_maps = list(self.fid_scaling_maps.keys())
+        if not len(compounds_FIDs) == len(compounds_maps):
+            Console.add_lines("Different amount of FIDs and scaling maps.")
+            Console.add_lines(f"Compounds FIDs given: {compounds_FIDs}")
+            Console.add_lines(f"Compounds Scaling Maps given: {compounds_maps}")
+            Console.add_lines(f"Terminate program!")
+            Console.printf_collected_lines("error")
+            sys.exit()
+        if not compounds_FIDs <= compounds_maps:
+            Console.add_lines("For not each compound a FID and a respective scaling map is given.")
+            Console.add_lines(f"Compounds FIDs given: {compounds_FIDs}")
+            Console.add_lines(f"Compounds Scaling Maps given: {compounds_maps}")
+            Console.add_lines(f"Terminate program!")
+            Console.printf_collected_lines("error")
+            sys.exit()
+
         Console.printf("info", "Begin assigning FID to volume:")
         indent = " " * 22
-        for x,y,z in tqdm(zip(*mask_nonzero_indices), total=len(mask_nonzero_indices[0]), desc=indent+"Assigning FID to volume"):
+        for x, y, z in tqdm(zip(*mask_nonzero_indices), total=len(mask_nonzero_indices[0]), desc=indent + "Assigning FID to volume"):
             for fid_signal_index in range(self.fid.signal.ndim):
-                self.volume[x,y,z,fid_signal_index,:] = self.fid.signal[fid_signal_index] * self.fid_scaling_map[x,y,z]
+                # Scale the FID of each chemical compound based on the given scaling map for this compound
+                self.volume[x, y, z, fid_signal_index, :] = self.fid.signal[fid_signal_index] * self.fid_scaling_maps[self.fid.name[fid_signal_index]][x, y, z]
 
         Console.printf("success", f"Created volume of shape: {self.volume.shape}")
-        self.volume.flush() # Write any changes in the array to the file on disk.
-        Console.printf("success", f"Flushed updated volume to path: {self.path_cache}. Actual used space [MB]: {os.path.getsize(path_cache_file) / (1024*1024)}")
+        self.volume.flush()  # Write any changes in the array to the file on disk.
+        Console.printf("success", f"Flushed updated volume to path: {self.path_cache}. Actual used space [MB]: {os.path.getsize(path_cache_file) / (1024 * 1024)}")
 
-        # Option 2: However: volume at end is not a memmap any more!
-        #volume = np.memmap(path_cache_file, dtype=data_type, mode='w+', shape=(112,128,80,1,1))
-        #mask = self.mask[:,:,:,np.newaxis, np.newaxis]
-        #fid = self.fid.signal[np.newaxis,np.newaxis,np.newaxis, np.newaxis,:]
-        #scaling = self.fid_scaling_map[:,:,:,np.newaxis, np.newaxis]
-        #volume = mask * fid * scaling
-        # Just for checking the shape
-        #print(f"self.fid.signal.shape: {self.fid.signal.shape}")
-        #print(f"self.fid_scaling_map.shape: {self.fid_scaling_map.shape}")
-        #print(f"volume.shape: {volume.shape}")
-
+    def _sum_all_fids_in_volume(self):
+        # TODO: maybe implement in build or call extra?! Do we need volume where FIDs not summed up (Guess not?)? And flush before or after to disk?
+        raise NotImplementedError("This method is not yet implemented")
 
 class Simulator:
     # TODO

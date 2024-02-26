@@ -1,14 +1,11 @@
-import sys
-
 from spectral_spatial_simulation import Model as SpectralSpatialModel
-import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
 from file import Console
 from tqdm import tqdm
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, TensorDataset
-from torchvision.transforms import transforms
-import torch.multiprocessing as mp
+import sys
+
 import os
 
 
@@ -23,6 +20,7 @@ class SubVolumeDataset(Dataset):
     Example usage 2: Get batch of sub-volumes (e.g., [3, 50, 50, 50, 30]). Useful, if put on GPU and limited space is available there.
                      Thus, put batch on GPU, process it and then put back to CPU.
     """
+
     def __init__(self, volume: np.ndarray | np.memmap, sub_volume_shape: tuple):
         self.volume = volume
         self.sub_volume_shape = sub_volume_shape
@@ -41,6 +39,7 @@ class SubVolumeDataset(Dataset):
         """
         sx, sy, sz = self.sub_volume_shape
         sub_volume = self.volume[i_x:i_x + sx, i_y:i_y + sy, i_z:i_z + sz, :]
+        sub_volume = torch.from_numpy(sub_volume).detach()
         return sub_volume
 
     def _initialize_indices(self):
@@ -51,7 +50,8 @@ class SubVolumeDataset(Dataset):
 
         # (1) Get target shape of sub volumes.
         sx, sy, sz = self.sub_volume_shape
-        unfolded = self.volume.unfold(0, sx, sx).unfold(1, sy, sy).unfold(2, sz, sz)  # creates shape: [sub_x_index, sub_y_index, sub_z_index, t_vector, sub_x_volume, sub_y_volume, sub_z_volume]
+        unfolded = self.volume.unfold(0, sx, sx).unfold(1, sy, sy).unfold(2, sz,
+                                                                          sz)  # creates shape: [sub_x_index, sub_y_index, sub_z_index, t_vector, sub_x_volume, sub_y_volume, sub_z_volume]
         # e.g., [0,0,0,:,:,:,:] -> get x,y,z with t of index 0 (=index of sub volume)
 
         # Get starting indices of sub-volumes (e.g., x=0,y=0,z=50). Create it for each sub-volume and append to a list as tuple.
@@ -174,145 +174,153 @@ class ConfiguratorGPU():
         return self.required_space_gpu <= self.free_space_selected_gpu
 
 
-#  + size Dataset
-#  + available GPUs
-#  + space_free_cuda
-#  + space_required_cuda
-#
-#
-# -> set least busy GPU
-# -> print available GPUs
-# -> select GPU
-# -> enough_space_available
+class Model:
+    """
+    TODO: Until now only contains functionalities to do cartesian FT and to get sub volume of transformed main volume.
+    """
 
-##def set_least_busy_GPU():
-##    num_devices = torch.cuda.device_count()
-##
-##    free_space_devices = []
-##    Console.add_lines("Free space on:")
-##    for device in range(num_devices):
-##        torch.cuda.mem_get_info(device)
-##
-##        space_total_cuda = torch.cuda.mem_get_info(device)[1]
-##        space_free_cuda = torch.cuda.mem_get_info(device)[0]
-##        percentage_free_space = space_free_cuda / space_total_cuda
-##        free_space_devices.append(percentage_free_space)
-##        Console.add_lines(f" GPU {device} [MB]: {space_free_cuda / (1024 ** 2)} / {space_total_cuda / (1024 ** 2)}")
-##
-##    Console.printf_collected_lines("info")
-##    index_most_free_space = free_space_devices.index(max(free_space_devices))
-##
-##    print(f"On GPU {index_most_free_space} most free space at moment!")
-##    torch.cuda.set_device(index_most_free_space)
+    def __init__(self, spectral_model, sub_volume_shape: tuple = None):  # TODO class Type
+        self.spectral_spatial_model: SpectralSpatialModel = spectral_model
+        self.whole_volume: np.memmap = None
+        self.sub_volume_iterator = None
+        self.path_cache: str = spectral_model.path_cache # TODO use configurator instead!!!!!!!!
+        self.sub_volume_shape: tuple = sub_volume_shape
 
-
-## def check_required_space_GPU(data: torch.Tensor) -> bool:
-##     # torch.cuda.empty_cache()
-##     space_required_mb_cuda = np.prod(data.shape) * np.dtype(data.dtype).itemsize * 1 / (1024 ** 2)
-##     space_free_cuda = torch.cuda.mem_get_info()[0] * 1 / (1024 ** 2)  # free memory on GPU [MB]
-##     space_total_cuda = torch.cuda.mem_get_info()[1] * 1 / (1024 ** 2)  # total memory on GPU [MB]
-##
-##     if space_required_mb_cuda <= space_free_cuda:
-##         Console.printf("info", f"Possible to put whole tensor of size '{space_required_mb_cuda}' on GPU. Available: {space_free_cuda} ")
-##     else:
-##         Console.printf("info", f"Not possible to put whole tensor of size '{space_required_mb_cuda}' on GPU. Available: {space_free_cuda}")
-##
-##     return space_required_mb_cuda <= space_free_cuda
-
-#class Model:
-#    def __init__(self, model): # TODO class Type
-#        self.spectral_spatial_model = model
-#        self.volume: np.memmap = None
-#        self.sub_volume_iterator
-
-    # build() -> arguments: cartesian, non-cartesian
+    # build() -> put next two functions inside, also build make sub-volume?
     # cartesian_FT
     # non-cartesian_FT
 
     # get_sub_volume(i_x,i_y,i_z)
-    # get_sub_volume_iterator()
+    # get_sub_volume_iterative()
 
+    def build(self):
+        raise NotImplementedError("This method is not yet implemented")
 
-def cartesian_FT(model: SpectralSpatialModel, path_cache: str, file_name_cache: str, auto_gpu: bool = True, custom_batch_size: int = None):
-    Console.printf_section("Sampling -> FFT")
+    def create_sub_volume_iterative(self) -> None:
+        """
+        To divide the main volume in sub volumes. Each sub volume has an index in the main volume.
+        Also, these sub-volumes are iterable then and represent the main volume.
+        However, it is stored in an extra variable.
 
-    # Get the new shape of the target volume ([x,y,z,1,t] -> [x,y,z,t])
-    v = model.volume
-    volume_shape = v.shape[0], v.shape[1], v.shape[2], v.shape[4]
+        :return: Nothing
+        """
 
-    # Create the memmap file for the target volume
-    path_cache_file = os.path.join(path_cache, f"{file_name_cache}_sampling_volume.npy")
-    volume_cache = np.memmap(path_cache_file, dtype=model.volume.dtype, mode='w+', shape=volume_shape)
-    Console.printf("info", f"Create new cache volume with shape {volume_shape} for 'sampling' in path: {path_cache_file}")
+        self.sub_volume_iterator = SubVolumeDataset(volume=self.whole_volume, sub_volume_shape=self.sub_volume_shape)
 
-    # OPTION 1: Use the GPU
-    if torch.cuda.is_available() and auto_gpu:
+    def get_sub_volume(self, i_x: int, i_y: int, i_z: int) -> torch.Tensor:
+        """
+        To get sub-volume by index. Each sub volume has an index in the main volume.
 
-        # (a) Estimate space required to put whole tensor on GPU (bytes)
-        #     Also: Check if required space is available and select the least busy GPU!
-        space_required_bytes = np.prod(model.volume.shape) * np.dtype(model.volume.dtype).itemsize
-        configurator_gpu = ConfiguratorGPU(required_space_gpu=space_required_bytes)
-        configurator_gpu.print_available_gpus()
-        configurator_gpu.select_least_busy_gpu()
+        :param i_x: index of sub-volume in the main volume along x-axis
+        :param i_y: index of sub-volume in the main volume along y-axis
+        :param i_z: index of sub-volume in the main volume along z-axis
+        :return: 4D sub-volume of desired index with shape
+        """
 
-        # (b) Create custom dataset, it transforms the numpy memmap to a torch tensor
-        #     Also, calculate max batch size that fits on GPU.
-        dataset = VolumeForFFTDataset(data=model.volume, device="cuda")
-        number_of_batches = np.ceil(configurator_gpu.required_space_gpu / configurator_gpu.free_space_selected_gpu)
-        size_of_batches = int(np.floor(len(dataset) / number_of_batches))
+        # create sub volume first if not exists
+        if self.sub_volume_shape is None:
+            self.create_sub_volume_iterative()
 
-        # (c) Create the Dataloader with the Custom Dataset. Based on the batch size, the DataLoader creates a
-        #     number n batches.
-        size_of_batches = size_of_batches if custom_batch_size is None else custom_batch_size
-        Console.add_lines(f"Performing cartesian FFT on CPU")
-        if custom_batch_size is not None:
-            Console.add_lines(f"Manual user selected batch size: {custom_batch_size}")
+        return self.sub_volume_iterator.get_by_index(i_x, i_y, i_z)
+
+    def cartesian_FT(self, file_name_cache: str, auto_gpu: bool = True, custom_batch_size: int = None):
+        """
+        Cartesian Fourier Transformation of the 4D volume. Thus, for each volume in time a FT is performed
+        (for each 'time point' in [:,:,:,'time point']) and then the data is merged again.
+        For example, let the shape be (112, 128, 80, 1536), then for the 1536 time points the volume (112, 128, 80)
+                     is FT separate and then merged -> Yielding a target volume of (112, 128, 80, 1536) again.
+
+        :param file_name_cache: name of the cache file on disk where target volume (numpy memmap) should be stored
+        :param auto_gpu: select if the Fourier Transformation (FT) should be automatically performed on GPU if available
+        :param custom_batch_size: custom shape of each batch processed. If not set, then automatic batch size is selected
+        by the method (for GPU computation depending on available space, and for CPU simply one).
+        :return:
+        """
+
+        # TODO: Also implement to load if file_name_cache is available in cache path!
+        Console.printf_section("Sampling -> FFT")
+
+        # Get the new shape of the target volume ([x,y,z,1,t] -> [x,y,z,t])
+        v = self.spectral_spatial_model.volume
+        volume_shape = v.shape[0], v.shape[1], v.shape[2], v.shape[4]
+
+        # Create the memmap file for the target volume
+        path_cache_file = os.path.join(self.path_cache, f"{file_name_cache}_sampling_volume.npy")
+        self.whole_volume = np.memmap(path_cache_file, dtype=self.spectral_spatial_model.volume.dtype, mode='w+', shape=volume_shape)
+        Console.printf("info", f"Create new cache volume with shape {volume_shape} for 'sampling' in path: {path_cache_file}")
+
+        # OPTION 1: Use the GPU
+        if torch.cuda.is_available() and auto_gpu:
+
+            # (a) Estimate space required to put whole tensor on GPU (bytes)
+            #     Also: Check if required space is available and select the least busy GPU!
+            space_required_bytes = np.prod(self.spectral_spatial_model.volume.shape) * np.dtype(self.spectral_spatial_model.volume.dtype).itemsize
+            configurator_gpu = ConfiguratorGPU(required_space_gpu=space_required_bytes)
+            configurator_gpu.print_available_gpus()
+            configurator_gpu.select_least_busy_gpu()
+
+            # (b) Create custom dataset, it transforms the numpy memmap to a torch tensor
+            #     Also, calculate max batch size that fits on GPU.
+            dataset = VolumeForFFTDataset(data=self.spectral_spatial_model.volume, device="cuda")
+            number_of_batches = np.ceil(configurator_gpu.required_space_gpu / configurator_gpu.free_space_selected_gpu)
+            size_of_batches = int(np.floor(len(dataset) / number_of_batches))
+
+            # (c) Create the Dataloader with the Custom Dataset. Based on the batch size, the DataLoader creates a
+            #     number n batches.
+            size_of_batches = size_of_batches if custom_batch_size is None else custom_batch_size
+            Console.add_lines(f"Performing cartesian FFT on CPU")
+            if custom_batch_size is not None:
+                Console.add_lines(f"Manual user selected batch size: {custom_batch_size}")
+            else:
+                Console.add_lines(f"Automatically set batch size (based on free GPU space): {size_of_batches}")
+            Console.printf_collected_lines("info")
+            dataloader = DataLoader(dataset=dataset,
+                                    batch_size=size_of_batches,
+                                    shuffle=False,
+                                    drop_last=False)
+
+        # OPTION 2: Use the CPU
         else:
-            Console.add_lines(f"Automatically set batch size (based on free GPU space): {size_of_batches}")
-        Console.printf_collected_lines("info")
-        dataloader = DataLoader(dataset=dataset,
-                                batch_size=size_of_batches,
-                                shuffle=False,
-                                drop_last=False)
+            dataset = VolumeForFFTDataset(data=self.spectral_spatial_model.volume, device="cpu")
+            size_of_batches = len(dataset) if custom_batch_size is None else custom_batch_size
+            if custom_batch_size is not None:
+                Console.add_lines(f"Manual chosen batch size by user: {custom_batch_size}")
+            else:
+                Console.add_lines(f"Automatically set batch size: {size_of_batches}")
+            Console.printf_collected_lines("info")
+            dataloader = DataLoader(dataset=dataset,
+                                    batch_size=size_of_batches,
+                                    shuffle=False,
+                                    drop_last=False)
 
-    # OPTION 2: Use the CPU
-    else:
-        dataset = VolumeForFFTDataset(data=model.volume, device="cpu")
-        size_of_batches = len(dataset) if custom_batch_size is None else custom_batch_size
-        if custom_batch_size is not None:
-            Console.add_lines(f"Manual chosen batch size by user: {custom_batch_size}")
-        else:
-            Console.add_lines(f"Automatically set batch size: {size_of_batches}")
-        Console.printf_collected_lines("info")
-        dataloader = DataLoader(dataset=dataset,
-                                batch_size=size_of_batches,
-                                shuffle=False,
-                                drop_last=False)
+        # The following fits for GPU and CPU:
+        indent = " " * 22
+        # (1) Iterate through each batch. If GPU is chosen, then the respective batch is put on the GPU (see VolumeForFFTDataset)
+        for i, (batch, indices) in tqdm(enumerate(dataloader), total=len(dataloader), desc=indent + "3D FFT of batches (each t in [:,:,:,t])", position=0):
+            # change order of batch from [t,x,y,z] back to [x,y,z,t] because DataLoader changes it automatically!
+            batch = batch.permute(1, 2, 3, 0)
+            batch_size = batch.size()[-1]
 
-    # The following fits for GPU and CPU:
-    indent = " " * 22
-    # (1) Iterate through each batch. If GPU is chosen, then the respective batch is put on the GPU (see VolumeForFFTDataset)
-    for i, (batch, indices) in tqdm(enumerate(dataloader), total=len(dataloader), desc=indent + "3D FFT of batches (each t in [:,:,:,t])", position=0):
-        # change order of batch from [t,x,y,z] back to [x,y,z,t] because DataLoader changes it automatically!
-        batch = batch.permute(1, 2, 3, 0)
-        batch_size = batch.size()[-1]
+            # (2) Iterate through each time point of the whole volume [:,:,:,t] and do FFT (the fast one ;)).
+            for t in range(batch_size):
+                batch[:, :, :, t] = torch.fft.fftn(batch[:, :, :, t])
 
-        # (2) Iterate through each time point of the whole volume [:,:,:,t] and do FFT (the fast one ;)).
-        for t in range(batch_size):
-            batch[:, :, :, t] = torch.fft.fftn(batch[:, :, :, t])
+            # (3) Ensure that the volume is back on the CPU when assigning it to the target volume on disk (the memmap)
+            #     it has no effect, if the task was already performed on the CPU!
+            self.whole_volume[:, :, :, indices] = batch.cpu().numpy()
 
-        # (3) Ensure that the volume is back on the CPU when assigning it to the target volume on disk (the memmap)
-        #     it has no effect, if the task was already performed on the CPU!
-        volume_cache[:, :, :, indices] = batch.cpu()
+            # (4) Flush the changes to disk (memmap cache file)
+            self.whole_volume.flush()
 
-        # (4) Also ensure that the cache on the GPU is released. has no effect if it was performed on the CPU!
-        torch.cuda.empty_cache()
+            # (5) Also ensure that the cache on the GPU is released. has no effect if it was performed on the CPU!
+            torch.cuda.empty_cache()
 
+    def non_cartesian_FT(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
 
-def non_cartesian_FT():
-    pass
-# def non_cartesian
+    # def non_cartesian
 
-# Requirement:
-# -> Cartesian FFT
-# -> Non cartesian FFT
+    # Requirement:
+    # -> Cartesian FFT
+    # -> Non cartesian FFT

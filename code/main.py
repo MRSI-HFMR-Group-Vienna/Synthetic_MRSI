@@ -6,6 +6,7 @@ import file
 from printer import Console
 from display import plot_FID, plot_FIDs
 import sampling
+from spectral_spatial_simulation import MetabolicScalingMap
 
 
 def zen_of_python():
@@ -56,7 +57,6 @@ if __name__ == '__main__':
 
 
     # Create random distribution with values in the range [0.0, 1.0]
-    random_scaling = np.random.uniform(low=0.0, high=1.0, size=metabolic_mask.data.shape)
 
     # Load FID of metabolites
     metabolites = file.FID(configurator=configurator,
@@ -86,11 +86,22 @@ if __name__ == '__main__':
     #spectral_model.build()
 
 
-    loaded_fid.sum_all_signals()
+    #loaded_fid.sum_all_signals()
+
+    random_scaling_maps_list = []
+    for name in loaded_fid.name:
+        random_scaling = np.random.uniform(low=0.0, high=1.0, size=metabolic_mask.data.shape)
+        scaling_map = MetabolicScalingMap(name=name, map=random_scaling, unit=None)
+        random_scaling_maps_list.append(scaling_map)
+
 
     spectral_model.add_fid(loaded_fid)
     spectral_model.add_mask(metabolic_mask.data)
-    spectral_model.add_fid_scaling_map(random_scaling) # add ScalingMap (for each metabolite)
+    spectral_model.add_fid_scaling_maps(fid_scaling_maps=random_scaling_maps_list) # add ScalingMap (for each metabolite)
     spectral_model.build()
 
-    sampling.cartesian_FT(spectral_model, auto_gpu=True, path_cache=path_cache, file_name_cache="25022024", custom_batch_size=200)
+    sampling_model = sampling.Model(spectral_model=spectral_model, sub_volume_shape=(14,16,10)) # for main volume 112, 128, 80
+    sampling_model.cartesian_FT(file_name_cache="25022024")
+    sampling_model.create_sub_volume_iterative()
+    # TODO
+    #sampling.cartesian_FT(spectral_model, auto_gpu=True, path_cache=path_cache, file_name_cache="25022024", custom_batch_size=200)
