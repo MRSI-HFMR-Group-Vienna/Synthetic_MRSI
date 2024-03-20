@@ -1,0 +1,293 @@
+digraph G {
+concentrate=true;
+splines="ortho";
+rankdir="LR";
+subgraph legend{
+    rank = min;
+    label = "legend";
+    Legend [shape=none, margin=0, label = <
+        <table cellspacing="0" cellpadding="0" border="1"><tr><td>Code2flow Legend</td></tr><tr><td>
+        <table cellspacing="0">
+        <tr><td>Regular function</td><td width="50px" bgcolor='#cccccc'></td></tr>
+        <tr><td>Trunk function (nothing calls this)</td><td bgcolor='#966F33'></td></tr>
+        <tr><td>Leaf function (this calls nothing else)</td><td bgcolor='#6db33f'></td></tr>
+        <tr><td>Function call</td><td><font color='black'>&#8594;</font></td></tr>
+        </table></td></tr></table>
+        >];
+}node_a546656b [label="0: (global)()" name="file::(global)" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_cb105c07 [label="235: __init__()" name="file::Configurator.__init__" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_4485d578 [label="247: load()" name="file::Configurator.load" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_a68ef6f3 [label="280: print_formatted()" name="file::Configurator.print_formatted" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_4d7bb378 [label="261: save()" name="file::Configurator.save" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_86d61a1c [label="401: __assign_signal_to_compound()" name="file::FID.__assign_signal_to_compound" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_1928c1e8 [label="383: __transform_signal_complex()" name="file::FID.__transform_signal_complex" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_5b968b3a [label="361: load()" name="file::FID.load" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_cdf50b3e [label="425: show_parameters()" name="file::FID.show_parameters" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_6225f2f0 [label="109: load_m_file()" name="file::JMRUI.load_m_file" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_fb140327 [label="27: __init__()" name="file::JMRUI2.__init__" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_1b3ede8b [label="32: load_m_file()" name="file::JMRUI2.load_m_file" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_281953e9 [label="85: show_parameters()" name="file::JMRUI2.show_parameters" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_249f4a8f [label="298: load()" name="file::Mask.load" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_4459aa68 [label="192: __init__()" name="file::NeuroImage.__init__" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_d0378e41 [label="201: load_nii()" name="file::NeuroImage.load_nii" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_b0d76192 [label="0: (global)()" name="main::(global)" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_4a4628a7 [label="68: add_lines()" name="printer::Console.add_lines" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_a09c73aa [label="102: ask_user()" name="printer::Console.ask_user" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_4d498117 [label="78: printf_collected_lines()" name="printer::Console.printf_collected_lines" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_b96832ea [label="90: printf_section()" name="printer::Console.printf_section" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_5f35d979 [label="157: start_timer()" name="printer::Console.start_timer" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_2ad0807c [label="167: stop_timer()" name="printer::Console.stop_timer" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_104f721b [label="161: cartesian_FT()" name="sampling::Model.cartesian_FT" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_39c0d57c [label="134: create_sub_volume_iterative()" name="sampling::Model.create_sub_volume_iterative" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_a81cdff7 [label="145: get_sub_volume()" name="sampling::Model.get_sub_volume" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_27e4b897 [label="26: __init__()" name="sampling::SubVolumeDataset.__init__" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_6e17a1ec [label="47: _initialize_indices()" name="sampling::SubVolumeDataset._initialize_indices" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_e69af446 [label="31: get_by_index()" name="sampling::SubVolumeDataset.get_by_index" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_e25e84d3 [label="94: __init__()" name="sampling::VolumeForFFTDataset.__init__" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_02b5e7d4 [label="139: __getitem__()" name="spatial_metabolic_distribution::MetabolicPropertyMap.__getitem__" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_555d0920 [label="71: __init__()" name="spatial_metabolic_distribution::MetabolicPropertyMap.__init__" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_28e1a1b6 [label="178: __mul__()" name="spatial_metabolic_distribution::MetabolicPropertyMap.__mul__" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_3d76493d [label="160: __next__()" name="spatial_metabolic_distribution::MetabolicPropertyMap.__next__" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_22469e57 [label="118: __add__()" name="spectral_spatial_simulation::FID.__add__" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_03e685e1 [label="19: __init__()" name="spectral_spatial_simulation::FID.__init__" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_272c3fa2 [label="151: __str__()" name="spectral_spatial_simulation::FID.__str__" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_1b25855e [label="198: __init__()" name="spectral_spatial_simulation::Model.__init__" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_38ec6330 [label="212: add_fid()" name="spectral_spatial_simulation::Model.add_fid" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_6a76e125 [label="261: add_fid_scaling_maps()" name="spectral_spatial_simulation::Model.add_fid_scaling_maps" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_cc93b3a3 [label="273: build()" name="spectral_spatial_simulation::Model.build" shape="rect" style="rounded,filled" fillcolor="#966F33" ];
+node_dea319ab [label="242: __init__()" name="tools::ConfiguratorGPU.__init__" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_abfb1f41 [label="266: print_available_gpus()" name="tools::ConfiguratorGPU.print_available_gpus" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_697951b0 [label="250: select_least_busy_gpu()" name="tools::ConfiguratorGPU.select_least_busy_gpu" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_45716b2d [label="311: for_numpy()" name="tools::SpaceEstimator.for_numpy" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_62440815 [label="12: __init__()" name="tools::SubVolumeDataset.__init__" shape="rect" style="rounded,filled" fillcolor="#6db33f" ];
+node_6430feb3 [label="100: compute()" name="tools::SubVolumeDataset.compute" shape="rect" style="rounded,filled" fillcolor="#cccccc" ];
+node_a546656b -> node_cb105c07 [color="#009E73" penwidth="2"];
+node_a546656b -> node_249f4a8f [color="#009E73" penwidth="2"];
+node_4d7bb378 -> node_a09c73aa [color="#000000" penwidth="2"];
+node_86d61a1c -> node_4a4628a7 [color="#F0E442" penwidth="2"];
+node_86d61a1c -> node_4a4628a7 [color="#F0E442" penwidth="2"];
+node_86d61a1c -> node_4d498117 [color="#F0E442" penwidth="2"];
+node_5b968b3a -> node_86d61a1c [color="#56B4E9" penwidth="2"];
+node_5b968b3a -> node_1928c1e8 [color="#56B4E9" penwidth="2"];
+node_5b968b3a -> node_5b968b3a [color="#56B4E9" penwidth="2"];
+node_5b968b3a -> node_fb140327 [color="#56B4E9" penwidth="2"];
+node_5b968b3a -> node_1b3ede8b [color="#56B4E9" penwidth="2"];
+node_cdf50b3e -> node_4a4628a7 [color="#D55E00" penwidth="2"];
+node_cdf50b3e -> node_4d498117 [color="#D55E00" penwidth="2"];
+node_6225f2f0 -> node_4a4628a7 [color="#000000" penwidth="2"];
+node_6225f2f0 -> node_4d498117 [color="#000000" penwidth="2"];
+node_281953e9 -> node_4a4628a7 [color="#E69F00" penwidth="2"];
+node_281953e9 -> node_4d498117 [color="#E69F00" penwidth="2"];
+node_249f4a8f -> node_4485d578 [color="#CC79A7" penwidth="2"];
+node_249f4a8f -> node_4459aa68 [color="#CC79A7" penwidth="2"];
+node_249f4a8f -> node_d0378e41 [color="#CC79A7" penwidth="2"];
+node_b0d76192 -> node_a68ef6f3 [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_b96832ea [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_5f35d979 [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_2ad0807c [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_104f721b [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_39c0d57c [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_555d0920 [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_38ec6330 [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_6a76e125 [color="#56B4E9" penwidth="2"];
+node_b0d76192 -> node_6430feb3 [color="#56B4E9" penwidth="2"];
+node_104f721b -> node_e25e84d3 [color="#009E73" penwidth="2"];
+node_104f721b -> node_e25e84d3 [color="#009E73" penwidth="2"];
+node_104f721b -> node_dea319ab [color="#009E73" penwidth="2"];
+node_104f721b -> node_abfb1f41 [color="#009E73" penwidth="2"];
+node_104f721b -> node_697951b0 [color="#009E73" penwidth="2"];
+node_104f721b -> node_45716b2d [color="#009E73" penwidth="2"];
+node_39c0d57c -> node_27e4b897 [color="#F0E442" penwidth="2"];
+node_a81cdff7 -> node_39c0d57c [color="#CC79A7" penwidth="2"];
+node_a81cdff7 -> node_e69af446 [color="#CC79A7" penwidth="2"];
+node_27e4b897 -> node_6e17a1ec [color="#CC79A7" penwidth="2"];
+node_02b5e7d4 -> node_555d0920 [color="#F0E442" penwidth="2"];
+node_555d0920 -> node_62440815 [color="#000000" penwidth="2"];
+node_555d0920 -> node_62440815 [color="#000000" penwidth="2"];
+node_555d0920 -> node_62440815 [color="#000000" penwidth="2"];
+node_28e1a1b6 -> node_555d0920 [color="#D55E00" penwidth="2"];
+node_3d76493d -> node_555d0920 [color="#0072B2" penwidth="2"];
+node_22469e57 -> node_03e685e1 [color="#CC79A7" penwidth="2"];
+node_272c3fa2 -> node_4a4628a7 [color="#56B4E9" penwidth="2"];
+node_272c3fa2 -> node_4a4628a7 [color="#56B4E9" penwidth="2"];
+node_272c3fa2 -> node_4a4628a7 [color="#56B4E9" penwidth="2"];
+node_272c3fa2 -> node_4d498117 [color="#56B4E9" penwidth="2"];
+node_1b25855e -> node_03e685e1 [color="#D55E00" penwidth="2"];
+node_6a76e125 -> node_4a4628a7 [color="#0072B2" penwidth="2"];
+node_6a76e125 -> node_4a4628a7 [color="#0072B2" penwidth="2"];
+node_6a76e125 -> node_4d498117 [color="#0072B2" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4a4628a7 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_a09c73aa [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_a09c73aa [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4d498117 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_4d498117 [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_b96832ea [color="#009E73" penwidth="2"];
+node_cc93b3a3 -> node_45716b2d [color="#009E73" penwidth="2"];
+node_abfb1f41 -> node_4a4628a7 [color="#E69F00" penwidth="2"];
+node_abfb1f41 -> node_4a4628a7 [color="#E69F00" penwidth="2"];
+node_abfb1f41 -> node_4d498117 [color="#E69F00" penwidth="2"];
+node_6430feb3 -> node_6430feb3 [color="#009E73" penwidth="2"];
+subgraph cluster_9968088c {
+    node_a546656b;
+    label="File: file";
+    name="file";
+    style="filled";
+    graph[style=dotted];
+    subgraph cluster_e650f7a9 {
+        node_fb140327 node_1b3ede8b node_281953e9;
+        label="Class: JMRUI2";
+        name="JMRUI2";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_3a782127 {
+        node_6225f2f0;
+        label="Class: JMRUI";
+        name="JMRUI";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_4b3a28bf {
+        node_4459aa68 node_d0378e41;
+        label="Class: NeuroImage";
+        name="NeuroImage";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_a606fd10 {
+        node_cb105c07 node_4485d578 node_4d7bb378 node_a68ef6f3;
+        label="Class: Configurator";
+        name="Configurator";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_aa132711 {
+        node_249f4a8f;
+        label="Class: Mask";
+        name="Mask";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_198610b3 {
+        node_5b968b3a node_1928c1e8 node_86d61a1c node_cdf50b3e;
+        label="Class: FID";
+        name="FID";
+        style="filled";
+        graph[style=dotted];
+    };
+};
+subgraph cluster_122f4f76 {
+    node_b0d76192;
+    label="File: main";
+    name="main";
+    style="filled";
+    graph[style=dotted];
+};
+subgraph cluster_864c93ec {
+    label="File: printer";
+    name="printer";
+    style="filled";
+    graph[style=dotted];
+    subgraph cluster_c6ef7f87 {
+        node_4a4628a7 node_4d498117 node_b96832ea node_a09c73aa node_5f35d979 node_2ad0807c;
+        label="Class: Console";
+        name="Console";
+        style="filled";
+        graph[style=dotted];
+    };
+};
+subgraph cluster_9015ef0e {
+    label="File: sampling";
+    name="sampling";
+    style="filled";
+    graph[style=dotted];
+    subgraph cluster_4e77d1b9 {
+        node_27e4b897 node_e69af446 node_6e17a1ec;
+        label="Class: SubVolumeDataset";
+        name="SubVolumeDataset";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_009237f4 {
+        node_e25e84d3;
+        label="Class: VolumeForFFTDataset";
+        name="VolumeForFFTDataset";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_9d8269ce {
+        node_39c0d57c node_a81cdff7 node_104f721b;
+        label="Class: Model";
+        name="Model";
+        style="filled";
+        graph[style=dotted];
+    };
+};
+subgraph cluster_8ee31e5c {
+    label="File: spatial_metabolic_distribution";
+    name="spatial_metabolic_distribution";
+    style="filled";
+    graph[style=dotted];
+    subgraph cluster_69100025 {
+        node_555d0920 node_02b5e7d4 node_3d76493d node_28e1a1b6;
+        label="Class: MetabolicPropertyMap";
+        name="MetabolicPropertyMap";
+        style="filled";
+        graph[style=dotted];
+    };
+};
+subgraph cluster_8eb03d88 {
+    label="File: spectral_spatial_simulation";
+    name="spectral_spatial_simulation";
+    style="filled";
+    graph[style=dotted];
+    subgraph cluster_ac22b120 {
+        node_03e685e1 node_22469e57 node_272c3fa2;
+        label="Class: FID";
+        name="FID";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_92ecfe01 {
+        node_1b25855e node_38ec6330 node_6a76e125 node_cc93b3a3;
+        label="Class: Model";
+        name="Model";
+        style="filled";
+        graph[style=dotted];
+    };
+};
+subgraph cluster_d8d9f44d {
+    label="File: tools";
+    name="tools";
+    style="filled";
+    graph[style=dotted];
+    subgraph cluster_9657ce79 {
+        node_62440815 node_6430feb3;
+        label="Class: SubVolumeDataset";
+        name="SubVolumeDataset";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_d4e042d9 {
+        node_dea319ab node_697951b0 node_abfb1f41;
+        label="Class: ConfiguratorGPU";
+        name="ConfiguratorGPU";
+        style="filled";
+        graph[style=dotted];
+    };
+    subgraph cluster_2b4be98a {
+        node_45716b2d;
+        label="Class: SpaceEstimator";
+        name="SpaceEstimator";
+        style="filled";
+        graph[style=dotted];
+    };
+};
+}

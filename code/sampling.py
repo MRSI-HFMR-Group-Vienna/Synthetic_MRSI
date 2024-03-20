@@ -1,8 +1,10 @@
 from spectral_spatial_simulation import Model as SpectralSpatialModel
 from torch.utils.data import Dataset, DataLoader
+from tools import ConfiguratorGPU
 from file import Console
 from tqdm import tqdm
 import numpy as np
+import tools
 import torch
 import sys
 
@@ -107,73 +109,6 @@ class VolumeForFFTDataset(Dataset):
         return batch, idx  # Return batch and corresponding indices
 
 
-class ConfiguratorGPU():
-    def __init__(self, required_space_gpu: float):
-
-        torch.cuda.empty_cache()
-        # self.dataset: torch.Tensor = dataset
-        self.available_gpus: int = torch.cuda.device_count()
-        self.selected_gpu: int = None
-        self.required_space_gpu = required_space_gpu
-
-        # self.required_space_gpu: torch.Tensor = dataset.element_size() * dataset.numel()
-
-        # print(self.required_space_gpu / (1024**2))
-        # input("-----")
-        # self.required_space_gpu: torch.Tensor = torch.prod(dataset.shape) * torch.dtype(dataset).itemsize  # in bytes?
-        self.free_space_selected_gpu: torch.Tensor = None
-
-    def select_least_busy_gpu(self):
-        # based on percentage free
-        free_space_devices = []
-        for device in range(self.available_gpus):
-            space_total_cuda = torch.cuda.mem_get_info(device)[1]
-            space_free_cuda = torch.cuda.mem_get_info(device)[0]
-            percentage_free_space = space_free_cuda / space_total_cuda
-            free_space_devices.append(percentage_free_space)
-
-        self.selected_gpu = free_space_devices.index(max(free_space_devices))
-
-        torch.cuda.set_device(self.selected_gpu)
-        Console.printf("info", f"Selected GPU {self.selected_gpu} -> most free space at moment!")
-
-        self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
-
-    def print_available_gpus(self):
-        Console.add_lines("Available GPU(s) and free space on it:")
-
-        for device in range(self.available_gpus):
-            space_total_cuda = torch.cuda.mem_get_info(device)[1]
-            space_free_cuda = torch.cuda.mem_get_info(device)[0]
-            percentage_free_space = space_free_cuda / space_total_cuda
-            Console.add_lines(f" GPU {device} [MB]: {space_free_cuda / (1024 ** 2)} / {space_total_cuda / (1024 ** 2)} ({round(percentage_free_space, 2) * 100}%)")
-
-        Console.printf_collected_lines("info")
-
-    def select_gpu(self, gpu_index: int = 0):
-        torch.cuda.set_device(gpu_index)
-        self.selected_gpu = gpu_index
-        Console.printf("info", f"Selected GPU {gpu_index} -> manually selected by the user!")
-
-    def enough_space_available(self) -> bool:
-
-        if self.selected_gpu is not None:
-            self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
-
-            if self.required_space_gpu <= self.free_space_selected_gpu:
-                Console.printf("info",
-                               f"Possible to put whole tensor of size {self.required_space_gpu / (1024 ** 2)} [MB] on GPU. Available: {self.free_space_selected_gpu / (1024 ** 2)} [MB]")
-            else:
-                Console.printf("info",
-                               f"Not possible to put whole tensor of size {self.required_space_gpu / (1024 ** 2)} [MB] on GPU. Available: {self.free_space_selected_gpu / (1024 ** 2)} [MB]")
-
-        else:
-            Console.printf("error", f"No GPU is selected. Number of available GPUs: {self.available_gpus}")
-            sys.exit()
-
-        return self.required_space_gpu <= self.free_space_selected_gpu
-
-
 class Model:
     """
     TODO: Until now only contains functionalities to do cartesian FT and to get sub volume of transformed main volume.
@@ -254,7 +189,9 @@ class Model:
 
             # (a) Estimate space required to put whole tensor on GPU (bytes)
             #     Also: Check if required space is available and select the least busy GPU!
-            space_required_bytes = np.prod(self.spectral_spatial_model.volume.shape) * np.dtype(self.spectral_spatial_model.volume.dtype).itemsize
+            space_required_bytes = tools.SpaceEstimator.for_numpy(data_shape=self.spectral_spatial_model.volume.shape,
+                                                                  data_type=self.spectral_spatial_model.volume.dtype,
+                                                                  unit="byte")
             configurator_gpu = ConfiguratorGPU(required_space_gpu=space_required_bytes)
             configurator_gpu.print_available_gpus()
             configurator_gpu.select_least_busy_gpu()

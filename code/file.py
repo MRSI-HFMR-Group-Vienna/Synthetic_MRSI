@@ -353,7 +353,7 @@ class FID:
     the Real and Imaginary part in the file given as (Re, Im) -> Re + j*Im.
     """
 
-    def __init__(self, configurator: Configurator, concentrations: np.ndarray = None, t2_values: np.ndarray = None):
+    def __init__(self, configurator: Configurator):
         self.configurator = configurator
         self.parameters: dict = {}
         self.loaded_fid: spectral_spatial_simulation.FID = spectral_spatial_simulation.FID()
