@@ -1,17 +1,11 @@
-import sys
-
 import default
-from spectral_spatial_simulation import FID
-import numpy as np
-import spectral_spatial_simulation
-import file
-from printer import Console
-from display import plot_FID, plot_FIDs
-import sampling
-import pint
+
 from spatial_metabolic_distribution import MetabolicPropertyMap
-from tools import SubVolumeDataset
-import dask
+from printer import Console
+import numpy as np
+import pint
+import file
+import sys
 
 
 def zen_of_python():
@@ -97,11 +91,7 @@ if __name__ == '__main__':
 
     Console.start_timer()
 
-######print(metabolic_property_map_1[5]._t1.get_global_index_in_sub_volume(block_number=5, indices_sub_volume=(2, 2, 3)))
-######print(metabolic_property_map_1[5]._t1.blocks[0][2,2,3].compute())
-######print(t1_random_map[2,2,3]) # x -> z; y -> y; z -> x
 
-######input("=====================**")
 
     print(metabolic_property_map_1.chemical_compound_name)
     for i, m in enumerate(metabolic_property_map_1):
@@ -114,21 +104,6 @@ if __name__ == '__main__':
 
     #objects = dask.compute(*metabolic_property_maps)
     Console.stop_timer()
-
-    #Console.start_timer()
-    #for i, mmap in enumerate(metabolicPropertyMap):
-    #    #print(f"{i}: {type(mmap.t2.blocks[0].compute())}")
-    #    delayed_result = mmap.t2.compute()
-    #    print(i)
-    #
-    #Console.stop_timer()
-
-    #print(len(metabolicPropertyMap))
-    #metabolicPropertyMap[0]
-
-    #subVolumeDataset = SubVolumeDataset(main_volume=concentration_random_map, sub_volume_shape=(20, 20, 20))
-
-    #print(subVolumeDataset[5])
 
     sys.exit()
     input("~~~~~~~~~~~~+STOP+~~~~~~~~~~~~")

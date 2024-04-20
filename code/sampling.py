@@ -7,11 +7,8 @@ import numpy as np
 import tools
 import torch
 import sys
-
 import os
 
-
-# Class FourierTransform
 
 class SubVolumeDataset(Dataset):
     """

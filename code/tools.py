@@ -18,13 +18,6 @@ class SubVolumeDataset:
         #         (=thus sub-blocks).
         self.blocks_shape_xyz = blocks_shape_xyz
 
-        # When creating dask array out of numpy array the assumption is that it is the main array. If it is a dask array, the
-        # assumptions is that it is already a sub-array and thus it gives not the overall shape.
-        #if isinstance(main_volume, da.core.Array):
-        #    self.main_volume_shape = main_volume_shape
-        #else:
-        #    self.main_volume_shape = main_volume.shape
-
         if main_volume is None:
             Console.printf("error", f"Cannot create a SubVolumeDataset since the volume is None. Abort program!")
             sys.exit()

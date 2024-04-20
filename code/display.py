@@ -1,18 +1,13 @@
 import default
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import mplcursors  # Library for cursor hover functionality
-#from multimethod import multimethod
 import matplotlib
 
 # Use Agg backend when running without a GUI
 if not matplotlib.rcParams['backend']: # TODO TODO TODO
     matplotlib.use('Agg')
 
-
-# TODO remove: https://stackoverflow.com/questions/66711586/is-there-any-difference-between-multimethod-and-multipledispatch
-
-#@multimethod # uses for achieving some kind of "overload". However, keyword function call is then not supported anymore.
 def plot_FID(signal: np.ndarray, time: np.ndarray, title: str = "No Title") -> None:
     plt.plot(time, np.abs(signal), linestyle='-', color='black', linewidth=0.5)  # marker='.', markersize=0.2,
     plt.xlabel("Time")
@@ -24,7 +19,6 @@ def plot_FID(signal: np.ndarray, time: np.ndarray, title: str = "No Title") -> N
     plt.savefig('plot.svg') if matplotlib.rcParams['backend'] == 'agg' else plt.show()
 
 
-#@multimethod # uses for achieving some kind of "overload". However, keyword function call is then not supported anymore.
 def plot_FIDs(signal: dict[str, np.ndarray], time: np.ndarray, save_to_file: bool = False) -> None:
     # Create a figure and subplots with reduced vertical space
     num_subplots = len(signal)

@@ -23,7 +23,7 @@ class Model:
         # TODO. Create masks is in the simulator. Right place there?
         raise NotImplementedError("This method is not yet implemented")
 
-    def addt1_image(self):
+    def add_t1_image(self):
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 
@@ -42,7 +42,7 @@ class MetabolicAtlas:
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 
-    def transform_tot1(self):
+    def transform_to_t1(self):
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 
@@ -283,7 +283,7 @@ class Simulator:
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 
-    def transform_metabolic_atlas_tot1(self):
+    def transform_metabolic_atlas_to_t1(self):
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 

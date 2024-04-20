@@ -1,10 +1,9 @@
 import default
 
-import sys
-import time
-import textwrap
 from colorama import Fore, Back, Style
-
+import textwrap
+import time
+import sys
 
 class Console:
     __counter = 1  # Global __counter which will increase with each call of the printf function.

@@ -37,12 +37,13 @@
     "RunOnceActivity.OpenProjectViewOnStart": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "/dgx/projects/Master/LatentDiffusion/ALDM/VQ-GAN",
+    "last_opened_file_path": "/dgx/projects/Synthetic_MRSI/code",
     "settings.editor.selected.configurable": "preferences.sourceCode.JSON"
   }
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/code" />
       <recent name="$PROJECT_DIR$/code/config" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
