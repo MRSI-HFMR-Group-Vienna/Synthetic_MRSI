@@ -93,6 +93,7 @@ if __name__ == '__main__':
 
     # Create spectral spatial model
     simulation = spectral_spatial_simulation.Model(path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp',
+                                                   block_size=(1535, 10, 10, 10),
                                                    TE=0.0013,
                                                    TR=0.6,
                                                    alpha=45)

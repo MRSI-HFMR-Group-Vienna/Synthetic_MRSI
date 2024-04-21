@@ -40,7 +40,8 @@ class CustomArray(da.Array):
                 block_number: int = None,
                 block_idx: tuple = None,
                 main_volume_shape: tuple = None,
-                total_number_blocks: int = None,
+                main_volume_blocks: tuple = None,  # number blocks in each dimension
+                total_number_blocks: int = None,   # number blocks
                 unit: pint.UnitRegistry | str = None,
                 meta: dict = None):
         """
@@ -76,6 +77,13 @@ class CustomArray(da.Array):
         else:
             instance.total_number_blocks = total_number_blocks
 
+        # When main volume shape is None it will be assumed it is the main volume, thus set shape.
+        # If not None, then already set by main volume and it is a block!
+        if main_volume_blocks is None:
+            instance.main_volume_blocks = instance.numblocks
+        else:
+            instance.main_volume_blocks = main_volume_blocks
+
         instance.meta = meta
 
         return instance
@@ -96,18 +104,32 @@ class CustomArray(da.Array):
         :return: formatted string.
         """
         arr_repr = super().__repr__()  # Get the standard representation of the Dask array
-        x_global_start, y_global_start, z_global_start = self.get_global_index(0, 0, 0)
-        x_global_end, y_global_end, z_global_end = self.get_global_index(self.blocks.shape[0] - 1, self.blocks.shape[1] - 1, self.blocks.shape[2] - 1)
 
-        meta_repr = (f"\nBlock number: {self.block_number}/{self.total_number_blocks} "
-                     f"\nBlock coordinates: {self.block_idx} "
-                     f"\nEstimated size: {round(self.size_mb, 3)} MB "
-                     f"\nMain volume shape: {self.main_volume_shape} "
-                     f"\nMain volume coordinates: x={x_global_start}:{x_global_end} y={y_global_start}:{y_global_end} z={z_global_start}:{z_global_end} "
-                     f"\nUnit: {self.unit} "
-                     f"\nMetadata: {self.meta}")
+        # case 1: if main volume
+        if self.block_idx is None:
+            meta_repr = (f"\n  {'Type:':.<20} main volume"
+                         f"\n  {'Estimated size:':.<20} {round(self.size_mb, 3)} MB "
+                         f"\n  {'Unit:':.<20} {str(self.unit)} "
+                         f"\n  {'Metadata:':.<20} {str(self.meta)} ")
 
-        return arr_repr + meta_repr + "\n"  # Concatenate the two representations
+            return arr_repr + meta_repr + "\n"  # Concatenate the two representations
+
+        # case 2: if sub volume
+        else:
+            x_global_start, y_global_start, z_global_start = self.get_global_index(0, 0, 0)
+            x_global_end, y_global_end, z_global_end = self.get_global_index(self.shape[-3] - 1, self.shape[-2] - 1, self.shape[-1] - 1)
+
+            meta_repr = (f"\n  {'Type:':.<20} sub-volume of main volume "
+                         f"\n  {'Block number:':.<20} {self.block_number}/{self.total_number_blocks} "
+                         f"\n  {'Total number blocks':.<} {self.main_volume_blocks}"
+                         f"\n  {'Block coordinates:':.<20} {self.block_idx} "
+                         f"\n  {'Estimated size:':.<20} {round(self.size_mb, 3)} MB "
+                         f"\n  {'Main volume shape:':.<20} {self.main_volume_shape} "
+                         f"\n  {'Main volume coordinates:':.<20} x={x_global_start}:{x_global_end} y={y_global_start}:{y_global_end} z={z_global_start}:{z_global_end} "
+                         f"\n  {'Unit:':.<20} {self.unit} "
+                         f"\n  {'Metadata:':.<20} {self.meta}")
+
+            return arr_repr + meta_repr + "\n"  # Concatenate the two representations
 
     def __mul__(self, other):
         """
@@ -122,6 +144,7 @@ class CustomArray(da.Array):
                              block_idx=self.block_idx,
                              main_volume_shape=self.main_volume_shape,
                              total_number_blocks=self.total_number_blocks,
+                             main_volume_blocks=self.main_volume_blocks,
                              meta=self.meta)
 
         return result
@@ -147,9 +170,10 @@ class CustomArray(da.Array):
             print(f"Error: z block shape is only {self.shape[2]}, but index {z} was given")
             return
 
-        global_x = self.block_idx[0] * self.shape[0] + x
-        global_y = self.block_idx[1] * self.shape[1] + y
-        global_z = self.block_idx[2] * self.shape[2] + z
+        # with -3,-2,-1 use dimensions starting from the last position. Thus, it works fro larger than 3D arrays too.
+        global_x = self.block_idx[-3] * self.shape[-3] + x
+        global_y = self.block_idx[-2] * self.shape[-2] + y
+        global_z = self.block_idx[-1] * self.shape[-1] + z
 
         return global_x, global_y, global_z
 
@@ -162,7 +186,10 @@ class CustomArray(da.Array):
         :return: CustomBlockView
         """
 
-        block_view_object = CustomBlockView(self, main_volume_shape=self.main_volume_shape, total_number_blocks=self.total_number_blocks)
+        block_view_object = CustomBlockView(self,
+                                            main_volume_shape=self.main_volume_shape,
+                                            total_number_blocks=self.total_number_blocks,
+                                            main_volume_blocks=self.main_volume_blocks)
         return block_view_object
 
 
@@ -175,7 +202,7 @@ class CustomBlockView(da.core.BlockView):
     * Unit of the main volume in each block
     """
 
-    def __init__(self, custom_array: CustomArray, main_volume_shape: tuple=None, total_number_blocks: int=None):
+    def __init__(self, custom_array: CustomArray, main_volume_shape: tuple=None, total_number_blocks: int=None, main_volume_blocks: tuple=None):
         """
         Addition additional the main volume shape, the total number of blocks and the unit. Also, call the super constructor.
 
@@ -184,7 +211,8 @@ class CustomBlockView(da.core.BlockView):
         :param total_number_blocks:
         """
         self.main_volume_shape = main_volume_shape
-        self.total_number_blocks = total_number_blocks
+        self.total_number_blocks = total_number_blocks  # total number of blocks as int
+        self.main_volume_blocks = main_volume_blocks    # total number blocks in each dimension as tuple
         self.block_number = 0
         self.unit = custom_array.unit
         super().__init__(custom_array)
@@ -213,6 +241,7 @@ class CustomBlockView(da.core.BlockView):
                                         block_number=self.block_number,
                                         block_idx=index,
                                         main_volume_shape=self.main_volume_shape,
+                                        main_volume_blocks=self.main_volume_blocks,
                                         total_number_blocks=self.total_number_blocks,
                                         unit=self.unit)
 

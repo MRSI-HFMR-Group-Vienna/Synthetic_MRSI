@@ -182,7 +182,7 @@ class FID:
 
 class Model:
 
-    def __init__(self, TE: float, TR: float, alpha: float, path_cache: str = None):
+    def __init__(self, block_size: tuple, TE: float, TR: float, alpha: float, path_cache: str = None):
         if path_cache is not None:
             if os.path.exists(path_cache):
                 self.path_cache = path_cache
@@ -190,6 +190,8 @@ class Model:
                 Console.printf("error", f"Terminating the program. Path does not exist: {path_cache}")
                 sys.exit()
             dask.config.set(temporary_directory=path_cache)
+
+        self.block_size = block_size
 
         self.TE = TE
         self.TR = TR
@@ -261,10 +263,12 @@ class Model:
 
         Console.printf_collected_lines("success")
 
-    def _transform_T1(self, volume, alpha, TR, T1):
+    @staticmethod
+    def _transform_T1(volume, alpha, TR, T1):
         return volume * np.sin(np.deg2rad(alpha)) * (1 - da.exp(-TR / T1)) / (1 - (da.cos(np.deg2rad(alpha)) * da.exp(-TR / T1)))
 
-    def _transform_T2(self, volume, time_vector, TE, T2):
+    @staticmethod
+    def _transform_T2(volume, time_vector, TE, T2):
         for index, t in enumerate(time_vector):
             volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
         return volume
@@ -276,27 +280,26 @@ class Model:
 
             # Prepare the data & reshape it
             metabolite_name = fid.name[0]
-            block_size = self.metabolic_property_maps[metabolite_name].block_size
+            #block_size = self.metabolic_property_maps[metabolite_name].block_size
             fid_signal = da.from_array(fid.signal.reshape(fid.signal.size, 1, 1, 1))
             time_vector = da.from_array(fid.time)
             mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
-            mask = da.from_array(mask)
+            mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
             metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
             metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
-            #mask = da.from_array(mask)
 
             # (1) FID with 3D mask volume yields 4d volume
             volume_with_mask = fid_signal * mask
 
             # (2) Include T2 effects
-            volume_metabolite = da.map_blocks(self._transform_T2,
+            volume_metabolite = da.map_blocks(Model._transform_T2,
                                               volume_with_mask,
                                               time_vector,
                                               self.TE,
                                               metabolic_map_t2)
 
             # (3) Include T1 effects
-            volume_metabolite = da.map_blocks(self._transform_T1,
+            volume_metabolite = da.map_blocks(Model._transform_T1,
                                               volume_metabolite,
                                               self.alpha,
                                               self.TR,
@@ -314,6 +317,11 @@ class Model:
 
         # (7) Sum all metabolites
         volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
+        volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
+
+        print(da.compute(volume_sum_all_metabolites.blocks.ravel())) # 200
+        input("======= STOP HERE ========= in progress")
+
 
         volume_sum_all_metabolites.compute()
 
@@ -321,6 +329,14 @@ class Model:
 
     def build(self):
         pass
+
+#def transform_T1(volume, alpha, TR, T1):
+#    return volume * np.sin(np.deg2rad(alpha)) * (1 - da.exp(-TR / T1)) / (1 - (da.cos(np.deg2rad(alpha)) * da.exp(-TR / T1)))
+#
+#def transform_T2(volume, time_vector, TE, T2):
+#    for index, t in enumerate(time_vector):
+#        volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
+#    return volume
 
 
 ####class Model:
