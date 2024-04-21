@@ -2,256 +2,224 @@ from printer import Console
 import dask.array as da
 import numpy as np
 import torch
+import math
+import pint
 import sys
 
-import dask
+u = pint.UnitRegistry()  # for using units
 
 
-class SubVolumeDataset:
+class CustomArray(da.Array):
+    """
+    Extending the dask Array class with additional functionalities.
 
-    def __init__(self, main_volume: np.ndarray | np.memmap | da.core.Array, blocks_shape_xyz: tuple): #, main_volume_shape: tuple = None):
+    The Custom dask Array obtains the following additional features:
+    * block number of the individual block
+    * the block index (see how .blocks.reval() crates a list of blocks)
+    * the shape of the main volume in each individual block
+    * the total number of blocks in each individual block
+    * the unit
+    * custom metadata
 
-        # Case 1: If the main volume is already a task array, asarray() is called. The number of block will just
-        #         be one. Necessary for creating sub-volumes recursively in higher classes without the need to
-        #         call compute()
-        # Case 2: If the main volume is an numpy array, it will transform to a dask array and also create chunks
-        #         (=thus sub-blocks).
-        self.blocks_shape_xyz = blocks_shape_xyz
+    Further, consider the coordinate system of the axis 0 = x, axis 1 = y, axis 2 = z:
 
-        if main_volume is None:
-            Console.printf("error", f"Cannot create a SubVolumeDataset since the volume is None. Abort program!")
-            sys.exit()
-        elif isinstance(main_volume, da.core.Array):
-            self.dask_array: da.core.Array = main_volume #da.asarray(main_volume)
-        else:
-            self.dask_array: da.core.Array = da.from_array(main_volume, chunks=self.blocks_shape_xyz)
-
-        # Create the blocks and flatten it to 1D array, thus get kind of a list of all blocks!
-        # Using standard implementation: "C-style", it refers to the memory layout convention used by the C programming language.
-        self.blocks = self.dask_array.blocks.ravel()
-        self.number_of_blocks = len(self.blocks)
-        self.block_iterator: int = 0  # initial value, start at block 0
-
-    # TODO: necessary? def get_block_by_indices(self, x: int, y: int, z: int): Thus, by indices in main volume!
-
-    def get_block_by_number(self, block_number: int):
-        """
-        How the next block is selected by index:
-        By increasing the index, the next lock in z direction is selected until the end is reached. Then, we go to the next
-        line of blocks in y-direction and repeat the previous procedure. After we reached the end of the y- and x-direction,
-        (we iterated through one "x-y-plane"), we go one step in the x-direction. Then, the previous procedure is repeated.
-
-        The axes defining the coordinates of the sub-volume (chunks) in the main volume are defined as following:
-
-               origin
+                   origin
                  +----------> (+z)
                 /|
               /  |
             /    |
         (+x)     |
                  v (+y)
+
+        This is important when dealing with individual blocks of the whole volume. The block number is
+        increased first in z, then y and then x direction.
+    """
+
+    def __new__(cls,
+                dask_array: da.Array,
+                block_number: int = None,
+                block_idx: tuple = None,
+                main_volume_shape: tuple = None,
+                total_number_blocks: int = None,
+                unit: pint.UnitRegistry | str = None,
+                meta: dict = None):
         """
+        To create a new instance of the dask.Array class and add custom attributes.
 
-        return self.blocks[block_number]
+        Note: The __new__ is called before __init__. It is responsible for creating a new instance of the class. After, the new object is created with
+              __new__ the __init__ is called for instantiate the new created object.
 
-    def get_global_index_in_sub_volume(self, main_volume_shape: tuple, block_number: int, indices_sub_volume: tuple) -> tuple: # TODO: main_volume_shape can alo be defined here!
+        :param dask_array: dask.Array object
+        :param block_number: when creating blocks out of an array with the argument in the dask from_array(): chunks=(size_x, size_y, size_z). A number in elements [0:number_blocks]
+        :param block_idx: tuple containing the block index for each dimension. E,g., (1, 3, 5) for block position: x=1, y=3, z=5. Check coordinate system in description of the class.
+        :param main_volume_shape: the shape of the main volume in x,y,z for a 3D array, for example.
+        :param total_number_blocks: the total number of blocks of which the main volume consists.
+        :param unit: unit corresponding to the values in the array.
+        :param meta: custom data added by the user.
         """
-        Using the indices in the sub-volume (to access the desired value) to get the corresponding indices in the main volume.
-        Necessary to conclude at which place the sub-volume, but much more the values in the sub-volume have been originally
-        in the main volume! Let's call the indices in the sub-volume local indices and the corresponding indices in the main
-        volume global indices. Thus, the function is -> Sub volume X (=block X) indices --> Main volume indices
+        instance = super().__new__(cls, dask_array.dask, dask_array.name, dask_array.chunks, dtype=dask_array.dtype)
+        instance.block_number = block_number
+        instance.block_idx = block_idx
+        instance.unit = unit
+        instance.size_mb = dask_array.dtype.itemsize * dask_array.size / (1024 ** 2)
 
-        The axes of the sub volume are defined as following:
-
-               origin
-                 +----------> (+z)
-                /|
-              /  |
-            /    |
-        (+x)     |
-                 v (+y)
-        """
-
-        # (1) Extract the indices to the associated axes
-        in_block_x, in_block_y, in_block_z = indices_sub_volume
-
-        # (2) Get the size of the block in the respective dimension.
-        #     * The chunk size does not need to be isotropic!
-        #     * Handling remainder blocks: thus, use 'ceil' because an incomplete (=remainder block) still counts as 1 block!
-        (number_of_blocks_x,
-         number_of_blocks_y,
-         number_of_blocks_z) = np.ceil(np.array(main_volume_shape) / np.array(self.blocks_shape_xyz)).astype(int)
-
-        #(number_of_blocks_x,
-        # number_of_blocks_y,
-        # number_of_blocks_z) = np.ceil(np.array(self.dask_array.shape) / np.array(self.dask_array.chunksize)).astype(int)
-
-        #print(f"number of blocks in x: {number_of_blocks_x} | y: {number_of_blocks_y} | z: {number_of_blocks_z}")
-
-        # (3) Defines the steps of shift (indices of each block in the collection of all blocks).
-        #     The block size is not yet taken into account.
-        number_of_shifts_x = block_number // (number_of_blocks_y * number_of_blocks_z)  # // -> Floor division
-        number_of_shifts_y = (block_number // number_of_blocks_z) % number_of_blocks_y  #
-        number_of_shifts_z = block_number % number_of_blocks_z
-
-        print(f"number of shifts x: {number_of_shifts_x}  y: {number_of_shifts_y}  z: {number_of_shifts_z}")
-
-        # (4) Defines the shift size. Now, take the block size into account.
-        block_size_x = self.blocks_shape_xyz[0] #dask_array.chunksize[0]
-        block_size_y = self.blocks_shape_xyz[1] #dask_array.chunksize[1]
-        block_size_z = self.blocks_shape_xyz[2] #dask_array.chunksize[2]
-
-        # (5) Calculate absolute coordinates from block in the main (whole) volume!
-        absolute_x = number_of_shifts_x * block_size_x + in_block_x
-        absolute_y = number_of_shifts_y * block_size_y + in_block_y
-        absolute_z = number_of_shifts_z * block_size_z + in_block_z
-
-        # Return the global indices in the main volume. Thus, where the value indexed in the sub-volume X has been
-        # before in the global volume.
-        return absolute_x, absolute_y, absolute_z
-
-    def compute(self):
-        """
-        Short-cut of dask inbuilt function. It is a special case and only valid if only one block is generated. This use case is give
-        if a subset is created in MetabolicPropertyMap. Thus, not necessary to call .blocks[0].compute(). Instead directly .compute()
-        can be called.
-        """
-        if len(self.blocks) is 1:
-            return self.blocks[0].compute()
+        # When no shape is given, it will be assumed it is the main volume rather than a block of the main volume. Otherwise, set the shape of the main volume in each block.
+        # Important, if only the block is given and information of the main volume is required.
+        if main_volume_shape is None:
+            instance.main_volume_shape = instance.shape
         else:
-            Console.printf("error", f"Only possible to call short-cut 'compute' is length of blocks is 1. However, it is {len(self.blocks)}")
-
-    def __iter__(self):
-        """
-        Return the object itself as the iterator
-        """
-        return self
-
-    def __next__(self):
-        """
-        To implement it in a for each loop, for example, or to use next() on the object!
-        """
-        if self.block_iterator >= self.number_of_blocks:
-            raise StopIteration  # Stop iterator when the last block was reached!
+            instance.main_volume_shape = main_volume_shape
+        # The same as above. If no shape is given, it will be assumed that it is the main volume and not a block of it. Otherwise, assign the number of blocks to each block
+        # to be able to know the total number of blocks.
+        if total_number_blocks is None:
+            instance.total_number_blocks = math.prod(dask_array.blocks.shape) - 1
         else:
-            self.block_iterator += 1
-            return self.blocks[self.block_iterator - 1]
+            instance.total_number_blocks = total_number_blocks
+
+        instance.meta = meta
+
+        return instance
+
+    def __repr__(self) -> str:
+        """
+        To extend the __repr__ method from the superclass and to add additional information if a CustomArray gets printed to the console with print().
+
+        Additional information:
+        * Start and end indices of the block in the global volume (only for x,y,z dimensions supported yet)
+        * The block number (e.g., 4/100)
+        * The block coordinates (e.g., (0,0,4))
+        * The estimated size of the block in [MB]
+        * The shape of the main volume (e.g., 1000, 120,120,120)
+        * The set unit
+        * The custom metadata
+
+        :return: formatted string.
+        """
+        arr_repr = super().__repr__()  # Get the standard representation of the Dask array
+        x_global_start, y_global_start, z_global_start = self.get_global_index(0, 0, 0)
+        x_global_end, y_global_end, z_global_end = self.get_global_index(self.blocks.shape[0] - 1, self.blocks.shape[1] - 1, self.blocks.shape[2] - 1)
+
+        meta_repr = (f"\nBlock number: {self.block_number}/{self.total_number_blocks} "
+                     f"\nBlock coordinates: {self.block_idx} "
+                     f"\nEstimated size: {round(self.size_mb, 3)} MB "
+                     f"\nMain volume shape: {self.main_volume_shape} "
+                     f"\nMain volume coordinates: x={x_global_start}:{x_global_end} y={y_global_start}:{y_global_end} z={z_global_start}:{z_global_end} "
+                     f"\nUnit: {self.unit} "
+                     f"\nMetadata: {self.meta}")
+
+        return arr_repr + meta_repr + "\n"  # Concatenate the two representations
 
     def __mul__(self, other):
         """
-        To be able to multiply two volumes.
+        For preserving information from the left multiplicand. Add it to the result.
+
+        :param other: The right multiplicand. It has to be a dask.Array or a CustomArray
+        :return: product of array 1 and array 2
         """
-        dask_array = self.dask_array * other.dask_array
-        return SubVolumeDataset(main_volume=dask_array, blocks_shape_xyz=self.blocks_shape_xyz)
+        result = super().__mul__(other)
+        result = CustomArray(dask_array=result,
+                             block_number=self.block_number,
+                             block_idx=self.block_idx,
+                             main_volume_shape=self.main_volume_shape,
+                             total_number_blocks=self.total_number_blocks,
+                             meta=self.meta)
 
-    def __len__(self):
+        return result
+
+    def get_global_index(self, x, y, z):
         """
-        To get the number of sub-volumes.
+        Useful if a block of a CustomArray is handled individually. To get the global indices (x,y,z) of the local indices in the respective block.
+        local(x,y,z) ===> global(x,y,z)
+
+        :param x: local index in x (thus in current block)
+        :param y: local index in y (thus in current block)
+        :param z: local index in z (thus in current block)
+        :return: global indices as tuple (x,y,z)
         """
-        return self.number_of_blocks
+        # x,y,z is in block, and global in original global volume
+        if x >= self.shape[0]:
+            print(f"Error: x block shape is only {self.shape[0]}, but index {x} was given")
+            return
+        if y >= self.shape[1]:
+            print(f"Error: y block shape is only {self.shape[1]}, but index {y} was given")
+            return
+        if z >= self.shape[2]:
+            print(f"Error: z block shape is only {self.shape[2]}, but index {z} was given")
+            return
 
-    def __getitem__(self, block_number):
+        global_x = self.block_idx[0] * self.shape[0] + x
+        global_y = self.block_idx[1] * self.shape[1] + y
+        global_z = self.block_idx[2] * self.shape[2] + z
+
+        return global_x, global_y, global_z
+
+    @property
+    def blocks(self):
         """
-        To get the block by the index. Note the defined coordinate system above to understand how index blocks!
+        To override the method of the superclass. Create a CustomBLockView instead of the dask BlockView. However, the CustomBlockView inherits from
+        the dask BlockView, but extends its functionality!
+
+        :return: CustomBlockView
         """
-        return self.blocks[block_number]
+
+        block_view_object = CustomBlockView(self, main_volume_shape=self.main_volume_shape, total_number_blocks=self.total_number_blocks)
+        return block_view_object
 
 
-# class SubVolumeDataset:
-#    """
-#    For getting sub-volumes from the main volume. The sub volumes do not need to be isotropic!
-#    Example usage 1: Iterate over each sub volume
-#    Example usage 2: Get sub-volume by index (index_x, index_y, index_z) in main volume
-#    Example usage 2: Get batch of sub-volumes (e.g., [3, 50, 50, 50, 30]). Useful, if put on GPU and limited space is available there.
-#                     Thus, put batch on GPU, process it and then put back to CPU.
-#    """
-#
-#    def __init__(self, volume: np.ndarray | np.memmap, sub_volume_shape: tuple):
-#        self.volume = volume
-#        self.sub_volume_shape = sub_volume_shape
-#        self.indices = self._initialize_indices()
-#
-#    def get_by_index(self, i_x: int, i_y: int, i_z: int) -> np.ndarray:
-#        """
-#        Get sub-volume by indices in the main volume. Thus, if the main volume, e.g., is divided into eight sub-volumes, maximum
-#        indices are (7,7,7).
-#
-#        :param i_x: sub-volume index in the main volume in x direction
-#        :param i_y: sub-volume index in the main volume in y direction
-#        :param i_z: sub-volume index in the main volume in z direction
-#
-#        :return: sub-volume as PyTorch Tensor
-#        """
-#        sx, sy, sz = self.sub_volume_shape
-#        sub_volume = self.volume[i_x:i_x + sx, i_y:i_y + sy, i_z:i_z + sz, :]
-#        # sub_volume = torch.from_numpy(sub_volume).detach()
-#        return sub_volume
-#
-#    def _initialize_indices(self):
-#        """
-#        Find starting indices for sub-volumes in whole volume. Then, append it to a list containing all possible starting indices of
-#        the sub volumes.
-#        """
-#
-#        # (1) Get target shape of sub volumes.
-#        sx, sy, sz = self.sub_volume_shape
-#        unfolded = self.volume.unfold(0, sx, sx).unfold(1, sy, sy).unfold(2, sz,
-#                                                                          sz)  # creates shape: [sub_x_index, sub_y_index, sub_z_index, t_vector, sub_x_volume, sub_y_volume, sub_z_volume]
-#        # e.g., [0,0,0,:,:,:,:] -> get x,y,z with t of index 0 (=index of sub volume)
-#
-#        # Get starting indices of sub-volumes (e.g., x=0,y=0,z=50). Create it for each sub-volume and append to a list as tuple.
-#        indices = []
-#
-#        u = 0
-#        # Get each possible starting index for each sub-volume in the whole volume (e.g., x=0,y=0,z=50)
-#        for i_x in range(unfolded.shape[0]):
-#            for i_y in range(unfolded.shape[1]):
-#                for i_z in range(unfolded.shape[2]):
-#                    # print(f"indices new = {x,y,z}")
-#                    indices.append((i_x * sx, i_y * sy, i_z * sz))
-#
-#        return indices
-#
-#    def __len__(self):
-#        """
-#        To get the number of sub-volumes.
-#        """
-#        return len(self.indices)
-#
-#    def __getitem__(self, index):
-#        """
-#        Cut sub volumes out of the whole volume using starting indices and the size of sub volumes.
-#        """
-#        i_x, i_y, i_z = self.indices[index]
-#        sx, sy, sz = self.sub_volume_shape
-#        sub_volume = self.volume[i_x:i_x + sx, i_y:i_y + sy, i_z:i_z + sz, :]  # start and end index to cut out sub-volume of whole volume
-#        sub_volume = torch.from_numpy(sub_volume).detach()
-#        return sub_volume
+class CustomBlockView(da.core.BlockView):
+    """
+    Extending the dask class BlockView with additional functionalities. This is required for the CustomArray class that inherits from dask Array.
+    Additional functionalities of one block:
+    * Shape of the main volume in each block
+    * Number of total blocks in each block
+    * Unit of the main volume in each block
+    """
 
+    def __init__(self, custom_array: CustomArray, main_volume_shape: tuple=None, total_number_blocks: int=None):
+        """
+        Addition additional the main volume shape, the total number of blocks and the unit. Also, call the super constructor.
 
-# class Map():
-#    """
-#    Usage for creating maps. For example B0 map, B1+ map, B1- map, FIF scaling map and so on.
-#    It has the option to perform the following to combine two instances:
-#     => let instance 1 be B0 map, and instance 2 be FID scaling map,
-#        then instance 1 * instance 2 performs a point-wise multiplication
-#    """
-#
-#    def __init__(self):
-#        self.volume: np.ndarray
-#        self.name: str
-#        self.unit: str
-#        pass
-#
-#    def __mul__(self, other):
-#        # TODO: Check if size of self, other fits!
-#        pass
-#
-#    def __iter__(self):
-#        pass
-#
-#    def __next__(self):
-#        pass
+        :param custom_array: the CustomArray object
+        :param main_volume_shape:
+        :param total_number_blocks:
+        """
+        self.main_volume_shape = main_volume_shape
+        self.total_number_blocks = total_number_blocks
+        self.block_number = 0
+        self.unit = custom_array.unit
+        super().__init__(custom_array)
+
+    def __getitem__(self, index) -> CustomArray:
+        """
+        Override the __getitem__ of the superclass. In the workflow of dask each block is a new dask.Array. Thus, replacing the dask.Array with
+        a CustomArray that inherits from dask.Array.
+
+        Be aware that each block has a block number. The block number allows selecting the next block. The blocks are  ordered condescending in
+        the following dimensions: first z, then y, then x, with the following coordinate system:
+
+               origin
+                 +----------> (+z)
+                /|
+              /  |
+            /    |
+        (+x)     |
+                 v (+y)
+
+        :param index: index of the block
+        :return: a block as CustomArray
+        """
+        dask_array = super(CustomBlockView, self).__getitem__(index)
+        custom_dask_array = CustomArray(dask_array=dask_array,
+                                        block_number=self.block_number,
+                                        block_idx=index,
+                                        main_volume_shape=self.main_volume_shape,
+                                        total_number_blocks=self.total_number_blocks,
+                                        unit=self.unit)
+
+        self.block_number += 1  # to get block number of in the main volume (first z, then y, then x)
+
+        return custom_dask_array
+
 
 
 class ConfiguratorGPU():

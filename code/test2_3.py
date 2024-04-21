@@ -25,7 +25,7 @@ def t1_transform(volume, alpha, TR, T1):
     # TR    ... 0.6sec
 
     # T1 -> volume
-    return volume * np.sin(alpha) * (1-da.exp(-TR/T1)) / (1-(da.cos(alpha) * da.exp(-TR/T1))) # TODO: radiants
+    return volume * np.sin(np.deg2rad(alpha)) * (1-da.exp(-TR/T1)) / (1-(da.cos(np.deg2rad(alpha)) * da.exp(-TR/T1))) # TODO: radiants
 
 ####def t2_transform(TE, T2, t):
 ####    # TE + delta_t (=dwell time) => thus: TE*t where t is time vector
