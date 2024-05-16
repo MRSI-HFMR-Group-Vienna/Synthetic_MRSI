@@ -1,11 +1,16 @@
 from spatial_metabolic_distribution import MetabolicPropertyMap
+from dask.diagnostics import ProgressBar
 from tools import CustomArray
 from dask.array import Array
 from printer import Console
 import dask.array as da
 from tqdm import tqdm
 import numpy as np
+#import numba
+#from numba import cuda
 import tools
+import cupy
+import cupy as cp
 import dask
 import sys
 import os
@@ -263,53 +268,147 @@ class Model:
 
         Console.printf_collected_lines("success")
 
+    ##@staticmethod
+    ##def _transform_T1(volume, alpha, TR, T1):
+    ##    return volume * np.sin(np.deg2rad(alpha)) * (1 - da.exp(-TR / T1)) / (1 - (da.cos(np.deg2rad(alpha)) * da.exp(-TR / T1)))
+
+    ##@staticmethod
+    ##def _transform_T2(volume, time_vector, TE, T2):
+    ##    for index, t in enumerate(time_vector):
+    ##        volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
+    ##    return volume
+
+    ###@staticmethod
+    ###def _transform_T1(volume, alpha, TR, T1):
+    ###    return volume * np.sin(np.deg2rad(alpha)) * (1 - np.exp(-TR / T1)) / (1 - (np.cos(np.deg2rad(alpha)) * np.exp(-TR / T1)))
+
+    ###@staticmethod
+    ###def _transform_T1(volume, alpha, TR, T1):
+    ###    return volume * np.sin(np.deg2rad(alpha)) * (1 - np.exp(-TR / T1)) / (1 - (np.cos(np.deg2rad(alpha)) * np.exp(-TR / T1)))
+
     @staticmethod
     def _transform_T1(volume, alpha, TR, T1):
-        return volume * np.sin(np.deg2rad(alpha)) * (1 - da.exp(-TR / T1)) / (1 - (da.cos(np.deg2rad(alpha)) * da.exp(-TR / T1)))
+        return volume * cp.sin(cp.deg2rad(alpha)) * (1 - cp.exp(-TR / T1)) / (1 - (cp.cos(np.deg2rad(alpha)) * cp.exp(-TR / T1)))
+
+    ###@staticmethod
+    ###def _transform_T2(volume, time_vector, TE, T2):
+    ###    #for index, t in enumerate(time_vector):
+    ###    #    volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
+    ###    volume *= np.exp((TE * time_vector[:, np.newaxis, np.newaxis, np.newaxis]) / T2)
+    ###    return volume
 
     @staticmethod
     def _transform_T2(volume, time_vector, TE, T2):
-        for index, t in enumerate(time_vector):
-            volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
+        #for index, t in enumerate(time_vector):
+        #    volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
+        volume *= cp.exp((TE * time_vector[:, cp.newaxis, cp.newaxis, cp.newaxis]) / T2)
         return volume
 
-    def assemble(self):
 
+    ###@numba.stencil
+    ###@staticmethod
+    ###def _transform_T2_numba(volume, time_vector, TE, T2):
+    ###    return (volume[0, 0, 0, 0] * da.exp((TE * time_vector[0]) / T2))
+    ###
+    ###@numba.njit
+    ####@staticmethod
+    ###def transform_T2_numba(volume, time_vector, TE, T2):
+    ###    return Model._transform_T2_numba(volume, time_vector, TE, T2)
+
+    def assemble_graph(self) -> CustomArray:
+
+        Console.printf("info", "Start to assemble whole graph:")
         metabolites_volume_list = []
         for fid in tqdm(self.fid, total=len(self.fid.signal)):
-
             # Prepare the data & reshape it
             metabolite_name = fid.name[0]
-            #block_size = self.metabolic_property_maps[metabolite_name].block_size
-            fid_signal = da.from_array(fid.signal.reshape(fid.signal.size, 1, 1, 1))
+            # block_size = self.metabolic_property_maps[metabolite_name].block_size
+            fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
+            fid_signal = cp.asarray(fid_signal) # TODO
+            fid_signal = da.from_array(fid_signal)
             time_vector = da.from_array(fid.time)
             mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
+            mask = cp.asarray(mask) # TODO
             mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
             metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
             metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
 
+            # 87.712 sec
+            # reshape fid signal from (1536,) --> (1536,1,1,1); time vector (1536,)
+            # reshape mask from (112,128,80) --> (1,112,128,80)
+            #
+            #
+
+            # With GPU:
+            # 57.65 sec
+            # --> T1 & T2 transform on GPU
+            # --> concatenate not on GPU
+
+            # With GPU:
+            # 50.809 sec
+            # --> not multiply mask and FID
+            # --> T1 & T2 transform on GPU
+            # --> concatenate ALSO on GPU
+
+            # With GPU:
+            # 42.99 sec
+            # --> multiply mask and FID
+            # --> T1 & T2 transform on GPU
+            # --> concatenate ALSO on GPU
+
             # (1) FID with 3D mask volume yields 4d volume
+            # TODO: ISSUE HERE!
+            #fid_signal = fid_signal.map_blocks(cp.asarray, dtype='c8')
+            #mask = mask.map_blocks(cp.asarray, dtype='bool')
+            #volume_with_mask = fid_signal * mask
             volume_with_mask = fid_signal * mask
+            #print(mask.shape)
+            #print(fid_signal.shape)
+            #input("-ß-ß-ß-ß-ß-ß-ß-")
 
             # (2) Include T2 effects
             volume_metabolite = da.map_blocks(Model._transform_T2,
-                                              volume_with_mask,
-                                              time_vector,
-                                              self.TE,
-                                              metabolic_map_t2)
+                                              volume_with_mask.map_blocks(cp.asarray, dtype='c8'),  # x = x.map_blocks(cupy.asarray)
+                                              time_vector.map_blocks(cp.asarray, dtype='c8'),
+                                              cp.asarray([self.TE]),
+                                              metabolic_map_t2.map_blocks(cp.asarray, dtype='c8'),
+                                              dtype='c8')
+
+            #volume_metabolite = volume_metabolite.map_blocks(np.asarray, dtype="complex64")
+            ##print(type(volume_with_mask))
+            ##print(type(volume_with_mask))
+            ##print(type(time_vector))
+            ##print(type(self.TE))
+            ##input("???????????")
+
+            ###volume_metabolite = da.map_blocks(Model._transform_T2,
+            ###                                  volume_with_mask,  # x = x.map_blocks(cupy.asarray)
+            ###                                  time_vector,
+            ###                                  self.TE,
+            ###                                  metabolic_map_t2)
 
             # (3) Include T1 effects
             volume_metabolite = da.map_blocks(Model._transform_T1,
-                                              volume_metabolite,
-                                              self.alpha,
-                                              self.TR,
-                                              metabolic_map_t1)
+                                              volume_metabolite.map_blocks(cp.asarray, dtype='c8'),
+                                              cp.asarray([self.alpha]),
+                                              cp.asarray([self.TR]),
+                                              metabolic_map_t1.map_blocks(cp.asarray, dtype='c8'))
+
+            ##volume_metabolite = Model._transform_T2(volume_with_mask, time_vector, self.TE, metabolic_map_t2)
+            ###volume_metabolite = Model._transform_T1(volume_metabolite, self.alpha, self.TR, metabolic_map_t1)
+
+
+            # TODO --> cupy to numpy
+            #volume_metabolite = volume_metabolite.map_blocks(cp.asnumpy)
 
             # (4) Include spatial concentration
-            volume_metabolite *= self.metabolic_property_maps[metabolite_name].concentration
+            volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
 
             # (5) Expand dims, since it is only for one metabolite
             volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
+
+            # TODO
+            volume_metabolite = volume_metabolite.map_blocks(cp.asnumpy)
             metabolites_volume_list.append(volume_metabolite)
 
         # (6) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
@@ -319,21 +418,52 @@ class Model:
         volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
         volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
 
-        print(da.compute(volume_sum_all_metabolites.blocks.ravel())) # 200
-        input("======= STOP HERE ========= in progress")
+        computational_graph: CustomArray = volume_sum_all_metabolites
+        return computational_graph
 
+        ######print(da.compute(volume_sum_all_metabolites.blocks.ravel())) # 200
+        ######input("======= STOP HERE ========= in progress")
+        #####import matplotlib.pyplot as plt
+        #####print(volume_sum_all_metabolites)
 
-        volume_sum_all_metabolites.compute()
-
-
+    #####
+    #####fig, axes = plt.subplots(1, 3, figsize=(15, 5))  # 1 row, 3 columns
+    #####
+    ###### Plotting data on each subplot using imshow
+    #####transversal = np.abs(volume_sum_all_metabolites[100, :, :, 40].compute())
+    #####im1 = axes[0].imshow(transversal)
+    #####axes[0].set_title('transversal')
+    #####cbar1 = fig.colorbar(im1, ax=axes[0], fraction=0.046, pad=0.04)
+    #####
+    #####coronal = np.abs(volume_sum_all_metabolites[100, :, 50, :].compute())
+    #####im2 = axes[1].imshow(coronal)
+    #####axes[1].set_title('coronal')
+    #####cbar2 = fig.colorbar(im2, ax=axes[1], fraction=0.046, pad=0.04)
+    #####
+    #####sagittal = np.abs(volume_sum_all_metabolites[100, 50, :, :].compute())
+    #####im3 = axes[2].imshow(sagittal)
+    #####axes[2].set_title('sagittal')
+    #####cbar3 = fig.colorbar(im3, ax=axes[2], fraction=0.046, pad=0.04)
+    #####
+    ###### Adding some space between subplots
+    #####plt.tight_layout()
+    #####
+    ###### Display the plot
+    #####plt.show()
+    #####
+    #####input("======= STOP HERE =========")
+    #####
+    #####
+    ######volume_sum_all_metabolites.compute()
 
     def build(self):
         pass
 
-#def transform_T1(volume, alpha, TR, T1):
+
+# def transform_T1(volume, alpha, TR, T1):
 #    return volume * np.sin(np.deg2rad(alpha)) * (1 - da.exp(-TR / T1)) / (1 - (da.cos(np.deg2rad(alpha)) * da.exp(-TR / T1)))
 #
-#def transform_T2(volume, time_vector, TE, T2):
+# def transform_T2(volume, time_vector, TE, T2):
 #    for index, t in enumerate(time_vector):
 #        volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
 #    return volume

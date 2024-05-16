@@ -42,7 +42,7 @@ class CustomArray(da.Array):
                 main_volume_shape: tuple = None,
                 main_volume_blocks: tuple = None,  # number blocks in each dimension
                 total_number_blocks: int = None,   # number blocks
-                unit: pint.UnitRegistry | str = None,
+                unit: pint.UnitRegistry = None,
                 meta: dict = None):
         """
         To create a new instance of the dask.Array class and add custom attributes.

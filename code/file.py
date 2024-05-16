@@ -5,19 +5,18 @@ import json
 import os
 import sys
 import numpy as np
-from oct2py import Oct2Py
-
 import spectral_spatial_simulation
 from printer import Console
-from more_itertools import collapse
-
 # for NeuroImage
 import nibabel as nib
 from pathlib import Path
 
+# for JMRUI (Note: DEPRECATED)
+#from oct2py import Oct2Py
+#from more_itertools import collapse
+
 # for Configurator
 import datetime
-
 
 class JMRUI2:
     """
@@ -95,93 +94,93 @@ class JMRUI2:
         Console.printf_collected_lines("success")
         # np.set_printoptions() resetting numpy printing options
 
-
-class JMRUI:
-    """
-    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file.
-    """
-
-    def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
-        self.path = path
-        self.signal_data_type = signal_data_type
-        self.mute = mute
-
-    def load_m_file(self) -> dict:
-        """
-        Read content from an MATLAB (.m) file, interpret it via Octave and assign it to the following object variables:
-         -> self.signal
-         -> self.parameters
-        :return: None
-        """
-
-        parameters: dict = {}
-
-        # Check if file and path exists
-        if not os.path.exists(self.path):
-            Console.printf("error", "Path and/or file does not exist! Termination of the program.")
-            sys.exit()  # Termination of the program
-
-        file = open(self.path, 'r')  # Open the .m file
-        oc = Oct2Py(convert_to_float=False)  # Create an Oct2Py object, thus running an Octave session
-
-        data_string = "["  # Creating a string that holds the FID data which later is interpreted with Octave.
-        parameter_name = ""  # Initial value needed for the if statement below.
-
-        # Iterate through all lines in the MATLAB (.m) file
-        for line_number, line_content in enumerate(file):
-            # (1) Split the data, thus get the parameter names
-
-            if parameter_name != "DATA":  # (!) If DATA occurs, the line will be skipped because of
-                parameter_name, _ = line_content.split("=")  # continue and it will never enter again in this if
-                if parameter_name == "DATA": continue  # condition
-
-                # (2) For each line that can be interpreted by octave (thus no error), unwrap and transform to python
-                # and insert into dictionary
-                try:
-                    oc.eval(line_content)  # evaluate line by octave
-                    content_raw = oc.pull(parameter_name)  # get values by name from workspace (octave session)
-
-                    # unwrapping to level 3 and assembly names again
-                    if parameter_name == "DIM_VALUES":
-                        content_transformed = list(collapse(content_raw, levels=3))
-                        content = content_transformed[:2] + [content_transformed[2:]]
-
-                    # unwrapping to level 1
-                    else:
-                        content_transformed = list(collapse(content_raw, levels=1))
-                        content = content_transformed
-
-                    # (3) Assignment of the content. If a list contains just one item then unwrap it again.
-                    parameters[parameter_name] = content[0] if (len(content) == 1 and type(content) == list) else content
-
-                except:
-                    Console.add_lines(f"Error in line {line_number + 1} with content: {line_content} -> It will be excluded!")
-
-            # (4) Treat data differently: create big string, interpreted it by octave and insert to dictionary.
-            else:
-                data_string += line_content + "\n"
-
-        # Print out the excluded lines, i.e. those that could not be interpreted with octave.
-        Console.printf_collected_lines("warning", mute=self.mute)
-
-        # Convert signal to desired data type and time (a list) to a numpy array
-        amplitude: np.ndarray = oc.eval(data_string).astype(self.signal_data_type)  # Transform signal values as string to numpy.ndarray()
-        time: np.ndarray = np.asarray(parameters["DIM_VALUES"][0])  # Add time vector to time variable
-        time = time[0:len(time) - 1]  # Otherwise time vector is +1 longer than signal vector
-
-        # End octave session and also close the file
-        oc.exit()
-        file.close()
-
-        # Short overview of chosen data type for the FID signal, used space and precision (in digits)
-        Console.printf("info", f"Loaded FID signal as {self.signal_data_type} \n" +
-                       f" -> thus using space: {amplitude.nbytes / 1024} KB \n" +
-                       f" -> thus using digits: {np.finfo(amplitude.dtype).precision}",
-                       mute=self.mute)
-
-        return {"parameters": parameters,
-                "signal": amplitude,
-                "time": time}
+##### DEPRECATED
+###class JMRUI:
+###    """
+###    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file.
+###    """
+###
+###    def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
+###        self.path = path
+###        self.signal_data_type = signal_data_type
+###        self.mute = mute
+###
+###    def load_m_file(self) -> dict:
+###        """
+###        Read content from an MATLAB (.m) file, interpret it via Octave and assign it to the following object variables:
+###         -> self.signal
+###         -> self.parameters
+###        :return: None
+###        """
+###
+###        parameters: dict = {}
+###
+###        # Check if file and path exists
+###        if not os.path.exists(self.path):
+###            Console.printf("error", "Path and/or file does not exist! Termination of the program.")
+###            sys.exit()  # Termination of the program
+###
+###        file = open(self.path, 'r')  # Open the .m file
+###        oc = Oct2Py(convert_to_float=False)  # Create an Oct2Py object, thus running an Octave session
+###
+###        data_string = "["  # Creating a string that holds the FID data which later is interpreted with Octave.
+###        parameter_name = ""  # Initial value needed for the if statement below.
+###
+###        # Iterate through all lines in the MATLAB (.m) file
+###        for line_number, line_content in enumerate(file):
+###            # (1) Split the data, thus get the parameter names
+###
+###            if parameter_name != "DATA":  # (!) If DATA occurs, the line will be skipped because of
+###                parameter_name, _ = line_content.split("=")  # continue and it will never enter again in this if
+###                if parameter_name == "DATA": continue  # condition
+###
+###                # (2) For each line that can be interpreted by octave (thus no error), unwrap and transform to python
+###                # and insert into dictionary
+###                try:
+###                    oc.eval(line_content)  # evaluate line by octave
+###                    content_raw = oc.pull(parameter_name)  # get values by name from workspace (octave session)
+###
+###                    # unwrapping to level 3 and assembly names again
+###                    if parameter_name == "DIM_VALUES":
+###                        content_transformed = list(collapse(content_raw, levels=3))
+###                        content = content_transformed[:2] + [content_transformed[2:]]
+###
+###                    # unwrapping to level 1
+###                    else:
+###                        content_transformed = list(collapse(content_raw, levels=1))
+###                        content = content_transformed
+###
+###                    # (3) Assignment of the content. If a list contains just one item then unwrap it again.
+###                    parameters[parameter_name] = content[0] if (len(content) == 1 and type(content) == list) else content
+###
+###                except:
+###                    Console.add_lines(f"Error in line {line_number + 1} with content: {line_content} -> It will be excluded!")
+###
+###            # (4) Treat data differently: create big string, interpreted it by octave and insert to dictionary.
+###            else:
+###                data_string += line_content + "\n"
+###
+###        # Print out the excluded lines, i.e. those that could not be interpreted with octave.
+###        Console.printf_collected_lines("warning", mute=self.mute)
+###
+###        # Convert signal to desired data type and time (a list) to a numpy array
+###        amplitude: np.ndarray = oc.eval(data_string).astype(self.signal_data_type)  # Transform signal values as string to numpy.ndarray()
+###        time: np.ndarray = np.asarray(parameters["DIM_VALUES"][0])  # Add time vector to time variable
+###        time = time[0:len(time) - 1]  # Otherwise time vector is +1 longer than signal vector
+###
+###        # End octave session and also close the file
+###        oc.exit()
+###        file.close()
+###
+###        # Short overview of chosen data type for the FID signal, used space and precision (in digits)
+###        Console.printf("info", f"Loaded FID signal as {self.signal_data_type} \n" +
+###                       f" -> thus using space: {amplitude.nbytes / 1024} KB \n" +
+###                       f" -> thus using digits: {np.finfo(amplitude.dtype).precision}",
+###                       mute=self.mute)
+###
+###        return {"parameters": parameters,
+###                "signal": amplitude,
+###                "time": time}
 
 
 class NeuroImage:
@@ -198,7 +197,7 @@ class NeuroImage:
         self.data: np.memmap = None  # Image data of the nifti image
         self.shape: tuple = ()  # Just the shape of the nifti image data
 
-    def load_nii(self) -> object:
+    def load_nii(self):
         """
         The data will be loaded as "np.memmap", thus usage of a memory map. Since the data is just mapped, no
         full workload on the RAM because data is only loaded into memory on demand.
@@ -218,9 +217,10 @@ class NeuroImage:
         self.shape = self.nifti_object.shape
 
         Console.printf("success", f"Loaded file '{self.name}':"
-                                  f"\n    Shape -> {self.shape}"
+                                  f"\n    Shape             -> {self.shape}"
                                   f"\n    Pixel dimensions: -> {self.header.get_zooms()}"
-                                  f"\n    In memory cache? -> {self.nifti_object.in_memory}",  # TODO what was exactly the purpose?
+                                  f"\n    Values range:     -> [{round(np.min(self.data),3)}, {round(np.max(self.data),3)}]"
+                                  f"\n    In memory cache?  -> {self.nifti_object.in_memory}",  # TODO what was exactly the purpose?
                        mute=False)
 
         return self
