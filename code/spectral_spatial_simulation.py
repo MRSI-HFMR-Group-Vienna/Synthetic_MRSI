@@ -454,7 +454,7 @@ class Model:
             #print(f"volume_metabolite (expand_dims): {volume_metabolite}")
 
             # TODO
-            volume_metabolite = volume_metabolite.map_blocks(cp.asnumpy)
+            #volume_metabolite = volume_metabolite.map_blocks(cp.asnumpy) # TODO TODO TODO: uncomment again if required!
             metabolites_volume_list.append(volume_metabolite)
 
         # (6) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
@@ -464,6 +464,9 @@ class Model:
 
         # (7) Sum all metabolites
         volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
+
+        #volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy) # TODO TODO TODO: remove again if required!
+
         volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
 
         #print(f"volume_all_metabolites shape (sum): {volume_sum_all_metabolites}")

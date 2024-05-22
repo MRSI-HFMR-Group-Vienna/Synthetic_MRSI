@@ -18,6 +18,7 @@ import dask
 import pint
 import file
 import sys
+import cupy
 
 import seaborn as sns
 import pandas as pd
@@ -242,6 +243,13 @@ def main_entry():
     simulation.add_mask(metabolic_mask.data)
 
     computational_graph = simulation.assemble_graph()
+    computational_graph = computational_graph.map_blocks(cupy.fft.fftn, dtype=cupy.complex64, axes=(1,2,3))
+    computational_graph = computational_graph.map_blocks(cupy.asnumpy)
+
+    #computational_graph = cupy.fft.fftn(computational_graph, axes=(1, 2, 3))
+    #input("****************************")
+
+
     computational_graph.dask.visualize(filename='visualisation/dask_graph_high_level.png')
 
     # Start client & and start dasboard, since computation is below
@@ -282,12 +290,14 @@ def main_entry():
     with ms.sample("collection 1"):
         for i, s in enumerate(batches_slice):
             print(f"compute batch {i}")
-            dask.compute(all_blocks[s])
+            blocks = dask.compute(all_blocks[s])[0]
+            blocks_squeezed = [np.squeeze(block, axis=0) for block in blocks]
+            result = np.stack(blocks_squeezed, axis=0)
+            print(result.shape)
 
     Console.stop_timer()
     ms.plot(align=True)
     plt.show()
-
 
 
 if __name__ == '__main__':
