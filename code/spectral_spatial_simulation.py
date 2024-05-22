@@ -331,7 +331,7 @@ class Model:
     def _transform_T2(volume, time_vector, TE, T2):
         #for index, t in enumerate(time_vector):
         #    volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
-        volume *= cp.exp((TE * time_vector[:, cp.newaxis, cp.newaxis, cp.newaxis]) / T2)
+        volume *= cp.exp((TE * time_vector) / T2)
         return volume
 
 
@@ -355,8 +355,13 @@ class Model:
             # block_size = self.metabolic_property_maps[metabolite_name].block_size
             fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
             fid_signal = cp.asarray(fid_signal) # TODO
-            fid_signal = da.from_array(fid_signal, chunks=self.block_size)
-            time_vector = da.from_array(fid.time)
+            fid_signal = da.from_array(fid_signal, chunks=self.block_size[0])
+
+            time_vector = fid.time[:, cp.newaxis, cp.newaxis, cp.newaxis]
+            time_vector = da.from_array(time_vector, chunks=(self.block_size[0], 1, 1, 1))
+            #print(time_vector)
+            #input("-------------------------------------------------------")
+
             mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
             mask = cp.asarray(mask) # TODO
             mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
@@ -393,6 +398,8 @@ class Model:
             #volume_with_mask = fid_signal * mask
             volume_with_mask = fid_signal * mask
 
+            #print(f"volume_with_mask shape: {volume_with_mask}")
+
             #print(mask.shape)
             #print(fid_signal.shape)
             #input("-ß-ß-ß-ß-ß-ß-ß-")
@@ -404,6 +411,8 @@ class Model:
                                               cp.asarray([self.TE]),
                                               metabolic_map_t2.map_blocks(cp.asarray, dtype='c8'),
                                               dtype='c8')
+
+            #print(f"volume_metabolite shape (after T2): {volume_metabolite}")
 
             #volume_metabolite = volume_metabolite.map_blocks(np.asarray, dtype="complex64")
             ##print(type(volume_with_mask))
@@ -425,6 +434,8 @@ class Model:
                                               cp.asarray([self.TR]),
                                               metabolic_map_t1.map_blocks(cp.asarray, dtype='c8'))
 
+            #print(f"volume_metabolite shape (after T1): {volume_metabolite}")
+
             ##volume_metabolite = Model._transform_T2(volume_with_mask, time_vector, self.TE, metabolic_map_t2)
             ###volume_metabolite = Model._transform_T1(volume_metabolite, self.alpha, self.TR, metabolic_map_t1)
 
@@ -435,8 +446,12 @@ class Model:
             # (4) Include spatial concentration
             volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
 
+            #print(f"volume_metabolite (Include spatial concentration): {volume_metabolite}")
+
             # (5) Expand dims, since it is only for one metabolite
             volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
+
+            #print(f"volume_metabolite (expand_dims): {volume_metabolite}")
 
             # TODO
             volume_metabolite = volume_metabolite.map_blocks(cp.asnumpy)
@@ -445,11 +460,18 @@ class Model:
         # (6) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
         volume_all_metabolites = da.concatenate(metabolites_volume_list, axis=0)
 
+        #print(f"volume_all_metabolites shape (concatenate): {volume_all_metabolites}")
+
         # (7) Sum all metabolites
         volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
         volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
 
+        #print(f"volume_all_metabolites shape (sum): {volume_sum_all_metabolites}")
+
         computational_graph: CustomArray = volume_sum_all_metabolites
+
+        # TODO: Print summary!
+
         return computational_graph
 
         ######print(da.compute(volume_sum_all_metabolites.blocks.ravel())) # 200
