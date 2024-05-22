@@ -6,6 +6,7 @@ import default
 
 from spatial_metabolic_distribution import MetabolicPropertyMap
 from dask.distributed import Client, LocalCluster
+from distributed.diagnostics import MemorySampler
 from dask.diagnostics import ProgressBar
 import spectral_spatial_simulation
 import matplotlib.pyplot as plt
@@ -15,6 +16,14 @@ import numpy as np
 import pint
 import file
 import sys
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
+
+from pycallgraph import Config
+from pycallgraph import PyCallGraph
+from pycallgraph.output import GraphvizOutput
 
 
 def zen_of_python():
@@ -47,7 +56,25 @@ def zen_of_python():
           )
 
 
-if __name__ == '__main__':
+def main_entry():
+    # Create an empty DataFrame
+    df = pd.read_csv('performance/data.txt', delimiter='\t', header=0)
+
+    # Filter out rows with time_sec == -1
+    filtered_df = df[df['time_sec'] != -1]
+    # Plotting with time_sec on the y-axis
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(data=filtered_df, x='num_worker', y='num_threads', hue='time_sec', palette='viridis',
+                    size='time_sec', sizes=(5, 500), legend='brief')
+    plt.title('Number of Workers vs. Number of Threads')
+    plt.xlabel('Number of Workers')
+    plt.ylabel('Number of Threads')
+    plt.legend(title='Time (sec)')
+    plt.show()
+    ####input("END!")
+    Console.ask_user("Continue?")
+
+
     # zen_of_python()
 
     # Initialize the UnitRegistry
@@ -89,24 +116,115 @@ if __name__ == '__main__':
     #########################################################################################################################
     ### Using Glu map and interpolate them
     ## Only Cr+PCr = Creatine+Phosphocreatine possible
+    # NOTE: _moi means sub-part
     # 0. Acetyl + Aspartyl_moi(NAAG) ----->  shape: (1536,) == > NAAG
-    # 1. Choline_moi(GPC) -------------->    shape: (1536,) == > GPC + PCh       Ignore
+    # 1. Choline_moi(GPC) -------------->    shape: (1536,) == > GPC + PCh                      ----> Ignore
     # 2. Creatine(Cr) ----------------->     shape: (1536,) == > CR + PCr
     # 3. Glutamate(Glu) --------------->     shape: (1536,) == > Glu
     # 4. Glutamate_moi(NAAG) ----------->    shape: (1536,) == > NAAG
     # 5. Glutamine_noNH2(Gln) --------->     shape: (1536,) == > Gln
-    # 6. Glycerol_moi(GPC) ------------->    shape: (1536,) == > GPC + PCh
+    # 6. Glycerol_moi(GPC) ------------->    shape: (1536,) == > GPC + PCh      (not yet used)  ----> 1+6 (Glycerol_moi and Choline_moi are parts of the same molecule: GPC)
     # 7. MyoInositol(m - Ins) ----------->   shape: (1536,) == > Ins
     # 8. NAcetylAspartate(NAA) -------->     shape: (1536,) == > NAA
-    # 9. Phosphocreatine(PCr) --------->     shape: (1536,) == > CR + PCr
-    # 10. PhosphorylCholine_new1(PC) - -->   shape: (1536,) == > --> PCH ((1+6+10)/2 FID)
+    # 9. Phosphocreatine(PCr) --------->     shape: (1536,) == > CR + PCr                       ----> put together /2
+    # 10. PhosphorylCholine_new1(PC) - -->   shape: (1536,) == > --> GPC+PCH ((1+6+10)/2 FID)
 
-    # Load and interpolate Glu map and T1 map
+
+    # TODO: Create function with N arguments to interpolate, each is a metabolic property map. Or a list of metabolic property maps: better --> and get as output list or tuple
+    # NAAG (0), not 4    --> NAAG
+    # NOT USED!
+
+    # not
+    # Cr+PCr  --> Cr+PCr      --> MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii
+    # NOT USED! Usage is below.
+    fid_and_concentration = []
+    fid_prepared = spectral_spatial_simulation.FID()
+
+    # Glu     --> Glu         --> MetMap_Glu_con_map_TargetRes_HiRes.nii
     path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Glu_con_map_TargetRes_HiRes.nii")
-    loaded_metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
-    zoom_factor_one_metabolic_map = np.divide(metabolic_mask.shape, loaded_metabolic_map.shape)
-    loaded_metabolic_map_interpolated = zoom(input=loaded_metabolic_map, zoom=zoom_factor_one_metabolic_map, order=3)
-    Console.printf("success", f"Interpolated Glu Map: from {loaded_metabolic_map.shape} to --> {loaded_metabolic_map_interpolated.shape}")
+    metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    zoom_factor_metabolic_map = np.divide(metabolic_mask.shape, metabolic_map.shape)
+    metabolic_map = zoom(input=metabolic_map, zoom=zoom_factor_metabolic_map, order=3)
+    fid = loaded_fid.get_signal_by_name("Glutamate (Glu)")
+    fid.name = fid.get_name_abbreviation()
+    fid_prepared += fid
+    fid_and_concentration.append([fid, metabolic_map])
+
+    # Gln     --> Gln         --> MetMap_Gln_con_map_TargetRes_HiRes.nii
+    path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Gln_con_map_TargetRes_HiRes.nii")
+    metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    zoom_factor_metabolic_map = np.divide(metabolic_mask.shape, metabolic_map.shape)
+    metabolic_map = zoom(input=metabolic_map, zoom=zoom_factor_metabolic_map, order=3)
+    fid = loaded_fid.get_signal_by_name("Glutamine_noNH2 (Gln)")
+    fid.name = fid.get_name_abbreviation()
+    fid_prepared += fid
+    fid_and_concentration.append([fid, metabolic_map])
+
+    #### GPC+PCh --> GPC (1+6)   --> MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii
+    ###path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii")
+    ###metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    ###fid1 = loaded_fid.get_signal_by_name("Choline_moi(GPC)")
+    ###fid2 = loaded_fid.get_signal_by_name("Glycerol_moi(GPC)")
+    ###signal = fid1.signal+fid2.signal
+    ###name = [fid1.get_name_abbreviation()[0] + "+" + fid2.get_name_abbreviation()[0]]
+    ###fid = spectral_spatial_simulation.FID(signal=signal, name=name, time=fid1.time)
+    ###fid_prepared += fid
+
+    # Ins     --> Ins         --> MetMap_Ins_con_map_TargetRes_HiRes.nii
+    path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Ins_con_map_TargetRes_HiRes.nii")
+    metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    zoom_factor_metabolic_map = np.divide(metabolic_mask.shape, metabolic_map.shape)
+    metabolic_map = zoom(input=metabolic_map, zoom=zoom_factor_metabolic_map, order=3)
+    fid = loaded_fid.get_signal_by_name("MyoInositol (m-Ins)")
+    fid.name = fid.get_name_abbreviation()
+    fid_prepared += fid
+    fid_and_concentration.append([fid, metabolic_map])
+
+    # NAA     --> NAA         --> MetMap_NAA_con_map_TargetRes_HiRes.nii
+    path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_NAA_con_map_TargetRes_HiRes.nii")
+    metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    zoom_factor_metabolic_map = np.divide(metabolic_mask.shape, metabolic_map.shape)
+    metabolic_map = zoom(input=metabolic_map, zoom=zoom_factor_metabolic_map, order=3)
+    fid = loaded_fid.get_signal_by_name("NAcetylAspartate (NAA)")
+    fid.name = fid.get_name_abbreviation()
+    fid_prepared += fid
+    fid_and_concentration.append([fid, metabolic_map])
+
+    # Cr+PCr  --> Cr+PCr/2    --> MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii
+    path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii")
+    metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    zoom_factor_metabolic_map = np.divide(metabolic_mask.shape, metabolic_map.shape)
+    metabolic_map = zoom(input=metabolic_map, zoom=zoom_factor_metabolic_map, order=3)
+    fid1 = loaded_fid.get_signal_by_name("Creatine (Cr)")
+    fid2 = loaded_fid.get_signal_by_name("Phosphocreatine (PCr)")
+    signal = (fid1.signal+fid2.signal)/2
+    name = [fid1.get_name_abbreviation()[0] + "+" + fid2.get_name_abbreviation()[0]]
+    fid = spectral_spatial_simulation.FID(signal=signal, name=name, time=fid1.time)
+    fid_prepared += fid
+    fid_and_concentration.append([fid, metabolic_map])
+
+    # GPC+PCH --> (1+6+10)/2  --> MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii
+    path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii")
+    metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    zoom_factor_metabolic_map = np.divide(metabolic_mask.shape, metabolic_map.shape)
+    metabolic_map = zoom(input=metabolic_map, zoom=zoom_factor_metabolic_map, order=3)
+    fid1 = loaded_fid.get_signal_by_name("Choline_moi(GPC)")
+    fid2 = loaded_fid.get_signal_by_name("Glycerol_moi(GPC)")
+    fid3 = loaded_fid.get_signal_by_name("PhosphorylCholine_new1 (PC)")
+    signal = (fid1.signal+fid2.signal+fid3.signal)/3
+    name = fid1.get_name_abbreviation()
+    fid = spectral_spatial_simulation.FID(signal=signal, name=name, time=fid1.time)
+    fid_prepared += fid
+    fid_and_concentration.append([fid, metabolic_map])
+
+    Console.printf("success", f"Interpolated all concentration maps to shape: {metabolic_mask.shape}")
+
+    #### Load and interpolate Glu map and T1 map
+    ###path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Glu_con_map_TargetRes_HiRes.nii")
+    ###loaded_metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
+    ###zoom_factor_one_metabolic_map = np.divide(metabolic_mask.shape, loaded_metabolic_map.shape)
+    ###loaded_metabolic_map_interpolated = zoom(input=loaded_metabolic_map, zoom=zoom_factor_one_metabolic_map, order=3)
+    ###Console.printf("success", f"Interpolated Glu Map: from {loaded_metabolic_map.shape} to --> {loaded_metabolic_map_interpolated.shape}")
 
     path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "T1_TargetRes_HiRes.nii")
     loaded_T1_map = file.NeuroImage(path=path_to_one_map).load_nii().data
@@ -114,18 +232,17 @@ if __name__ == '__main__':
     loaded_T1_map_interpolated = zoom(input=loaded_T1_map, zoom=zoom_factor_one_T1_map, order=3)
     Console.printf("success", f"Interpolated T1 Map: from {loaded_T1_map.shape} to --> {loaded_T1_map_interpolated.shape}")
 
+    Console.printf("success", f"Interpolated one T1 map to shape: {metabolic_mask.shape}")
+
     # Create MetabolicPropertyMap (theoretically for each metabolite; however, only Glu used so far)
     metabolic_property_map_dict = {}
-    for fid in loaded_fid:
-        ##################################
-        # only one for 11 metabolites! ###
-        ##################################
-        concentration_map = loaded_metabolic_map_interpolated
+    for fid, concentration_map in fid_and_concentration:
+        #concentration_map = loaded_metabolic_map_interpolated
         t1_map = loaded_T1_map_interpolated * 1e-3  # Assuming it is in [ms]
         t2_random_map = np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape)
 
         metabolic_property_map = MetabolicPropertyMap(chemical_compound_name=fid.name[0],
-                                                      block_size=(10, 10, 10),
+                                                      block_size=(112/2, 128/2, 80/2), # 10,10,10
                                                       t1=t1_map,
                                                       t1_unit=u.ms,
                                                       t2=t2_random_map,
@@ -137,21 +254,35 @@ if __name__ == '__main__':
 
     # Create spectral spatial model
     simulation = spectral_spatial_simulation.Model(path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp',
-                                                   block_size=(1535, 10, 10, 10),
+                                                   block_size=(1, 112/2, 128/2, 80/2), # TODO: was 1536x10x10x10
                                                    TE=0.0013,
                                                    TR=0.6,
                                                    alpha=45)
+                                                    # TODO: Also state size of one block after created model!
 
     # Add components to the Model
     Console.ask_user("Create computational graph?")
     simulation.add_metabolic_property_maps(metabolic_property_map_dict)  # all maps
-    simulation.add_fid(loaded_fid)  # all fid signals
+
+    ###fid_prepared_2 = spectral_spatial_simulation.FID()
+    ###for fid in fid_prepared:
+    ###    # Generate 100000 real and imaginary parts
+    ###    real_parts = np.random.rand(100_000).astype(np.float32)
+    ###    imaginary_parts = np.random.rand(100_000).astype(np.float32)
+    ###    # Combine into complex64
+    ###    complex_numbers = real_parts + 1j * imaginary_parts
+    ###    complex_numbers = complex_numbers.astype(np.complex64)
+    ###    fid.signal = complex_numbers
+    ###    fid.time = np.arange(0,100_000)
+    ###    fid_prepared_2 += fid
+
+    simulation.add_fid(fid_prepared)  # all fid signals
     simulation.add_mask(metabolic_mask.data)
 
-    computational_graph_one_metabolite = simulation.assemble_graph()
+    computational_graph = simulation.assemble_graph()
 
     #computational_graph_one_metabolite.visualize(filename='dask_graph.png')
-    computational_graph_one_metabolite.dask.visualize(filename='dask_graph_high_level.png')
+    computational_graph.dask.visualize(filename='visualisation/dask_graph_high_level.png')
 
     # Start client & and start dasboard, since computation is below
     memory_limit_per_worker = "20GB"
@@ -165,11 +296,11 @@ if __name__ == '__main__':
     threads_per_worker = [1,2,3,4,5,6,7,8,9,10]
 
     import time
-    import pandas as pd
+    #import pandas as pd
     # Create an empty DataFrame
     df = pd.DataFrame(columns=['num_worker', 'num_threads', 'time_sec'])
     current_path = os.getcwd()     # Get the current working directory
-    file_name = 'data.txt' # Specify the file name
+    file_name = 'performance/data.txt'  # Specify the file name
 
     # Create the full file path
     file_path = os.path.join(current_path, file_name)
@@ -224,7 +355,7 @@ if __name__ == '__main__':
     ####plt.show()
     ########input("END!")
 
-    cluster = LocalCluster(n_workers=5, threads_per_worker=8, memory_limit=memory_limit_per_worker)  # 5,8
+    cluster = LocalCluster(n_workers=1, threads_per_worker=5, memory_limit=memory_limit_per_worker)  # --> 5,8 fro cross sectional view;  --> 4,5 for whole 1536
     client = Client(cluster)
     dashboard_url = client.dashboard_link
     print(dashboard_url)
@@ -235,17 +366,47 @@ if __name__ == '__main__':
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))  # 1 row, 3 columns
 
     # Plotting data on each subplot using imshow
-    transversal = np.abs(computational_graph_one_metabolite[100, :, :, 40].compute())
+    ms = MemorySampler()
+    all_blocks = computational_graph.blocks.ravel()
+
+    print(type(all_blocks))
+    print(type(all_blocks[0]))
+    print(len(all_blocks))
+    print(all_blocks[0].shape)
+    print("==================================")
+
+    Console.start_timer()
+    with ms.sample("collection 1"), ProgressBar():
+        for block in all_blocks:
+            block.compute()
+    Console.stop_timer()
+
+        #whole_data = computational_graph.compute()
+
+
+    Console.stop_timer()
+    ms.plot(align=True)
+    plt.show()
+
+    input("---")
+    transversal = computational_graph[100, :, :, 40].compute()
+    coronal = computational_graph[100, :, 50, :].compute()
+    sagittal = computational_graph[100, 50, :, :].compute()
+
+    #transversal = computational_graph[100, :, :, 40].compute()
+    transversal = np.abs(transversal)
     im1 = axes[0].imshow(transversal)
     axes[0].set_title('transversal')
     cbar1 = fig.colorbar(im1, ax=axes[0], fraction=0.046, pad=0.04)
 
-    coronal = np.abs(computational_graph_one_metabolite[100, :, 50, :].compute())
+    #coronal = computational_graph[100, :, 50, :].compute()
+    coronal = np.abs(coronal)
     im2 = axes[1].imshow(coronal)
     axes[1].set_title('coronal')
     cbar2 = fig.colorbar(im2, ax=axes[1], fraction=0.046, pad=0.04)
 
-    sagittal = np.abs(computational_graph_one_metabolite[100, 50, :, :].compute())
+    #sagittal = computational_graph[100, 50, :, :].compute()
+    sagittal = np.abs(sagittal)
     im3 = axes[2].imshow(sagittal)
     axes[2].set_title('sagittal')
     cbar3 = fig.colorbar(im3, ax=axes[2], fraction=0.046, pad=0.04)
@@ -335,3 +496,10 @@ if __name__ == '__main__':
 ####sampling_model.create_sub_volume_iterative()
 ##### TODO
 ##### sampling.cartesian_FT(spectral_model, auto_gpu=True, path_cache=path_cache, file_name_cache="25022024", custom_batch_size=200)
+
+
+if __name__ == '__main__':
+    config = Config(max_depth=4)
+    graphviz = GraphvizOutput(output_file='pycallgraph.png')
+    with PyCallGraph(output=GraphvizOutput(), config=config):
+        main_entry()

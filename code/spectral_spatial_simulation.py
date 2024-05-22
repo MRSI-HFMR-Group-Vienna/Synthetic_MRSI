@@ -88,6 +88,36 @@ class FID:
 
         return fid
 
+    def get_name_abbreviation(self) -> list[str]:
+        """
+        TODO
+
+        :return:
+        """
+        name_abbreviation = []
+        for name in self.name:
+            start_index = name.find("(")
+            end_index = name.find(")")
+            abbreviation = name[start_index + 1:end_index]
+            name_abbreviation.append(abbreviation)
+
+        return name_abbreviation
+
+    def get_signal_by_name(self, compound_name:str):
+        """
+        TODO
+
+        :param compound_name:
+        :return:
+        """
+        try:
+            index = self.name.index(compound_name)
+            signal = self.signal[index, :]
+            return FID(signal=signal, name=[compound_name], time=self.time)
+        except ValueError:
+            Console.printf("error", f"Chemical compound not available: {compound_name}. Please check your spelling and possible whitespaces!")
+            return
+
     def get_signal(self, signal_data_type: np.dtype, mute=True):
         """
         To get the signal with a certain precision. Useful to reduce the required space.
@@ -325,7 +355,7 @@ class Model:
             # block_size = self.metabolic_property_maps[metabolite_name].block_size
             fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
             fid_signal = cp.asarray(fid_signal) # TODO
-            fid_signal = da.from_array(fid_signal)
+            fid_signal = da.from_array(fid_signal, chunks=self.block_size)
             time_vector = da.from_array(fid.time)
             mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
             mask = cp.asarray(mask) # TODO
@@ -362,6 +392,7 @@ class Model:
             #mask = mask.map_blocks(cp.asarray, dtype='bool')
             #volume_with_mask = fid_signal * mask
             volume_with_mask = fid_signal * mask
+
             #print(mask.shape)
             #print(fid_signal.shape)
             #input("-ß-ß-ß-ß-ß-ß-ß-")
