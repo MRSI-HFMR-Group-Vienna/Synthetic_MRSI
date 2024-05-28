@@ -20,6 +20,8 @@ import file
 import sys
 import cupy
 
+from tqdm import tqdm
+
 import seaborn as sns
 import pandas as pd
 
@@ -67,7 +69,7 @@ def main_entry():
     u = pint.UnitRegistry()
 
     # Load defined paths in the configurator
-    Console.printf_section("Load and prepare data")
+    Console.printf_section("Load the data")
     configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/code/config/",
                                      file_name="config_30042024.json")
     configurator.load()
@@ -207,7 +209,7 @@ def main_entry():
 
     ####################################
     # Configuration:
-    block_size = (int(1), int(112), int(128), int(80))
+    block_size = (int(5), int(112), int(128), int(80))
     ####################################
 
     # Create MetabolicPropertyMap (theoretically for each metabolite; however, only Glu used so far)
@@ -233,21 +235,39 @@ def main_entry():
                                                    block_size=block_size, # TODO: was 1536x10x10x10
                                                    TE=0.0013,
                                                    TR=0.6,
-                                                   alpha=45)
+                                                   alpha=45,
+                                                   data_type="complex64",
+                                                   compute_on_device="cuda",
+                                                   return_on_device="cuda")
                                                     # TODO: Also state size of one block after created model!
+
+
+    # ############ JUST FOR TEST PURPOSES #################
+    ###fid_prepared_2 = spectral_spatial_simulation.FID()
+    ###fid_length = 100_000
+    ###for fid in fid_prepared:
+    ###    # Generate 100000 real and imaginary parts
+    ###    real_parts = np.random.rand(fid_length).astype(np.float32)
+    ###    imaginary_parts = np.random.rand(fid_length).astype(np.float32)
+    ###    # Combine into complex64
+    ###    complex_numbers = real_parts + 1j * imaginary_parts
+    ###    complex_numbers = complex_numbers.astype(np.complex64)
+    ###    fid.signal = complex_numbers
+    ###    fid.time = np.arange(0,fid_length)
+    ###    fid_prepared_2 += fid
+    # ######################################################
 
     # Add components to the Model
     #Console.ask_user("Create computational graph?")
     simulation.add_metabolic_property_maps(metabolic_property_map_dict)  # all maps
-    simulation.add_fid(fid_prepared)  # all fid signals
+    simulation.add_fid(fid_prepared)  # all fid signals  # TODO: change back to fid_prepared
     simulation.add_mask(metabolic_mask.data)
 
-    computational_graph = simulation.assemble_graph()
-    computational_graph = computational_graph.map_blocks(cupy.fft.fftn, dtype=cupy.complex64, axes=(1,2,3))
-    computational_graph = computational_graph.map_blocks(cupy.asnumpy)
+    simulation.model_summary()
 
-    #computational_graph = cupy.fft.fftn(computational_graph, axes=(1, 2, 3))
-    #input("****************************")
+    computational_graph = simulation.assemble_graph()
+    computational_graph = computational_graph.map_blocks(np.fft.fftn, dtype=cupy.complex64, axes=(1,2,3)) # TODO: Change to cupy
+    #computational_graph = computational_graph.map_blocks(cupy.asnumpy)
 
 
     computational_graph.dask.visualize(filename='visualisation/dask_graph_high_level.png')
@@ -255,7 +275,10 @@ def main_entry():
     # Start client & and start dasboard, since computation is below
     memory_limit_per_worker = "20GB"
 
-    cluster = LocalCluster(n_workers=5, threads_per_worker=8, memory_limit=memory_limit_per_worker)  # --> 5,8 fro cross sectional view;  --> 4,5 for whole 1536
+    #cluster = LocalCluster(n_workers=5, threads_per_worker=8, memory_limit=memory_limit_per_worker)  # --> 5,8 fro cross sectional view;  --> 4,5 for whole 1536
+    from dask_cuda import LocalCUDACluster
+    # https://docs.rapids.ai/api/dask-cuda/nightly/spilling/
+    cluster = LocalCUDACluster(n_workers=4, device_memory_limit="30GB", jit_unspill=True)
     client = Client(cluster)
     dashboard_url = client.dashboard_link
     print(dashboard_url)
@@ -265,6 +288,17 @@ def main_entry():
     #fig, axes = plt.subplots(1, 3, figsize=(15, 5))  # 1 row, 3 columns
 
     # Plotting data on each subplot using imshow
+
+    ### OPTIMISE GRAPH
+    ###from dask.optimization import cull, inline, fuse
+    ###dsk = computational_graph.__dask_graph__()
+    ###dsk, dependencies = cull(dsk, computational_graph.__dask_keys__())
+    ###dsk = inline(dsk)
+    ###dsk, dependencies = fuse(dsk)
+    ####sk = optimize(dsk, keys=computational_graph.__dask_keys__())
+    ###computational_graph = dsk
+    ###computational_graph.dask.visualize(filename='visualisation/dask_graph_high_level_optimised.png')
+
     all_blocks = computational_graph.blocks.ravel()
 
     ###print(type(all_blocks))
@@ -281,19 +315,22 @@ def main_entry():
     ###        print(f"block shape: {block.shape}")
     ###Console.stop_timer()
 
-    Console.start_timer()
+    #Console.start_timer()
     print("====================================== Compute chunks in parallel:")
-    blocks = 500
+    blocks = 200 # TODO: was 500 with FID point 1535 OR 10_000
     batches_slice = list(gen_batches(len(all_blocks), blocks))
     print(f"Number of batches {len(batches_slice)}, each {blocks} blocks")
     ms = MemorySampler()
+    Console.start_timer()
     with ms.sample("collection 1"):
-        for i, s in enumerate(batches_slice):
-            print(f"compute batch {i}")
+        for i, s in tqdm(enumerate(batches_slice), total=len(batches_slice)):
+            ####print(f"compute batch {i}") ###
+            #Console.start_timer()
             blocks = dask.compute(all_blocks[s])[0]
-            blocks_squeezed = [np.squeeze(block, axis=0) for block in blocks]
-            result = np.stack(blocks_squeezed, axis=0)
-            print(result.shape)
+            #Console.stop_timer()
+            ###blocks_squeezed = [np.squeeze(block, axis=0) for block in blocks]
+            ###result = np.stack(blocks_squeezed, axis=0)
+            ###print(result.shape)
 
     Console.stop_timer()
     ms.plot(align=True)

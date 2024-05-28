@@ -6,8 +6,8 @@ from printer import Console
 import dask.array as da
 from tqdm import tqdm
 import numpy as np
-#import numba
-#from numba import cuda
+# import numba
+# from numba import cuda
 import tools
 import cupy
 import cupy as cp
@@ -103,7 +103,7 @@ class FID:
 
         return name_abbreviation
 
-    def get_signal_by_name(self, compound_name:str):
+    def get_signal_by_name(self, compound_name: str):
         """
         TODO
 
@@ -216,8 +216,20 @@ class FID:
 
 
 class Model:
+    """
+    For creating a model that combines the spectral and spatial information. It combines the FIDs, metabolic property maps and mask.
+    """
 
-    def __init__(self, block_size: tuple, TE: float, TR: float, alpha: float, path_cache: str = None):
+    def __init__(self,
+                 block_size: tuple,
+                 TE: float,
+                 TR: float,
+                 alpha: float,
+                 path_cache: str = None,
+                 data_type: str = "complex64",
+                 compute_on_device: str = "cpu",
+                 return_on_device: str = "cpu"):
+        # Define a caching path for dask. Required if RAM is running out of memory.
         if path_cache is not None:
             if os.path.exists(path_cache):
                 self.path_cache = path_cache
@@ -226,8 +238,10 @@ class Model:
                 sys.exit()
             dask.config.set(temporary_directory=path_cache)
 
+        # The block size used for dask to compute
         self.block_size = block_size
 
+        # Parameters defined by the user
         self.TE = TE
         self.TR = TR
         self.alpha = alpha
@@ -235,6 +249,30 @@ class Model:
         self.fid = FID()  # instantiate an empty FID to be able to sum it ;)
         self.metabolic_property_maps: dict[str, MetabolicPropertyMap] = {}
         self.mask = None
+
+        # Define the device for computation and the target device (cuda, cpu)
+        self.compute_on_device = compute_on_device
+        self.return_on_device = return_on_device
+
+        # Define the data type which should be used
+        self.data_type = data_type
+
+    def model_summary(self):
+        # TODO: make more beautiful (programming style) ;)
+        # TODO: add units
+        Console.add_lines("Spectral-Spatial-Model Summary:")
+        Console.add_lines(f" TE          ... {self.TE}")
+        Console.add_lines(f" TR          ... {self.TR}")
+        Console.add_lines(f" alpha       ... {self.alpha}")
+        Console.add_lines(f" FID length  ... {len(self.fid.signal[0])}")
+        Console.add_lines(f" Metabolites ... {len(self.metabolic_property_maps)}")
+        Console.add_lines(f" Model shape ... {self.mask.shape}")
+        Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
+        Console.add_lines(f" Compute on  ... {self.compute_on_device}")
+        Console.add_lines(f" Return in   ... {self.return_on_device}")
+        Console.add_lines(f" Cache path  ... {self.path_cache}")
+        Console.printf_collected_lines("info")
+
 
     def add_fid(self, fid: FID) -> None:
         """
@@ -298,424 +336,150 @@ class Model:
 
         Console.printf_collected_lines("success")
 
-    ##@staticmethod
-    ##def _transform_T1(volume, alpha, TR, T1):
-    ##    return volume * np.sin(np.deg2rad(alpha)) * (1 - da.exp(-TR / T1)) / (1 - (da.cos(np.deg2rad(alpha)) * da.exp(-TR / T1)))
+    @staticmethod
+    def _transform_T1(xp, volume, alpha, TR, T1):
+        """
+        TODO: make full docstring
+        Transform the volume. Therefore, alpha, TR and T1 is used.
+           alpha ... scalar value (either numpy or cupy)
+           TR    ... scalar value (either numpy or cupy)
+           T1    ... matrix       (either numpy or cupy)
+           xp    ... either numpy or cupy -> using the whole imported library (np or cp is xp)
 
-    ##@staticmethod
-    ##def _transform_T2(volume, time_vector, TE, T2):
-    ##    for index, t in enumerate(time_vector):
-    ##        volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
-    ##    return volume
-
-    ###@staticmethod
-    ###def _transform_T1(volume, alpha, TR, T1):
-    ###    return volume * np.sin(np.deg2rad(alpha)) * (1 - np.exp(-TR / T1)) / (1 - (np.cos(np.deg2rad(alpha)) * np.exp(-TR / T1)))
-
-    ###@staticmethod
-    ###def _transform_T1(volume, alpha, TR, T1):
-    ###    return volume * np.sin(np.deg2rad(alpha)) * (1 - np.exp(-TR / T1)) / (1 - (np.cos(np.deg2rad(alpha)) * np.exp(-TR / T1)))
+        It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
+        """
+        return volume * xp.sin(xp.deg2rad(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(np.deg2rad(alpha)) * xp.exp(-TR / T1)))
 
     @staticmethod
-    def _transform_T1(volume, alpha, TR, T1):
-        return volume * cp.sin(cp.deg2rad(alpha)) * (1 - cp.exp(-TR / T1)) / (1 - (cp.cos(np.deg2rad(alpha)) * cp.exp(-TR / T1)))
+    def _transform_T2(xp, volume, time_vector, TE, T2):
+        """
+        TODO: make full docstring
+        Transform the volume. Therefore, a time vector, TE and T2 is used.
+           time vector ... vector (either numpy or cupy)
+           TE          ... scalar value (either numpy or cupy)
+           T2          ... matrix       (either numpy or cupy)
+           xp          ... either numpy or cupy -> using the whole imported library (np or cp is xp)
 
-    ###@staticmethod
-    ###def _transform_T2(volume, time_vector, TE, T2):
-    ###    #for index, t in enumerate(time_vector):
-    ###    #    volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
-    ###    volume *= np.exp((TE * time_vector[:, np.newaxis, np.newaxis, np.newaxis]) / T2)
-    ###    return volume
-
-    @staticmethod
-    def _transform_T2(volume, time_vector, TE, T2):
-        #for index, t in enumerate(time_vector):
-        #    volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
-        volume *= cp.exp((TE * time_vector) / T2)
+        It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
+        """
+        # The original implementation:
+        #   for index, t in enumerate(time_vector):
+        #       volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
+        # Also, valid, and it might be faster:
+        volume *= xp.exp((TE * time_vector) / T2)
         return volume
 
-
-    ###@numba.stencil
-    ###@staticmethod
-    ###def _transform_T2_numba(volume, time_vector, TE, T2):
-    ###    return (volume[0, 0, 0, 0] * da.exp((TE * time_vector[0]) / T2))
-    ###
-    ###@numba.njit
-    ####@staticmethod
-    ###def transform_T2_numba(volume, time_vector, TE, T2):
-    ###    return Model._transform_T2_numba(volume, time_vector, TE, T2)
-
     def assemble_graph(self) -> CustomArray:
+        """
+        Greate a computational dask graph. It can be used to compute it or to add further operations.
 
-        Console.printf("info", "Start to assemble whole graph:")
+        :return: CustomArray with numpy or cupy, based on the selected device when created the model.
+        """
+
+        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}:")
+
+        # Defining based on the selected device if cupy or numpy should be used
+        xp = None
+        if self.compute_on_device == "cuda":
+            xp = cp  # use cupy
+        elif self.compute_on_device == "cpu":
+            xp = np  # use numpy
+
         metabolites_volume_list = []
         for fid in tqdm(self.fid, total=len(self.fid.signal)):
-            # Prepare the data & reshape it
+            # (1) Prepare the data & reshape it
+            #   1a) Get the name of the metabolite (unpack from the list)
             metabolite_name = fid.name[0]
-            # block_size = self.metabolic_property_maps[metabolite_name].block_size
+            #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
             fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
-            fid_signal = cp.asarray(fid_signal) # TODO
+            fid_signal = xp.asarray(fid_signal)
             fid_signal = da.from_array(fid_signal, chunks=self.block_size[0])
-
-            time_vector = fid.time[:, cp.newaxis, cp.newaxis, cp.newaxis]
+            #   1c) Reshape time vector, create dask array with block size defined by the user
+            time_vector = fid.time[:, xp.newaxis, xp.newaxis, xp.newaxis]
             time_vector = da.from_array(time_vector, chunks=(self.block_size[0], 1, 1, 1))
-            #print(time_vector)
-            #input("-------------------------------------------------------")
-
+            #   1d) Same as for FID and time vector above
             mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
-            mask = cp.asarray(mask) # TODO
+            mask = xp.asarray(mask)
             mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
+            #   1f) Get T1 and T2 of respective metabolite with the metabolite name
             metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
             metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
 
-            # 87.712 sec
-            # reshape fid signal from (1536,) --> (1536,1,1,1); time vector (1536,)
-            # reshape mask from (112,128,80) --> (1,112,128,80)
-            #
-            #
-
-            # With GPU:
-            # 57.65 sec
-            # --> T1 & T2 transform on GPU
-            # --> concatenate not on GPU
-
-            # With GPU:
-            # 50.809 sec
-            # --> not multiply mask and FID
-            # --> T1 & T2 transform on GPU
-            # --> concatenate ALSO on GPU
-
-            # With GPU:
-            # 42.99 sec
-            # --> multiply mask and FID
-            # --> T1 & T2 transform on GPU
-            # --> concatenate ALSO on GPU
-
-            # (1) FID with 3D mask volume yields 4d volume
-            # TODO: ISSUE HERE!
-            #fid_signal = fid_signal.map_blocks(cp.asarray, dtype='c8')
-            #mask = mask.map_blocks(cp.asarray, dtype='bool')
-            #volume_with_mask = fid_signal * mask
+            # (2) FID with 3D mask volume yields 4d volume
             volume_with_mask = fid_signal * mask
 
-            #print(f"volume_with_mask shape: {volume_with_mask}")
+            # (3) Based on selected device prepare data
+            dtype = eval("xp." + self.data_type) # yields in e.g., xp.complex64 which can be np.complex64 or cp.complex64
+            if self.compute_on_device == "cpu":
+                # Creates numpy arrays with xp
+                TE = xp.asarray([self.TE])
+                alpha = xp.asarray([self.alpha])
+                TR = xp.asarray([self.TR])
+                #dtype = xp.complex64  # TODO
+            elif self.compute_on_device == "cuda":
+                # Creates cupy arrays with xp
+                volume_with_mask = volume_with_mask.map_blocks(xp.asarray, dtype=xp.complex64)
+                time_vector = time_vector.map_blocks(xp.asarray, dtype=xp.complex64)
+                TE = xp.asarray([self.TE])
+                metabolic_map_t2 = metabolic_map_t2.map_blocks(xp.asarray, dtype=xp.complex64)
+                metabolic_map_t1 = metabolic_map_t1.map_blocks(xp.asarray, dtype=xp.complex64)
+                alpha = xp.asarray([self.alpha])
+                TR = xp.asarray([self.TR])
+                #dtype = xp.complex64
 
-            #print(mask.shape)
-            #print(fid_signal.shape)
-            #input("-ß-ß-ß-ß-ß-ß-ß-")
-
-            # (2) Include T2 effects
+            # (4) Include T2 effects
             volume_metabolite = da.map_blocks(Model._transform_T2,
-                                              volume_with_mask.map_blocks(cp.asarray, dtype='c8'),  # x = x.map_blocks(cupy.asarray)
-                                              time_vector.map_blocks(cp.asarray, dtype='c8'),
-                                              cp.asarray([self.TE]),
-                                              metabolic_map_t2.map_blocks(cp.asarray, dtype='c8'),
-                                              dtype='c8')
-
-            #print(f"volume_metabolite shape (after T2): {volume_metabolite}")
-
-            #volume_metabolite = volume_metabolite.map_blocks(np.asarray, dtype="complex64")
-            ##print(type(volume_with_mask))
-            ##print(type(volume_with_mask))
-            ##print(type(time_vector))
-            ##print(type(self.TE))
-            ##input("???????????")
-
-            ###volume_metabolite = da.map_blocks(Model._transform_T2,
-            ###                                  volume_with_mask,  # x = x.map_blocks(cupy.asarray)
-            ###                                  time_vector,
-            ###                                  self.TE,
-            ###                                  metabolic_map_t2)
+                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
+                                              volume_with_mask,
+                                              time_vector,
+                                              TE,
+                                              metabolic_map_t2,
+                                              dtype=dtype)
 
             # (3) Include T1 effects
             volume_metabolite = da.map_blocks(Model._transform_T1,
-                                              volume_metabolite.map_blocks(cp.asarray, dtype='c8'),
-                                              cp.asarray([self.alpha]),
-                                              cp.asarray([self.TR]),
-                                              metabolic_map_t1.map_blocks(cp.asarray, dtype='c8'))
-
-            #print(f"volume_metabolite shape (after T1): {volume_metabolite}")
-
-            ##volume_metabolite = Model._transform_T2(volume_with_mask, time_vector, self.TE, metabolic_map_t2)
-            ###volume_metabolite = Model._transform_T1(volume_metabolite, self.alpha, self.TR, metabolic_map_t1)
-
-
-            # TODO --> cupy to numpy
-            #volume_metabolite = volume_metabolite.map_blocks(cp.asnumpy)
+                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
+                                              volume_metabolite,
+                                              alpha,
+                                              TR,
+                                              metabolic_map_t1,
+                                              dtype=dtype)
 
             # (4) Include spatial concentration
-            volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
+            if self.compute_on_device == "cuda":
+                volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
+            elif self.compute_on_device == "cpu":
+                volume_metabolite *= self.metabolic_property_maps[metabolite_name].concentration
 
-            #print(f"volume_metabolite (Include spatial concentration): {volume_metabolite}")
-
-            # (5) Expand dims, since it is only for one metabolite
+            # (5) Expand dims, since it is only for one metabolite and concatenate
             volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
-
-            #print(f"volume_metabolite (expand_dims): {volume_metabolite}")
-
-            # TODO
-            #volume_metabolite = volume_metabolite.map_blocks(cp.asnumpy) # TODO TODO TODO: uncomment again if required!
             metabolites_volume_list.append(volume_metabolite)
 
         # (6) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
         volume_all_metabolites = da.concatenate(metabolites_volume_list, axis=0)
 
-        #print(f"volume_all_metabolites shape (concatenate): {volume_all_metabolites}")
-
-        # (7) Sum all metabolites
+        # (7) Sum all metabolites & Create CustomArray from dask Array
         volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
-
-        #volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy) # TODO TODO TODO: remove again if required!
-
         volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
 
-        #print(f"volume_all_metabolites shape (sum): {volume_sum_all_metabolites}")
+        # (8) If the computation device and target device does not match then adjust it
+        if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
+            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy)
+        elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
+            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)  # TODO: Check if it works
 
+        # (9) Just clarify a computational graph is returned
         computational_graph: CustomArray = volume_sum_all_metabolites
-
-        # TODO: Print summary!
 
         return computational_graph
 
-        ######print(da.compute(volume_sum_all_metabolites.blocks.ravel())) # 200
-        ######input("======= STOP HERE ========= in progress")
-        #####import matplotlib.pyplot as plt
-        #####print(volume_sum_all_metabolites)
-
-    #####
-    #####fig, axes = plt.subplots(1, 3, figsize=(15, 5))  # 1 row, 3 columns
-    #####
-    ###### Plotting data on each subplot using imshow
-    #####transversal = np.abs(volume_sum_all_metabolites[100, :, :, 40].compute())
-    #####im1 = axes[0].imshow(transversal)
-    #####axes[0].set_title('transversal')
-    #####cbar1 = fig.colorbar(im1, ax=axes[0], fraction=0.046, pad=0.04)
-    #####
-    #####coronal = np.abs(volume_sum_all_metabolites[100, :, 50, :].compute())
-    #####im2 = axes[1].imshow(coronal)
-    #####axes[1].set_title('coronal')
-    #####cbar2 = fig.colorbar(im2, ax=axes[1], fraction=0.046, pad=0.04)
-    #####
-    #####sagittal = np.abs(volume_sum_all_metabolites[100, 50, :, :].compute())
-    #####im3 = axes[2].imshow(sagittal)
-    #####axes[2].set_title('sagittal')
-    #####cbar3 = fig.colorbar(im3, ax=axes[2], fraction=0.046, pad=0.04)
-    #####
-    ###### Adding some space between subplots
-    #####plt.tight_layout()
-    #####
-    ###### Display the plot
-    #####plt.show()
-    #####
-    #####input("======= STOP HERE =========")
-    #####
-    #####
-    ######volume_sum_all_metabolites.compute()
-
     def build(self):
-        pass
+        """
+        Do we need this?
 
-
-# def transform_T1(volume, alpha, TR, T1):
-#    return volume * np.sin(np.deg2rad(alpha)) * (1 - da.exp(-TR / T1)) / (1 - (da.cos(np.deg2rad(alpha)) * da.exp(-TR / T1)))
-#
-# def transform_T2(volume, time_vector, TE, T2):
-#    for index, t in enumerate(time_vector):
-#        volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
-#    return volume
-
-
-####class Model:
-####    # TODO: DEPRECATED!!!!!!!!!!!!!! Remove it!!!!!!!!!!!!!
-####
-####    def __init__(self, path_cache: str, file_name_cache: str, partial_model: bool, partial_model_index: int = None):
-####        if os.path.exists(path_cache):
-####            self.path_cache = path_cache
-####        else:
-####            Console.printf("error", f"Terminating the program. Path does not exist: {path_cache}")
-####            sys.exit()
-####
-####        self.file_name_cache = file_name_cache
-####        self.fid = FID()  # instantiate an empty FID to be able to sum it ;)
-####        self.metabolic_property_maps: dict[str, MetabolicPropertyMap] = {}
-####        self.mask = None
-####        self.volume: dask.array.core.Array = None  # TODO: Rename -> basically the output of the model -> is it a metabolic map?
-####        self.model_shape = None  # shape of volume
-####
-####        self.partial_model = partial_model  # Defines if the model oly contains a sub-volume of the whole volume
-####        self.partial_model_index = partial_model_index
-####
-####        # Necessary for a partial model
-####        if self.partial_model is True:
-####            if partial_model_index is None:
-####                Console.printf("error",
-####                               f"Since the Spectral-Spatial Model has only a partial volume and thus is a 'partial Model'"
-####                               f"the index of the sub-volume in the main volume need to be set! Aborting the program!")
-####                sys.exit()
-####
-####                # The coordinate system of the partial model. The index increases first in z, then x, then y.
-####                #        origin
-####                #          +----------> (+z)
-####                #         /|
-####                #       /  |
-####                #     /    |
-####                # (+x)     |
-####                #          v (+y)
-####
-####    def add_fid(self, fid: FID) -> None:
-####        """
-####        Add a FID from the class `~FID`, which can contain multiple signals, to the Model. All further added FID will perform the
-####        implemented __add__ in the `~FID` class. Thus, the loaded_fid will be merged. Resulting in just one fid object containing all
-####        signals.
-####
-####        Example usage 1:
-####         => Add FID of metabolites
-####         => Add FID of lipids
-####         => Add FID of water simulation
-####         => Add FID of macromolecules simulation
-####        Example usage 2:
-####         => Add FID metabolite 1
-####         => Add FID metabolite 2
-####
-####        :param fid: fid from the class `~FID`
-####        :return: Nothing
-####        """
-####        try:
-####            self.fid + fid  # sum fid according to the __add__ implementation in the FID class
-####            Console.printf("success", f"Added compound '{fid.name} to the spectral spatial model.")
-####        except Exception as e:
-####            Console.printf("error", f"Error in adding compound '{fid.name} to the spectral spatial model. Exception: {e}")
-####
-####    def add_mask(self, mask: np.ndarray) -> None:
-####        # TODO: Should it be an object containing further information of the Mask, transformations, etc.. -> then make class "Mask"!
-####        # TODO: Just one mask per model?
-####        """
-####        For adding one mask to the model. It is just an numpy array with no further information.
-####
-####        :param mask: Numerical values of the mask as numpy array
-####        :return: Nothing
-####        """
-####        self.mask = mask
-####
-####    def add_metabolic_property_map(self, metabolic_property_map: MetabolicPropertyMap):
-####        """
-####        Map for scaling the FID at the respective position in the volume. One map is per metabolite.
-####
-####        :param metabolic_property_map: Values to scale the FID at the respective position in the volume
-####        :return: Nothing
-####        """
-####
-####        Console.printf("info", f"Adding metabolic scaling map of compound {metabolic_property_map.chemical_compound_name}")
-####        self.metabolic_property_maps[metabolic_property_map.chemical_compound_name] = metabolic_property_map
-####
-####        # self.fid_scaling_map = fid_scaling_map
-####
-####    def add_metabolic_property_maps(self, fid_scaling_maps: list[MetabolicPropertyMap]):
-####        """
-####        Multiple Maps for scaling the FID at the respective position in the volume. Each map is for one metabolite.
-####
-####        :param metabolic_property_map:
-####        :return: Nothing
-####        """
-####        Console.add_lines("Adding the following metabolic scaling maps:")
-####        for i, metabolic_property_map in enumerate(fid_scaling_maps):
-####            Console.add_lines(f"{i}: {metabolic_property_map.chemical_compound_name}")
-####            self.metabolic_property_maps[metabolic_property_map.chemical_compound_name] = metabolic_property_map
-####
-####        Console.printf_collected_lines("success")
-####
-####    def line_broader(self):
-####        # TODO: Here or in Simulator?
-####        raise NotImplementedError("This method is not yet implemented")
-####
-####    def build(self, data_type: np.dtype = np.complex64):
-####        Console.printf_section("Spectral-spatial-simulation")
-####        # For building the model: This includes at the current moment mask * map * FID -> (x,y,z, metabolite, FID(s))
-####        # Thus, required is:
-####        #   self.mask
-####        #   self.FID
-####        #   self.fid_scaling_map -> TODO: contains at the moment values in the range [0,1].
-####
-####        # (a) Set path where memmap file should be created and create memmap
-####        #     Or load memmap if file already exits.
-####        path_cache_file = os.path.join(self.path_cache, f"{self.file_name_cache}_spectral_spatial_volume.npy")
-####        Console.printf("info", f"Using cache path: {path_cache_file}")
-####
-####        if (os.path.exists(path_cache_file)
-####                and (Console.ask_user(f"(y) Overwrite existing file '{self.file_name_cache}'? Or (n) load old one instead", exit_if_false=False) is not True)):
-####            Console.printf("info", f"loading the file '{self.file_name_cache}' instead because it already exits in the selected path!")
-####            self.model_shape = np.load(f"{self.file_name_cache}_shape.npy")
-####            self.volume = da.from_array(np.memmap(path_cache_file, dtype=data_type, mode='r+', shape=tuple(self.model_shape)))  # TODO TODO TODO save somewhere the shape!
-####            Console.printf("success", f"Loaded volume of shape: {self.volume.shape}")
-####            return
-####
-####        # (b) Get the required shape of the model & create cache file
-####        # -> if only one FID signal is added, then add one dimension
-####        # -> if multiple FID signals are added, then don't add dimensions
-####        # => final dimension need to be (x,y,z, Metabolite, FID)
-####        fid_shape = (1,) + self.fid.signal.shape if self.fid.signal.ndim == 1 else self.fid.signal.shape
-####        self.model_shape = (self.mask.shape + fid_shape)
-####        np.save(os.path.join(f"{self.file_name_cache}_shape.npy"), np.array(self.model_shape))
-####
-####        # (c) Create memmap on disk with zeros. Then, convert it to as dask array.
-####        self.volume = da.from_array(np.memmap(path_cache_file, dtype=data_type, mode='w+', shape=self.model_shape))
-####        # volume[:] = 0
-####
-####        # (c) Estimate space required on hard drive
-####        #  -> self.model_shape.size returns the shape and np.prod the number of elements in the planned memmap array.
-####        #  -> the np.dtype(data_type) creates and object and .itemsize returns the size (in bytes) of each element
-####        space_required_mb = tools.SpaceEstimator.for_numpy(data_shape=self.model_shape, data_type=data_type, unit="MB")
-####
-####        # (d) Ask the user for agreement of the required space
-####        # Check if the simulation does not exceed a certain size
-####        # Console.check_condition(space_required_mb < 30000, ask_continue=True)
-####        Console.ask_user(f"Estimated required space [MB]: {space_required_mb}")
-####
-####        # (e) Find non zero elements in the mask
-####        mask_nonzero_indices = np.nonzero(self.mask)
-####
-####        # (d) Check if each FID has a respective scaling map!
-####        compounds_FIDs = self.fid.name
-####        compounds_maps = list(self.metabolic_property_maps.keys())
-####        if not len(compounds_FIDs) == len(compounds_maps):
-####            Console.add_lines("Different amount of FIDs and scaling maps.")
-####            Console.add_lines(f"Compounds FIDs given: {compounds_FIDs}")
-####            Console.add_lines(f"Compounds Scaling Maps given: {compounds_maps}")
-####            Console.add_lines(f"Terminate program!")
-####            Console.printf_collected_lines("error")
-####            sys.exit()
-####        if not compounds_FIDs <= compounds_maps:
-####            Console.add_lines("For not each compound a FID and a respective scaling map is given.")
-####            Console.add_lines(f"Compounds FIDs given: {compounds_FIDs}")
-####            Console.add_lines(f"Compounds Scaling Maps given: {compounds_maps}")
-####            Console.add_lines(f"Terminate program!")
-####            Console.printf_collected_lines("error")
-####            sys.exit()
-####
-####        Console.printf("info", "Begin assigning FID to volume:")
-####        indent = " " * 22
-####        for x, y, z in tqdm(zip(*mask_nonzero_indices), total=len(mask_nonzero_indices[0]), desc=indent + "Assigning FID to volume"):
-####            for fid_signal_index in range(self.fid.signal.ndim):
-####                # Scale the FID of each chemical compound based on the given scaling map for this compound
-####                # self.volume[x, y, z, fid_signal_index, :] = self.fid.signal[fid_signal_index] * self.metabolic_property_maps[self.fid.name[fid_signal_index]][x, y, z]
-####
-####                # Multiply the FID at the respective position with the maps of the metabolic property map
-####                chemical_compound_fid_name = self.fid.name[fid_signal_index]
-####                self.volume[x, y, z, fid_signal_index, :] = \
-####                    (
-####                            self.fid.signal[fid_signal_index] *
-####                            self.metabolic_property_maps[chemical_compound_fid_name].concentration[x, y, z] *
-####                            self.metabolic_property_maps[chemical_compound_fid_name].t2 *
-####                            self.metabolic_property_maps[chemical_compound_fid_name].t1
-####                    )
-####
-####        Console.printf("success", f"Created volume of shape: {self.volume.shape}")
-####        self.volume.flush()  # Write any changes in the array to the file on disk.
-####        Console.printf("success", f"Flushed updated volume to path: {self.path_cache}. Actual used space [MB]: {os.path.getsize(path_cache_file) / (1024 * 1024)}")
-####
-####    def _sum_all_fids_in_volume(self):
-####        # TODO: maybe implement in build or call extra?! Do we need volume where FIDs not summed up (Guess not?)? And flush before or after to disk?
-####        raise NotImplementedError("This method is not yet implemented")
+        :return:
+        """
+        raise NotImplementedError
 
 
 class Simulator:
