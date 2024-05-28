@@ -4,7 +4,7 @@ import torch
 
 import default
 
-from spatial_metabolic_distribution import MetabolicPropertyMap
+from spatial_metabolic_distribution import MetabolicPropertyMap, MetabolicPropertyMapsAssembler
 from dask.distributed import Client, LocalCluster
 from distributed.diagnostics import MemorySampler
 from dask.diagnostics import ProgressBar
@@ -62,9 +62,6 @@ def zen_of_python():
 
 def main_entry():
 
-
-    # zen_of_python()
-
     # Initialize the UnitRegistry
     u = pint.UnitRegistry()
 
@@ -84,40 +81,71 @@ def main_entry():
     metabolites.load(fid_name="metabolites",
                      signal_data_type=np.complex64)
 
-    loaded_fid = metabolites.loaded_fid  # contains the signal of 11 chemical compounds
+    # Contains the signal of 11 chemical compounds
+    loaded_fid = metabolites.loaded_fid
 
-    #########################################################################################################################
-    ### Using Glu map and interpolate them
-    ## Only Cr+PCr = Creatine+Phosphocreatine possible
-    # NOTE: _moi means sub-part
-    # 0. Acetyl + Aspartyl_moi(NAAG) ----->  shape: (1536,) == > NAAG
-    # 1. Choline_moi(GPC) -------------->    shape: (1536,) == > GPC + PCh                      ----> Ignore
-    # 2. Creatine(Cr) ----------------->     shape: (1536,) == > CR + PCr
-    # 3. Glutamate(Glu) --------------->     shape: (1536,) == > Glu
-    # 4. Glutamate_moi(NAAG) ----------->    shape: (1536,) == > NAAG
-    # 5. Glutamine_noNH2(Gln) --------->     shape: (1536,) == > Gln
-    # 6. Glycerol_moi(GPC) ------------->    shape: (1536,) == > GPC + PCh      (not yet used)  ----> 1+6 (Glycerol_moi and Choline_moi are parts of the same molecule: GPC)
-    # 7. MyoInositol(m - Ins) ----------->   shape: (1536,) == > Ins
-    # 8. NAcetylAspartate(NAA) -------->     shape: (1536,) == > NAA
-    # 9. Phosphocreatine(PCr) --------->     shape: (1536,) == > CR + PCr                       ----> put together /2
-    # 10. PhosphorylCholine_new1(PC) - -->   shape: (1536,) == > --> GPC+PCH ((1+6+10)/2 FID)
+    # Load and prepare the concentration maps
+    loaded_concentration_maps = file.Maps(configurator=configurator, map_type_name="metabolites")
+    working_name_and_file_name = {"Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii",
+                                  "Gln": "MetMap_Gln_con_map_TargetRes_HiRes.nii",
+                                  "Ins": "MetMap_Ins_con_map_TargetRes_HiRes.nii",
+                                  "NAA": "MetMap_NAA_con_map_TargetRes_HiRes.nii",
+                                  "Cr+PCr": "MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii",
+                                  "GPC+PCh": "MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii",
+                                  }
+
+    loaded_concentration_maps.load(working_name_and_file_name=working_name_and_file_name)
+    loaded_concentration_maps.interpolate_to_target_size(target_size=metabolic_mask.shape) # TODO only nii supported at the beginning! Also other formats?
 
 
-    # TODO: Create function with N arguments to interpolate, each is a metabolic property map. Or a list of metabolic property maps: better --> and get as output list or tuple
-    # NAAG (0), not 4    --> NAAG
-    # NOT USED!
+    using_fid_signals = ["Glutamate (Glu)",
+                         "Glutamine_noNH2 (Gln)",
+                         "MyoInositol (m-Ins)",
+                         "NAcetylAspartate (NAA)",
+                         "Creatine (Cr)",
+                         "Phosphocreatine (PCr)",
+                         "Choline_moi(GPC)",
+                         "Glycerol_moi(GPC)",
+                         "PhosphorylCholine_new1 (PC)"
+                         ]
 
-    # not
-    # Cr+PCr  --> Cr+PCr      --> MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii
-    # NOT USED! Usage is below.
-    fid_and_concentration = []
+    fid = loaded_fid.get_partly_fid(using_fid_signals)
+
+    fid.merge_signals(names=["Creatine (Cr)", "Phosphocreatine (PCr)"], new_name="Creatine (Cr)+Phosphocreatine (PCr)", divisor=2)
+    fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"], new_name="Choline_moi(GPC)+Glycerol_moi(GPC)", divisor=2)
+    fid.name = fid.get_name_abbreviation()
+    print(fid)
+
+    # TODO TODO TODO TODO TODO
+    assembler = MetabolicPropertyMapsAssembler(fid=fid,
+                                               concentration_maps=loaded_concentration_maps,
+                                               T1_maps=None, # TODO make Maps in Spatial!
+                                               T2_maps=None, # TODO make Maps in Spatial!
+                                               concentration_unit=u.mmol,
+                                               T1_unit=u.ms,
+                                               T2_unit=u.ms)
+
+
+
+
+    # TODO TODO TODO: assemble maps and FID together to MetabolicPropertyMaps
+
+
+
     fid_prepared = spectral_spatial_simulation.FID()
+    fid_and_concentration = []
 
-    # Glu     --> Glu         --> MetMap_Glu_con_map_TargetRes_HiRes.nii
+
+    # Maps class?
+    # as input the configurator?
+    # then only pass list of names??? --> and abbrevation --> and match option=>does do interpolation and also does do matching regarding names??
+    #                            --> match FID and all maps!!!!!!! --> it should not dependent on path
+
     path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Glu_con_map_TargetRes_HiRes.nii")
     metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
     zoom_factor_metabolic_map = np.divide(metabolic_mask.shape, metabolic_map.shape)
     metabolic_map = zoom(input=metabolic_map, zoom=zoom_factor_metabolic_map, order=3)
+
     fid = loaded_fid.get_signal_by_name("Glutamate (Glu)")
     fid.name = fid.get_name_abbreviation()
     fid_prepared += fid
@@ -132,16 +160,6 @@ def main_entry():
     fid.name = fid.get_name_abbreviation()
     fid_prepared += fid
     fid_and_concentration.append([fid, metabolic_map])
-
-    #### GPC+PCh --> GPC (1+6)   --> MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii
-    ###path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii")
-    ###metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
-    ###fid1 = loaded_fid.get_signal_by_name("Choline_moi(GPC)")
-    ###fid2 = loaded_fid.get_signal_by_name("Glycerol_moi(GPC)")
-    ###signal = fid1.signal+fid2.signal
-    ###name = [fid1.get_name_abbreviation()[0] + "+" + fid2.get_name_abbreviation()[0]]
-    ###fid = spectral_spatial_simulation.FID(signal=signal, name=name, time=fid1.time)
-    ###fid_prepared += fid
 
     # Ins     --> Ins         --> MetMap_Ins_con_map_TargetRes_HiRes.nii
     path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Ins_con_map_TargetRes_HiRes.nii")
@@ -184,7 +202,7 @@ def main_entry():
     fid1 = loaded_fid.get_signal_by_name("Choline_moi(GPC)")
     fid2 = loaded_fid.get_signal_by_name("Glycerol_moi(GPC)")
     fid3 = loaded_fid.get_signal_by_name("PhosphorylCholine_new1 (PC)")
-    signal = (fid1.signal+fid2.signal+fid3.signal)/3
+    signal = (fid1.signal+fid2.signal+fid3.signal)/2
     name = fid1.get_name_abbreviation()
     fid = spectral_spatial_simulation.FID(signal=signal, name=name, time=fid1.time)
     fid_prepared += fid
@@ -192,12 +210,8 @@ def main_entry():
 
     Console.printf("success", f"Interpolated all concentration maps to shape: {metabolic_mask.shape}")
 
-    #### Load and interpolate Glu map and T1 map
-    ###path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "MetMap_Glu_con_map_TargetRes_HiRes.nii")
-    ###loaded_metabolic_map = file.NeuroImage(path=path_to_one_map).load_nii().data
-    ###zoom_factor_one_metabolic_map = np.divide(metabolic_mask.shape, loaded_metabolic_map.shape)
-    ###loaded_metabolic_map_interpolated = zoom(input=loaded_metabolic_map, zoom=zoom_factor_one_metabolic_map, order=3)
-    ###Console.printf("success", f"Interpolated Glu Map: from {loaded_metabolic_map.shape} to --> {loaded_metabolic_map_interpolated.shape}")
+
+
 
     path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "T1_TargetRes_HiRes.nii")
     loaded_T1_map = file.NeuroImage(path=path_to_one_map).load_nii().data

@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import numpy as np
+from scipy.ndimage import zoom
 import spectral_spatial_simulation
 from printer import Console
 # for NeuroImage
@@ -197,7 +198,7 @@ class NeuroImage:
         self.data: np.memmap = None  # Image data of the nifti image
         self.shape: tuple = ()  # Just the shape of the nifti image data
 
-    def load_nii(self):
+    def load_nii(self, mute: bool = False):
         """
         The data will be loaded as "np.memmap", thus usage of a memory map. Since the data is just mapped, no
         full workload on the RAM because data is only loaded into memory on demand.
@@ -221,7 +222,7 @@ class NeuroImage:
                                   f"\n    Pixel dimensions: -> {self.header.get_zooms()}"
                                   f"\n    Values range:     -> [{round(np.min(self.data),3)}, {round(np.max(self.data),3)}]"
                                   f"\n    In memory cache?  -> {self.nifti_object.in_memory}",  # TODO what was exactly the purpose?
-                       mute=False)
+                       mute=mute)
 
         return self
 
@@ -346,6 +347,47 @@ class T1Image:
         pass
 
 
+class Maps:
+    # TODO
+
+    def __init__(self, configurator: Configurator, map_type_name: str):
+        self.configurator = configurator
+        self.map_type_name = map_type_name # e.g. B0, B1, metabolites
+        self.loaded_maps: dict[str, np.memmap] = {} # kay is abbreviation like "Glu" for better matching
+
+    def load(self, working_name_and_file_name: dict[str, str]):
+        # TODO
+
+        self.configurator.load()
+        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+
+        Console.add_lines("Loaded maps: ")
+        for i, (working_name, file_name) in enumerate(working_name_and_file_name.items()):
+            path_to_map = os.path.join(main_path, file_name)
+            loaded_map = NeuroImage(path=path_to_map).load_nii(mute=True).data
+            self.loaded_maps[working_name] = loaded_map
+
+            Console.add_lines(f"  {(i)}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | Values range: [{round(np.min(loaded_map),3)}, {round(np.max(loaded_map),3)}] ")
+        Console.printf_collected_lines("success")
+
+        return self
+
+    def interpolate_to_target_size(self, target_size: tuple, order: int = 3):
+        # TODO Docstring
+        # TODO tqdm/progressbar for interpolation!
+
+        Console.add_lines("Interpolate loaded maps: ")
+        for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
+            zoom_factor = np.divide(target_size, loaded_map.shape)
+            self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+            Console.add_lines(f"  {(i)}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
+        Console.printf_collected_lines("success")
+
+        return self
+
+
+
+
 class FID:
     """
     This class is for creating an FID containing several attributes. The FID signal and parameters can be
@@ -358,7 +400,7 @@ class FID:
         self.parameters: dict = {}
         self.loaded_fid: spectral_spatial_simulation.FID = spectral_spatial_simulation.FID()
 
-    def load(self, fid_name: str, signal_data_type: np.dtype = np.float64):
+    def load(self, fid_name: str, signal_data_type: np.dtype = np.float64): # TODO: replace fid_name to fid_type_name??? --> see Maps class above
         """
         For loading and splitting the FID according to the respective chemical compound (metabolites, lipids).
         Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.

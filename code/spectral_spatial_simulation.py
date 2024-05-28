@@ -88,18 +88,85 @@ class FID:
 
         return fid
 
-    def get_name_abbreviation(self) -> list[str]:
+    def merge_signals(self, names: list[str], new_name: str, divisor: int):
         """
         TODO
 
+        :param new_name:
+        :param names:
+        :param divisor:
         :return:
+        """
+        indices = []
+
+        signal = np.zeros(self.signal.shape[1], dtype=self.signal.dtype) # empty array of fid length
+        for name in names:
+            signal += self.get_signal_by_name(name).signal
+            index = self.name.index(name)
+            indices.append(index)
+
+        signal *= 1/divisor
+
+        # delete old entries
+        self.signal = np.delete(self.signal, indices, axis=0)
+        self.name = [name for name in self.name if name not in names] # delete the old names by getting subset
+
+        # insert new entries
+        self.signal = np.vstack((self.signal, signal))
+        self.name.append(new_name)
+        Console.printf("success", f"Merged signals of {names} with factor 1/{divisor}. New name of signal: {new_name}")
+
+
+
+    def get_partly_fid(self, names: list[str]):
+        """
+        This creates a fid with only containing the FID signals corresponding to the names. Thus, this FID represents a subset of the whole FID!
+
+        :param names: names of all FIDs in the current FID
+        :return: new FID object with only the desired FID signals
+        """
+        fid = FID()
+
+        for name in names:
+            fid += self.get_signal_by_name(name)
+
+        return fid
+
+
+    def get_name_abbreviation(self) -> list[str]:
+        """
+        Extracts the abbreviation of each given chemical compound name. It is necessary that the string, represending the name of the signal in the FID
+        contains a abbreviated for somewhere in brackets. For example: Creatine (Cr)
+
+        Example use case:
+            Creatine (Cr)+Phosphocreatine (PCr) --> Cr+PCr
+
+        No effect if no brackets available or already abbreviated:
+            Cr+PCr --> Cr+PCr
+
+        :return: list of strings containing the abbreviations
         """
         name_abbreviation = []
         for name in self.name:
-            start_index = name.find("(")
-            end_index = name.find(")")
-            abbreviation = name[start_index + 1:end_index]
-            name_abbreviation.append(abbreviation)
+            # Search for the indices of the brackets
+            start_indices = [index for index, letter in enumerate(name) if letter == "("]
+            end_indices = [index for index, letter in enumerate(name) if letter == ")"]
+
+            # CASE 1: failed to find "(" and ")" or it is already abbreviated
+            if (not start_indices) & (not end_indices):
+                name_abbreviation.append(name)
+            # CASE 2: start to abbreviate the given name
+            else:
+                abbreviation = ""
+                for i, (start_index, end_index) in enumerate(zip(start_indices, end_indices)):
+                    # extract "(" and ")" and the text in between (the abbreviation)
+                    abbreviation += name[start_index + 1:end_index]
+                    # if only one abbreviation don't add "+", also not if we reached the end!
+                    if (i >= 0) and (i != len(start_indices)-1):
+                        abbreviation += "+"
+
+                # append abbreviation of one signal
+                name_abbreviation.append(abbreviation)
 
         return name_abbreviation
 

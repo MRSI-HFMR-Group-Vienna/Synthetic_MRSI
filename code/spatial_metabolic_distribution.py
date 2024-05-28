@@ -1,9 +1,11 @@
 from dataclasses import dataclass, asdict
+import spectral_spatial_simulation
 from dataclasses import dataclass
 from tools import CustomArray
 from printer import Console
 import dask.array as da
 import numpy as np
+import file
 import pint
 import sys
 
@@ -50,6 +52,31 @@ class MetabolicAtlas:
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 
+
+class MetabolicPropertyMapsAssembler:
+    # TODO Docstring
+
+    def __init__(self,
+                 fid: spectral_spatial_simulation.FID,
+                 concentration_maps: file.Maps, # TODO change to Maps that is in spectral_spatial_simulation!
+                 T1_maps: file.Maps,
+                 T2_maps: file.Maps,
+                 concentration_unit, # TODO define data type
+                 T1_unit,
+                 T2_unit):
+
+        self.fid = fid
+        self.concentration_maps = concentration_maps
+        self.T1_maps = T1_maps
+        self.T2_maps = T2_maps
+        self.concentration_uni = concentration_unit
+        self.T1_unit = T1_unit
+        self.T2_unit = T2_unit
+
+    def assemble(self):
+        # TODO cerate metabolic property map --> i guess i need dictionary --> see main file
+        for fid_one_signal in self.fid:
+            print(fid_one_signal)
 
 class MetabolicPropertyMap:
     """
