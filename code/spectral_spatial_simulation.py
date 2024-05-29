@@ -1,4 +1,8 @@
-from spatial_metabolic_distribution import MetabolicPropertyMap
+from __future__ import annotations      #TODO: due to circular import. Maybe solve different!
+from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
+if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
+    from spatial_metabolic_distribution import MetabolicPropertyMap  #TODO: due to circular import. Maybe solve different!
+
 from dask.diagnostics import ProgressBar
 from tools import CustomArray
 from dask.array import Array

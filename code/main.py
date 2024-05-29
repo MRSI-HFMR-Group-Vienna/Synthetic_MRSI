@@ -3,13 +3,13 @@ import os.path
 import torch
 
 import default
-
-from spatial_metabolic_distribution import MetabolicPropertyMap, MetabolicPropertyMapsAssembler
+from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler, MetabolicPropertyMap
+from spectral_spatial_simulation import Model as SpectralSpatialModel
 from dask.distributed import Client, LocalCluster
 from distributed.diagnostics import MemorySampler
+from spectral_spatial_simulation import FID
 from dask.diagnostics import ProgressBar
 from sklearn.utils import gen_batches
-import spectral_spatial_simulation
 import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
 from printer import Console
@@ -88,16 +88,44 @@ def main_entry():
     loaded_concentration_maps = file.Maps(configurator=configurator, map_type_name="metabolites")
     working_name_and_file_name = {"Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii",
                                   "Gln": "MetMap_Gln_con_map_TargetRes_HiRes.nii",
-                                  "Ins": "MetMap_Ins_con_map_TargetRes_HiRes.nii",
+                                  "m-Ins": "MetMap_Ins_con_map_TargetRes_HiRes.nii",
                                   "NAA": "MetMap_NAA_con_map_TargetRes_HiRes.nii",
                                   "Cr+PCr": "MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii",
                                   "GPC+PCh": "MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii",
                                   }
-
     loaded_concentration_maps.load(working_name_and_file_name=working_name_and_file_name)
-    loaded_concentration_maps.interpolate_to_target_size(target_size=metabolic_mask.shape) # TODO only nii supported at the beginning! Also other formats?
+
+    # Assign loaded maps from module file to maps object from the spatial metabolic distribution & Interpolate it
+    concentration_maps = Maps(loaded_concentration_maps.loaded_maps)
+    concentration_maps.interpolate_to_target_size(target_size=metabolic_mask.shape, order=3, target_device='cuda')
+
+    # Load T1 map (TODO: only one for the moment, but need one for each metabolite?)
+    path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "T1_TargetRes_HiRes.nii")
+    loaded_T1_map = file.NeuroImage(path=path_to_one_map).load_nii().data * 1e-3
+
+    working_name_and_map = {"Glu": loaded_T1_map,
+                            "Gln": loaded_T1_map,
+                            "m-Ins": loaded_T1_map,
+                            "NAA": loaded_T1_map,
+                            "Cr+PCr": loaded_T1_map,
+                            "GPC+PCh": loaded_T1_map,
+                            }
+    t1_maps = Maps(maps=working_name_and_map)
+    t1_maps.interpolate_to_target_size(target_size=metabolic_mask.shape, order=3, target_device='cuda')
+
+    # Create T2 map (TODO: only random values for the moment!)
+    working_name_and_map = {"Glu": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
+                            "Gln": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
+                            "m-Ins": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
+                            "NAA": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
+                            "Cr+PCr": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
+                            "GPC+PCh": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
+                            }
+    t2_maps = Maps(maps=working_name_and_map)
+    t2_maps.interpolate_to_target_size(target_size=metabolic_mask.shape, order=3, target_device='cuda')
 
 
+    # Get partially FID containign only the desired signals
     using_fid_signals = ["Glutamate (Glu)",
                          "Glutamine_noNH2 (Gln)",
                          "MyoInositol (m-Ins)",
@@ -111,19 +139,44 @@ def main_entry():
 
     fid = loaded_fid.get_partly_fid(using_fid_signals)
 
+    # Merge signals of the FID in order to match the Maps
     fid.merge_signals(names=["Creatine (Cr)", "Phosphocreatine (PCr)"], new_name="Creatine (Cr)+Phosphocreatine (PCr)", divisor=2)
-    fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"], new_name="Choline_moi(GPC)+Glycerol_moi(GPC)", divisor=2)
+    fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"], new_name="GPC+PCh", divisor=2)
     fid.name = fid.get_name_abbreviation()
     print(fid)
 
+
     # TODO TODO TODO TODO TODO
-    assembler = MetabolicPropertyMapsAssembler(fid=fid,
-                                               concentration_maps=loaded_concentration_maps,
-                                               T1_maps=None, # TODO make Maps in Spatial!
-                                               T2_maps=None, # TODO make Maps in Spatial!
+    block_size = (int(5), int(112), int(128), int(80))
+    assembler = MetabolicPropertyMapsAssembler(block_size=(block_size[1], block_size[2], block_size[3]),
+                                               concentration_maps=concentration_maps,
+                                               t1_maps=t1_maps,
+                                               t2_maps=t2_maps,
                                                concentration_unit=u.mmol,
-                                               T1_unit=u.ms,
-                                               T2_unit=u.ms)
+                                               t1_unit=u.ms,
+                                               t2_unit=u.ms)
+    metabolic_property_map_dict = assembler.assemble()
+
+    # Create spectral spatial model
+    simulation = SpectralSpatialModel(path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp',
+                                      block_size=block_size,  # TODO: was 1536x10x10x10
+                                      TE=0.0013,
+                                      TR=0.6,
+                                      alpha=45,
+                                      data_type="complex64",
+                                      compute_on_device="cuda",
+                                      return_on_device="cuda")
+    # TODO: Also state size of one block after created model!
+
+    simulation.add_metabolic_property_maps(metabolic_property_map_dict)  # all maps
+    simulation.add_fid(fid)  # all fid signals  # TODO: change back to fid_prepared
+    simulation.add_mask(metabolic_mask.data)
+
+    simulation.model_summary()
+    input("----------------")
+
+
+    #===================================================================================
 
 
 
@@ -132,7 +185,7 @@ def main_entry():
 
 
 
-    fid_prepared = spectral_spatial_simulation.FID()
+    fid_prepared = FID()
     fid_and_concentration = []
 
 
@@ -190,7 +243,7 @@ def main_entry():
     fid2 = loaded_fid.get_signal_by_name("Phosphocreatine (PCr)")
     signal = (fid1.signal+fid2.signal)/2
     name = [fid1.get_name_abbreviation()[0] + "+" + fid2.get_name_abbreviation()[0]]
-    fid = spectral_spatial_simulation.FID(signal=signal, name=name, time=fid1.time)
+    fid = FID(signal=signal, name=name, time=fid1.time)
     fid_prepared += fid
     fid_and_concentration.append([fid, metabolic_map])
 
@@ -204,7 +257,7 @@ def main_entry():
     fid3 = loaded_fid.get_signal_by_name("PhosphorylCholine_new1 (PC)")
     signal = (fid1.signal+fid2.signal+fid3.signal)/2
     name = fid1.get_name_abbreviation()
-    fid = spectral_spatial_simulation.FID(signal=signal, name=name, time=fid1.time)
+    fid = FID(signal=signal, name=name, time=fid1.time)
     fid_prepared += fid
     fid_and_concentration.append([fid, metabolic_map])
 
