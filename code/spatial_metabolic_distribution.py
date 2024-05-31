@@ -72,7 +72,7 @@ class Maps:
         else:
             self.maps: dict[str, np.ndarray | np.memmap] = maps
 
-    def interpolate_to_target_size(self, target_size: tuple, order: int = 3, target_device: str = 'cpu'):
+    def interpolate_to_target_size(self, target_size: tuple, order: int = 3, target_device: str = 'cpu', target_gpu: int = 0):
         """
         To interpolate all maps that the Maps object contains to a desired target size. The order of interpolation
         can also be set. For more details see zoom of scipy.ndimage (CPU) or cupyx.scipy.ndimage (CUDA).
@@ -82,6 +82,7 @@ class Maps:
         :param target_size: Interpolation to desired size. Insert dimensions as tuple.
         :param order: Desired interpolation (e.g., bilinear). Thus set according number.
         :param target_device: CPU (cpu) or CUDA (cuda)
+        :param target_gpu: Desired GPU device
         :return: the Maps object
         """
 
@@ -93,6 +94,7 @@ class Maps:
             zoom = zoom_cpu
         elif target_device == 'cuda':
             zoom = zoom_gpu
+            Console.printf("info", f"Selected GPU: {target_gpu}")
         else:
             Console.printf("error", f"Invalid target device: {target_device}. it must be either 'cpu' or 'cuda'.")
             sys.exit()
@@ -102,9 +104,18 @@ class Maps:
             # Calculate the zoom factor required by the interpolation method
             zoom_factor = np.divide(target_size, loaded_map.shape)
             # When cuda is selected, convert numpy array to a cupy array
-            loaded_map = cp.asarray(loaded_map) if target_device == 'cuda' else loaded_map
-            # Interpolate with selected method
-            interpolated = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+
+            if target_device == 'cuda':
+                # Compute on desired GPU
+                with cp.cuda.Device(target_gpu):
+                    # Convert numpy array to cupy array
+                    loaded_map = cp.asarray(loaded_map)
+                    # Interpolate with selected method
+                    interpolated = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+            else:
+                # Interpolate with selected method
+                interpolated = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+
             # When cuda is selected, convert cupy array back to a numpy array and thus transfer to cpu
             self.maps[working_name] = interpolated if target_device == 'cpu' else cp.asnumpy(interpolated)
 

@@ -1,3 +1,5 @@
+from dask.distributed import Client, LocalCluster
+from dask_cuda import LocalCUDACluster
 from printer import Console
 import dask.array as da
 import numpy as np
@@ -248,6 +250,41 @@ class CustomBlockView(da.core.BlockView):
         self.block_number += 1  # to get block number of in the main volume (first z, then y, then x)
 
         return custom_dask_array
+
+
+class MyLocalCluster:
+    # TODO Docstring and also describe remaining parts of class!
+
+    def __init__(self):
+        self.cluster = None
+        self.cluster_type: str = None
+        self.client = None
+
+    def start_cpu(self, number_workers: int, threads_per_worker: int, memory_limit_per_worker: str = "30GB"):
+        self.cluster = LocalCluster(n_workers=number_workers,
+                                    threads_per_worker=threads_per_worker,
+                                    memory_limit=memory_limit_per_worker)
+        self.cluster_type = "cpu"
+        self.__start_client()
+
+
+    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB"):
+
+        self.cluster = LocalCUDACluster(n_workers=len(device_numbers),
+                                        device_memory_limit=device_memory_limit,
+                                        jit_unspill=True,
+                                        CUDA_VISIBLE_DEVICES=device_numbers)
+        self.cluster_type = "cuda"
+        self.__start_client()
+
+
+    def __start_client(self):
+        self.client = Client(self.cluster)
+        #self.client = self.cluster.get_client()
+        dashboard_url = self.client.dashboard_link
+
+        Console.printf("info", f"Started {self.cluster_type} Cluster \n"
+                               f" Link to dashboard: {dashboard_url}")
 
 
 
