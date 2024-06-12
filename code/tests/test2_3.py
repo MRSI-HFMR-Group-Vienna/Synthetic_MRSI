@@ -7,7 +7,7 @@ from tqdm import tqdm
 import dask
 import time
 from dask.diagnostics import ProgressBar, visualize
-import xarray as xr
+
 from dask.distributed import Client, LocalCluster, progress
 dask.config.set(temporary_directory='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp')
 from sklearn.utils import gen_batches

@@ -11,7 +11,9 @@ from dask.diagnostics import ProgressBar
 from sklearn.utils import gen_batches
 import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
+from tools import CustomArray, CustomArray2
 from printer import Console
+import xarray as xr
 import numpy as np
 import cupy as cp
 import sampling
@@ -29,6 +31,8 @@ import pandas as pd
 from pycallgraph import Config
 from pycallgraph import PyCallGraph
 from pycallgraph.output import GraphvizOutput
+
+from cupyx.profiler import benchmark
 
 
 def zen_of_python():
@@ -62,7 +66,6 @@ def zen_of_python():
 
 
 def main_entry():
-
     # Initialize the UnitRegistry
     u = pint.UnitRegistry()
 
@@ -146,10 +149,16 @@ def main_entry():
     fid.merge_signals(names=["Creatine (Cr)", "Phosphocreatine (PCr)"], new_name="Creatine (Cr)+Phosphocreatine (PCr)", divisor=2)
     fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"], new_name="GPC+PCh", divisor=2)
     fid.name = fid.get_name_abbreviation()
-    print(fid)
+
+    # TODO
+    fid.signal = np.random.rand(6, 100_000) + 1j * np.random.rand(6, 100_000)
+    fid.time = np.arange(0,100_000)
+    Console.printf("warning", "Replaced loaded simulated FID signals of length 1536 to random values of length 100000")
+
 
     Console.printf_section("Assemble FID and Maps")
-    block_size = (int(1), int(112), int(128), int(80))
+    #block_size = (int(20), int(112), int(128), int(80))
+    block_size = (int(200), int(60), int(60), int(20))
     assembler = MetabolicPropertyMapsAssembler(block_size=(block_size[1], block_size[2], block_size[3]),
                                                concentration_maps=concentration_maps,
                                                t1_maps=t1_maps,
@@ -168,7 +177,7 @@ def main_entry():
                                                   alpha=45,
                                                   data_type="complex64",
                                                   compute_on_device="cuda",
-                                                  return_on_device="cpu")
+                                                  return_on_device="cuda")
     # TODO: Also state size of one block after created model!
 
     spectral_spatial_model.add_metabolic_property_maps(metabolic_property_map_dict)  # all maps
@@ -177,20 +186,47 @@ def main_entry():
 
     spectral_spatial_model.model_summary()
 
+    # Implement the following workflow:
+    #  1) load the coil sensitivity maps
+    #  2) multiply each map (32?) with the spectral spatial model
+    #  3) fft -> get high-resolution k-space (32?), make not parallel
+    #  4) Crop the k-space of each 32 to 64x64x39
+    #  5) Add gaussian noise to cropped k-space of each 32 coils (individually? -> guess yes, because is measurement noise). Make function with SNR as argument
+    #  6) Bring back to image domain
+    #  7) Coil combination (I guess just to add them together? sum?)
+    #  8) plot cross-sectional view
+    #      --> high resolution image before    | fid (e.g., 1-50 --> value max peak)
+    #      --> low resolution image afterwards | fid (e.g., 1-50 --> value max peak)
+
+    ####### BEFORE FFT PART #######
+
     sampling_model = sampling.Model(spectral_spatial_model=spectral_spatial_model, compute_on_device="cuda", return_on_device="cpu")
     computational_graph = sampling_model.cartesian_FFT_graph()
+
+    #computational_graph = xr.DataArray(computational_graph)
+    computational_graph = CustomArray2(computational_graph)
+
+    print(computational_graph)
+    print(computational_graph.blocks[0])
+    print(computational_graph.blocks[1])
+    print(computational_graph.blocks[2])
+    print(computational_graph.blocks[400])
+    input("==================")
 
 
     cluster = tools.MyLocalCluster()
     #cluster.start_cpu(number_workers=5, threads_per_worker=8, memory_limit_per_worker="8GB")
-    cluster.start_cuda(device_numbers=[1,2], device_memory_limit="30GB")
+    cluster.start_cuda(device_numbers=[1,2], device_memory_limit="30GB", use_rmm_cupy_allocator=True)
 
+    #print(benchmark(compute_blocks, (computational_graph,), n_repeat=5, devices=(1,2)))
+    #print(computational_graph)
+    compute_blocks(computational_graph)
 
+def compute_blocks(computational_graph):
     all_blocks = computational_graph.blocks.ravel()
 
-
     Console.printf("info", "Compute chunks in parallel:")
-    blocks = 1536 # 1536 # TODO: was 500 with FID point 1536 OR 10_000
+    blocks = 200 # 1536 # TODO: was 500 with FID point 1536 OR 10_000
     batches_slice = list(gen_batches(len(all_blocks), blocks))
     print(f"Number of batches {len(batches_slice)}, each {blocks} blocks")
     ms = MemorySampler()
@@ -206,8 +242,11 @@ def main_entry():
             ###print(result.shape)
 
     Console.stop_timer()
-    ms.plot(align=True)
-    plt.show()
+
+    #ms.plot(align=True)
+    #plt.show()
+
+
 
 
 if __name__ == '__main__':

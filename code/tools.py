@@ -1,14 +1,182 @@
+from rmm.allocators.cupy import rmm_cupy_allocator
 from dask.distributed import Client, LocalCluster
 from dask_cuda import LocalCUDACluster
 from printer import Console
 import dask.array as da
 import numpy as np
+import cupy as cp
 import torch
 import math
 import pint
+import rmm
 import sys
 
+
 u = pint.UnitRegistry()  # for using units
+
+import dask.array as da
+import math
+import pint
+
+import dask.array as da
+import math
+import pint
+
+import dask.array as da
+import math
+import pint
+
+import dask.array as da
+import math
+import pint
+
+class CustomArray2(da.Array):
+    def __new__(cls,
+                dask_array: da.Array,
+                block_number: int = None,
+                block_idx: tuple = None,
+                main_volume_shape: tuple = None,
+                main_volume_blocks: tuple = None,
+                total_number_blocks: int = None,
+                unit: pint.UnitRegistry = None,
+                meta: dict = None):
+        instance = super().__new__(cls, dask_array.dask, dask_array.name, dask_array.chunks, dtype=dask_array.dtype)
+        instance.block_number = block_number
+        instance.block_idx = block_idx
+        instance.unit = unit
+        instance.size_mb = dask_array.dtype.itemsize * dask_array.size / (1024 ** 2)
+
+        if main_volume_shape is None:
+            instance.main_volume_shape = instance.shape
+        else:
+            instance.main_volume_shape = main_volume_shape
+
+        if total_number_blocks is None:
+            instance.total_number_blocks = math.prod(dask_array.blocks.shape)
+        else:
+            instance.total_number_blocks = total_number_blocks
+
+        if main_volume_blocks is None:
+            instance.main_volume_blocks = instance.numblocks
+        else:
+            instance.main_volume_blocks = main_volume_blocks
+
+        instance.meta = meta
+
+        return instance
+
+    def __repr__(self) -> str:
+        arr_repr = super().__repr__()
+
+        if self.block_idx is None:
+            meta_repr = (f"\n  {'Type:':.<20} main volume"
+                         f"\n  {'Estimated size:':.<20} {round(self.size_mb, 3)} MB "
+                         f"\n  {'Unit:':.<20} {str(self.unit)} "
+                         f"\n  {'Metadata:':.<20} {str(self.meta)} ")
+
+            return arr_repr + meta_repr + "\n"
+
+        else:
+            t_global_start, x_global_start, y_global_start, z_global_start = self.get_global_index(0, 0, 0, 0)
+            t_global_end, x_global_end, y_global_end, z_global_end = self.get_global_index(
+                self.shape[-4] - 1, self.shape[-3] - 1, self.shape[-2] - 1, self.shape[-1] - 1)
+
+            meta_repr = (f"\n  {'Type:':.<25} sub-volume of main volume "
+                         f"\n  {'Block number:':.<25} {self.block_number}/{self.total_number_blocks-1}"
+                         f"\n  {'Total number blocks':.<25} {self.main_volume_blocks}"
+                         f"\n  {'Block coordinates:':.<25} {self.block_idx} "
+                         f"\n  {'Estimated size:':.<25} {round(self.size_mb, 3)} MB "
+                         f"\n  {'Main volume shape:':.<25} {self.main_volume_shape} "
+                         f"\n  {'Main volume coordinates:':.<25} t={t_global_start}:{t_global_end} "
+                         f"x={x_global_start}:{x_global_end} y={y_global_start}:{y_global_end} z={z_global_start}:{z_global_end} "
+                         f"\n  {'Unit:':.<25} {self.unit} "
+                         f"\n  {'Metadata:':.<25} {self.meta}")
+
+            return arr_repr + meta_repr + "\n"
+
+    def __mul__(self, other):
+        result = super().__mul__(other)
+        result = CustomArray2(dask_array=result,
+                             block_number=self.block_number,
+                             block_idx=self.block_idx,
+                             main_volume_shape=self.main_volume_shape,
+                             total_number_blocks=self.total_number_blocks,
+                             main_volume_blocks=self.main_volume_blocks,
+                             meta=self.meta)
+
+        return result
+
+    def get_global_index(self, t, x, y, z):
+        #print(f"Block index: {self.block_idx}")
+        #print(f"Shape: {self.shape}")
+
+        if not isinstance(self.block_idx, tuple) or len(self.block_idx) != 4:
+            raise ValueError("block_idx must be a tuple of length 4")
+
+        if not isinstance(self.shape, tuple) or len(self.shape) != 4:
+            raise ValueError("shape must be a tuple of length 4")
+
+        if t >= self.shape[0]:
+            raise ValueError(f"Error: t block shape is only {self.shape[0]}, but index {t} was given")
+        if x >= self.shape[1]:
+            raise ValueError(f"Error: x block shape is only {self.shape[1]}, but index {x} was given")
+        if y >= self.shape[2]:
+            raise ValueError(f"Error: y block shape is only {self.shape[2]}, but index {y} was given")
+        if z >= self.shape[3]:
+            raise ValueError(f"Error: z block shape is only {self.shape[3]}, but index {z} was given")
+
+        global_t = self.block_idx[-4] * self.shape[-4] + t
+        global_x = self.block_idx[-3] * self.shape[-3] + x
+        global_y = self.block_idx[-2] * self.shape[-2] + y
+        global_z = self.block_idx[-1] * self.shape[-1] + z
+
+        return global_t, global_x, global_y, global_z
+
+    @property
+    def blocks(self):
+        block_view_object = CustomBlockView2(self,
+                                            main_volume_shape=self.main_volume_shape,
+                                            total_number_blocks=self.total_number_blocks,
+                                            main_volume_blocks=self.main_volume_blocks)
+        return block_view_object
+
+class CustomBlockView2(da.core.BlockView):
+    def __init__(self, custom_array: CustomArray2, main_volume_shape: tuple=None, total_number_blocks: int=None, main_volume_blocks: tuple=None):
+        self.main_volume_shape = main_volume_shape
+        self.total_number_blocks = total_number_blocks
+        self.main_volume_blocks = main_volume_blocks
+        self.block_number = 0
+        self.unit = custom_array.unit
+        super().__init__(custom_array)
+
+    def __getitem__(self, index) -> CustomArray2:
+        if isinstance(index, int):
+            index = (index,)
+
+        if len(index) == 1:
+            index = (index[0], 0, 0, 0)
+        elif len(index) == 2:
+            index = (index[0], index[1], 0, 0)
+        elif len(index) == 3:
+            index = (index[0], index[1], index[2], 0)
+        elif len(index) != 4:
+            raise ValueError("block_idx must be a tuple of length 4")
+
+        dask_array = super(CustomBlockView2, self).__getitem__(index)
+        custom_dask_array = CustomArray2(dask_array=dask_array,
+                                        block_number=self.block_number,
+                                        block_idx=index,
+                                        main_volume_shape=self.main_volume_shape,
+                                        main_volume_blocks=self.main_volume_blocks,
+                                        total_number_blocks=self.total_number_blocks,
+                                        unit=self.unit)
+
+        self.block_number += 1
+
+        return custom_dask_array
+
+
+
 
 
 class CustomArray(da.Array):
@@ -172,7 +340,7 @@ class CustomArray(da.Array):
             print(f"Error: z block shape is only {self.shape[2]}, but index {z} was given")
             return
 
-        # with -3,-2,-1 use dimensions starting from the last position. Thus, it works fro larger than 3D arrays too.
+        # with -3,-2,-1 use dimensions starting from the last position. Thus, it works for higher dimensionality arrays than 3D arrays too.
         global_x = self.block_idx[-3] * self.shape[-3] + x
         global_y = self.block_idx[-2] * self.shape[-2] + y
         global_z = self.block_idx[-1] * self.shape[-1] + z
@@ -268,7 +436,11 @@ class MyLocalCluster:
         self.__start_client()
 
 
-    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB"):
+    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", use_rmm_cupy_allocator:bool=False):
+
+        if use_rmm_cupy_allocator:
+            rmm.reinitialize(pool_allocator=True)
+            cp.cuda.set_allocator(rmm_cupy_allocator)
 
         self.cluster = LocalCUDACluster(n_workers=len(device_numbers),
                                         device_memory_limit=device_memory_limit,
