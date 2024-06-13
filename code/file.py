@@ -2,6 +2,7 @@ import default
 
 # for JMRUI
 import json
+import h5py
 import os
 import sys
 import numpy as np
@@ -13,11 +14,12 @@ import nibabel as nib
 from pathlib import Path
 
 # for JMRUI (Note: DEPRECATED)
-#from oct2py import Oct2Py
-#from more_itertools import collapse
+# from oct2py import Oct2Py
+# from more_itertools import collapse
 
 # for Configurator
 import datetime
+
 
 class JMRUI2:
     """
@@ -94,6 +96,7 @@ class JMRUI2:
 
         Console.printf_collected_lines("success")
         # np.set_printoptions() resetting numpy printing options
+
 
 ##### DEPRECATED
 ###class JMRUI:
@@ -220,7 +223,7 @@ class NeuroImage:
         Console.printf("success", f"Loaded file '{self.name}':"
                                   f"\n    Shape             -> {self.shape}"
                                   f"\n    Pixel dimensions: -> {self.header.get_zooms()}"
-                                  f"\n    Values range:     -> [{round(np.min(self.data),3)}, {round(np.max(self.data),3)}]"
+                                  f"\n    Values range:     -> [{round(np.min(self.data), 3)}, {round(np.max(self.data), 3)}]"
                                   f"\n    In memory cache?  -> {self.nifti_object.in_memory}",  # TODO what was exactly the purpose?
                        mute=mute)
 
@@ -348,16 +351,56 @@ class T1Image:
 
 
 class Maps:
-    # TODO
+    # TODO: Maybe program more flexible
 
-    def __init__(self, configurator: Configurator, map_type_name: str):
+    def __init__(self, configurator: Configurator, map_type_name: str, file_type: str = 'nii'):
         self.configurator = configurator
-        self.map_type_name = map_type_name # e.g. B0, B1, metabolites
-        self.loaded_maps: dict[str, np.memmap] = {} # kay is abbreviation like "Glu" for better matching
+        self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
+        self.loaded_maps: dict[
+            str, np.memmap | h5py._hl.dataset.Dataset] = {}  # key is abbreviation like "Glu" for better matching, h5py._hl.dataset.Dataset behaves like a memmap? and returns a numpy array if specific value accessed
+        self.file_type_allowed = ['nii', 'h5']
 
-    def load(self, working_name_and_file_name: dict[str, str]):
+        if file_type not in self.file_type_allowed:
+            Console.printf("error", f"Only possible to load formats: {self.file_type_allowed}. But it was given: {file_type}")
+            sys.exit()
+
+    def load_file(self):
+        """
+        To load a single map from file. At the moment only h5 is supported. TODO: Implement also nii!
+
+        :return:
+        """
+
+        Console.printf("warning", "Maps.load_file ==> by standard h5 is loaded. No nii support yet!")
+
+        self.configurator.load()
+        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+
+        Console.add_lines(f"Loaded h5py {self.map_type_name} map named: {os.path.basename(main_path)}")
+        with h5py.File(main_path, "r") as file:
+            for key in file.keys():
+                item = file[key]
+
+                if isinstance(item, h5py.Dataset):
+                    Console.add_lines(f" => Key: {key:<5} | Type: {'Dataset':<10} | Shape: {item.shape} | Data Type: {item.dtype}")
+                elif isinstance(item, h5py.Group):
+                    Console.add_lines(f" => Key: {key:<5} | Type: {'Group':<10}")
+
+                Console.add_lines("     Attributes: ")
+                if len(item.attrs.items()) == 0:
+                    Console.add_lines(f"      Not available")
+                else:
+                    for attr_key, attr_val in item.attrs.items():
+                        Console.add_lines(f"        Attribute key: {attr_key:<10} | value: {attr_val:<20}")
+
+                self.loaded_maps[key] = item
+
+            Console.printf_collected_lines("success")
+
+    def load_files_from_folder(self, working_name_and_file_name: dict[str, str]):
         # TODO
 
+        Console.printf("warning", "Maps.load_files_from_folder ==> by standard nii is loaded. No h5 support yet!")
         self.configurator.load()
         main_path = self.configurator.data["path"]["maps"][self.map_type_name]
 
@@ -367,7 +410,8 @@ class Maps:
             loaded_map = NeuroImage(path=path_to_map).load_nii(mute=True).data
             self.loaded_maps[working_name] = loaded_map
 
-            Console.add_lines(f"  {(i)}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | Values range: [{round(np.min(loaded_map),3)}, {round(np.max(loaded_map),3)}] ")
+            Console.add_lines(
+                f"  {(i)}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] ")
         Console.printf_collected_lines("success")
 
         return self
@@ -386,8 +430,6 @@ class Maps:
         return self
 
 
-
-
 class FID:
     """
     This class is for creating an FID containing several attributes. The FID signal and parameters can be
@@ -400,7 +442,7 @@ class FID:
         self.parameters: dict = {}
         self.loaded_fid: spectral_spatial_simulation.FID = spectral_spatial_simulation.FID()
 
-    def load(self, fid_name: str, signal_data_type: np.dtype = np.float64): # TODO: replace fid_name to fid_type_name??? --> see Maps class above
+    def load(self, fid_name: str, signal_data_type: np.dtype = np.float64):  # TODO: replace fid_name to fid_type_name??? --> see Maps class above
         """
         For loading and splitting the FID according to the respective chemical compound (metabolites, lipids).
         Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.
