@@ -35,6 +35,7 @@ import pandas as pd
 from pycallgraph import Config
 from pycallgraph import PyCallGraph
 from pycallgraph.output import GraphvizOutput
+from dask.cache import Cache
 
 from cupyx.profiler import benchmark
 
@@ -70,7 +71,9 @@ def zen_of_python():
 
 
 def main_entry():
-    target_gpu_smaller_tasks = 2
+    Console.start_timer()
+    target_gpu_smaller_tasks = 0
+    target_gpus_big_tasks = [0, 1, 3]
 
     # Initialize the UnitRegistry
     u = pint.UnitRegistry()
@@ -158,7 +161,7 @@ def main_entry():
     # TODO
     #fid.signal = np.random.rand(6, 100_000) + 1j * np.random.rand(6, 100_000)
     #fid.time = np.arange(0, 100_000)
-    Console.printf("warning", "Replaced loaded simulated FID signals of length 1536 to random values of length 100000")
+    #Console.printf("warning", "Replaced loaded simulated FID signals of length 1536 to random values of length 100000")
 
     Console.printf_section("Assemble FID and Maps")
     block_size = (int(20), int(112), int(128), int(80))
@@ -192,7 +195,7 @@ def main_entry():
     computational_graph = spectral_spatial_model.assemble_graph()
 
     cluster = tools.MyLocalCluster()
-    cluster.start_cuda(device_numbers=[1,2,3], device_memory_limit="30GB", use_rmm_cupy_allocator=True)
+    cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="20GB", use_rmm_cupy_allocator=True)
 
     # ########################################################################################
     # FID + volume before
@@ -237,7 +240,11 @@ def main_entry():
     ####cluster = tools.MyLocalCluster()
     ####cluster.start_cuda(device_numbers=[2], device_memory_limit="30GB", use_rmm_cupy_allocator=False)
 
+    Console.printf("warning", "Persisting the computational graph in order to speed up computation. This might use a lot of additional RAM.")
+    computational_graph = computational_graph.persist()
     number_coil_sensitivity_maps = coil_sensitivity_maps_complex_interpolated.shape[0]
+
+    delayed_results = []
     for i in range(number_coil_sensitivity_maps):
         # Multiply the whole graph times one coil sensitivity map for each block
         Console.printf("info", "Multiply the whole graph times one coil sensitivity map for each block")
@@ -245,6 +252,7 @@ def main_entry():
         #  3) fft -> get high-resolution k-space (32?), make not parallel TODO: compute on GPU
         Console.printf("info", "FFT along axes 1,2,3")
         one_coil_k_space = one_coil_image_domain.map_blocks(cp.fft.fftn, dtype=cp.complex64, axes=(1, 2, 3))
+        one_coil_k_space_shifted = one_coil_k_space.map_blocks(cp.fft.fftshift, dtype=cp.complex64, axes=(1, 2, 3))
         #  4) Crop the k-space of each 32 to 64x64x39
         Console.printf("info", "Crop k-space to (1536, 64, 64, 40)")
         # center x -> [(shape.x/2)-(64/2), (shape.x/2)+(64/2)]
@@ -254,7 +262,7 @@ def main_entry():
         desired_shape = (1536, 64, 64, 40)
         start_indices = [(orig - des) // 2 for orig, des in zip(original_shape, desired_shape)]
         end_indices = [start + des for start, des in zip(start_indices, desired_shape)]
-        one_coil_k_space_cropped = one_coil_k_space[
+        one_coil_k_space_cropped = one_coil_k_space_shifted[
                                    :,
                                    start_indices[1]:end_indices[1],
                                    start_indices[2]:end_indices[2],
@@ -265,15 +273,25 @@ def main_entry():
         one_coil_k_space_cropped_noisy = one_coil_k_space_cropped
 
         # 6) Bring back to image domain
-        one_coil_image_domain_cropped_noisy = one_coil_k_space_cropped_noisy.map_blocks(cp.fft.ifftn, dtype=cp.complex64, axes=(1, 2, 3))
+        one_coil_image_domain_cropped_noisy = one_coil_k_space_cropped_noisy.map_blocks(cp.fft.ifftshift, dtype=cp.complex64, axes=(1, 2, 3))
+        one_coil_image_domain_cropped_noisy = one_coil_image_domain_cropped_noisy.map_blocks(cp.fft.ifftn, dtype=cp.complex64, axes=(1, 2, 3))
 
         # 7) Coil combination (I guess just to add them together? sum?) TODO =>just sum them up?
         one_coil_image_domain_cropped_noisy = one_coil_image_domain_cropped_noisy.map_blocks(cp.asnumpy) # very important!!!
 
+        delayed_results.append(one_coil_image_domain_cropped_noisy)
+
         cumulative_sum_coils += one_coil_image_domain_cropped_noisy.compute()
         Console.printf("success", f"Computed for coil {i}")
+        #Console.stop_timer()
 
+    #cumulative_sum_coils = dask.compute(sum)(delayed_results)
     cumulative_sum_coils = da.from_array(cumulative_sum_coils, chunks="auto")
+
+    Console.stop_timer()
+    ##cumulative_sum_coils.to_hdf5('cumulative_sum_coils.hdf5', '/cumulative_sum_coils', cumulative_sum_coils)
+    ##Console.printf("success", "Saved cumulative_sum_coils.hdf5")
+    input("ABC================================================================")
 
 
     #### For cross-sectional plot
@@ -305,44 +323,46 @@ def main_entry():
 
     ####################plots########################
     # Create a figure with a 2x3 grid for the first plot
-    fig, axs = plt.subplots(3, 2, figsize=(10, 15))
+    ### fig, axs = plt.subplots(3, 2, figsize=(10, 15))
+    ###
+    ### # Plot the images on the grid
+    ### axs[0, 0].imshow(cross_section_1_before, cmap='gray')
+    ### axs[0, 0].set_title('Cross Section 1 Before')
+    ### axs[0, 0].axis('off')
+    ###
+    ### axs[0, 1].imshow(cross_section_1_after, cmap='gray')
+    ### axs[0, 1].set_title('Cross Section 1 After')
+    ### axs[0, 1].axis('off')
+    ###
+    ### axs[1, 0].imshow(cross_section_2_before, cmap='gray')
+    ### axs[1, 0].set_title('Cross Section 2 Before')
+    ### axs[1, 0].axis('off')
+    ###
+    ### axs[1, 1].imshow(cross_section_2_after, cmap='gray')
+    ### axs[1, 1].set_title('Cross Section 2 After')
+    ### axs[1, 1].axis('off')
+    ###
+    ### axs[2, 0].imshow(cross_section_3_before, cmap='gray')
+    ### axs[2, 0].set_title('Cross Section 3 Before')
+    ### axs[2, 0].axis('off')
+    ###
+    ### axs[2, 1].imshow(cross_section_3_after, cmap='gray')
+    ### axs[2, 1].set_title('Cross Section 3 After')
+    ### axs[2, 1].axis('off')
+    ###
+    ### plt.tight_layout()
+    ### plt.show()
 
-    # Plot the images on the grid
-    axs[0, 0].imshow(cross_section_1_before, cmap='gray')
-    axs[0, 0].set_title('Cross Section 1 Before')
-    axs[0, 0].axis('off')
-
-    axs[0, 1].imshow(cross_section_1_after, cmap='gray')
-    axs[0, 1].set_title('Cross Section 1 After')
-    axs[0, 1].axis('off')
-
-    axs[1, 0].imshow(cross_section_2_before, cmap='gray')
-    axs[1, 0].set_title('Cross Section 2 Before')
-    axs[1, 0].axis('off')
-
-    axs[1, 1].imshow(cross_section_2_after, cmap='gray')
-    axs[1, 1].set_title('Cross Section 2 After')
-    axs[1, 1].axis('off')
-
-    axs[2, 0].imshow(cross_section_3_before, cmap='gray')
-    axs[2, 0].set_title('Cross Section 3 Before')
-    axs[2, 0].axis('off')
-
-    axs[2, 1].imshow(cross_section_3_after, cmap='gray')
-    axs[2, 1].set_title('Cross Section 3 After')
-    axs[2, 1].axis('off')
-
-    plt.tight_layout()
-    plt.show()
+    #Console.stop_timer()
 
     fig, axs = plt.subplots(2, 1, figsize=(10, 10))
 
     # Plot the 2D signals
-    axs[0].imshow(cp.asnumpy(one_fid_before_spectrum), cmap='viridis', aspect='auto')
+    axs[0].plot(np.abs(cp.asnumpy(one_fid_before_spectrum)))
     axs[0].set_title('One FID Before')
     axs[0].axis('off')
 
-    axs[1].imshow(one_fid_after_spectrum, cmap='viridis', aspect='auto')
+    axs[1].plot(np.abs(cp.asnumpy(one_fid_after_spectrum)))
     axs[1].set_title('One FID After')
     axs[1].axis('off')
 
