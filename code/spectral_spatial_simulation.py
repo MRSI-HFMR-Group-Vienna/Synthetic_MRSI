@@ -340,7 +340,7 @@ class Model:
         Console.add_lines(f" Model shape ... {self.mask.shape}")
         Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
         Console.add_lines(f" Compute on  ... {self.compute_on_device}")
-        Console.add_lines(f" Return in   ... {self.return_on_device}")
+        Console.add_lines(f" Return on   ... {self.return_on_device}")
         Console.add_lines(f" Cache path  ... {self.path_cache}")
         Console.printf_collected_lines("info")
 

@@ -1,5 +1,7 @@
 # Ignore all files in the code/config/ folder
 code/config/*
+code/tests/*
+code/coils_cropped_cartesian_compressed.h5
 cache
 
 # Except for config_template.json

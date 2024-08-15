@@ -377,6 +377,7 @@ class CustomBlockView(da.core.BlockView):
         Addition additional the main volume shape, the total number of blocks and the unit. Also, call the super constructor.
 
         :param custom_array: the CustomArray object
+        :param custom_array: the CustomArray object
         :param main_volume_shape:
         :param total_number_blocks:
         """

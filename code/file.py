@@ -1,29 +1,22 @@
 import default
-
-# for JMRUI
-import json
-import h5py
-import os
-import sys
-import numpy as np
-from scipy.ndimage import zoom
+from cupyx.scipy.ndimage import zoom as zoom_gpu
 import spectral_spatial_simulation
+from scipy.ndimage import zoom
+from scipy.io import loadmat
 from printer import Console
-# for NeuroImage
-import nibabel as nib
 from pathlib import Path
-
-# for JMRUI (Note: DEPRECATED)
-# from oct2py import Oct2Py
-# from more_itertools import collapse
-
-# for Configurator
-import datetime
+import nibabel as nib
+import numpy as np
+import cupy as cp
+import h5py
+import json
+import sys
+import os
 
 
 class JMRUI2:
     """
-    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file.
+    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file. Further, also rename JMRUI instead of JMRUI2!
     """
 
     def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
@@ -96,95 +89,6 @@ class JMRUI2:
 
         Console.printf_collected_lines("success")
         # np.set_printoptions() resetting numpy printing options
-
-
-##### DEPRECATED
-###class JMRUI:
-###    """
-###    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file.
-###    """
-###
-###    def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
-###        self.path = path
-###        self.signal_data_type = signal_data_type
-###        self.mute = mute
-###
-###    def load_m_file(self) -> dict:
-###        """
-###        Read content from an MATLAB (.m) file, interpret it via Octave and assign it to the following object variables:
-###         -> self.signal
-###         -> self.parameters
-###        :return: None
-###        """
-###
-###        parameters: dict = {}
-###
-###        # Check if file and path exists
-###        if not os.path.exists(self.path):
-###            Console.printf("error", "Path and/or file does not exist! Termination of the program.")
-###            sys.exit()  # Termination of the program
-###
-###        file = open(self.path, 'r')  # Open the .m file
-###        oc = Oct2Py(convert_to_float=False)  # Create an Oct2Py object, thus running an Octave session
-###
-###        data_string = "["  # Creating a string that holds the FID data which later is interpreted with Octave.
-###        parameter_name = ""  # Initial value needed for the if statement below.
-###
-###        # Iterate through all lines in the MATLAB (.m) file
-###        for line_number, line_content in enumerate(file):
-###            # (1) Split the data, thus get the parameter names
-###
-###            if parameter_name != "DATA":  # (!) If DATA occurs, the line will be skipped because of
-###                parameter_name, _ = line_content.split("=")  # continue and it will never enter again in this if
-###                if parameter_name == "DATA": continue  # condition
-###
-###                # (2) For each line that can be interpreted by octave (thus no error), unwrap and transform to python
-###                # and insert into dictionary
-###                try:
-###                    oc.eval(line_content)  # evaluate line by octave
-###                    content_raw = oc.pull(parameter_name)  # get values by name from workspace (octave session)
-###
-###                    # unwrapping to level 3 and assembly names again
-###                    if parameter_name == "DIM_VALUES":
-###                        content_transformed = list(collapse(content_raw, levels=3))
-###                        content = content_transformed[:2] + [content_transformed[2:]]
-###
-###                    # unwrapping to level 1
-###                    else:
-###                        content_transformed = list(collapse(content_raw, levels=1))
-###                        content = content_transformed
-###
-###                    # (3) Assignment of the content. If a list contains just one item then unwrap it again.
-###                    parameters[parameter_name] = content[0] if (len(content) == 1 and type(content) == list) else content
-###
-###                except:
-###                    Console.add_lines(f"Error in line {line_number + 1} with content: {line_content} -> It will be excluded!")
-###
-###            # (4) Treat data differently: create big string, interpreted it by octave and insert to dictionary.
-###            else:
-###                data_string += line_content + "\n"
-###
-###        # Print out the excluded lines, i.e. those that could not be interpreted with octave.
-###        Console.printf_collected_lines("warning", mute=self.mute)
-###
-###        # Convert signal to desired data type and time (a list) to a numpy array
-###        amplitude: np.ndarray = oc.eval(data_string).astype(self.signal_data_type)  # Transform signal values as string to numpy.ndarray()
-###        time: np.ndarray = np.asarray(parameters["DIM_VALUES"][0])  # Add time vector to time variable
-###        time = time[0:len(time) - 1]  # Otherwise time vector is +1 longer than signal vector
-###
-###        # End octave session and also close the file
-###        oc.exit()
-###        file.close()
-###
-###        # Short overview of chosen data type for the FID signal, used space and precision (in digits)
-###        Console.printf("info", f"Loaded FID signal as {self.signal_data_type} \n" +
-###                       f" -> thus using space: {amplitude.nbytes / 1024} KB \n" +
-###                       f" -> thus using digits: {np.finfo(amplitude.dtype).precision}",
-###                       mute=self.mute)
-###
-###        return {"parameters": parameters,
-###                "signal": amplitude,
-###                "time": time}
 
 
 class NeuroImage:
@@ -520,9 +424,214 @@ class FID:
         # np.set_printoptions() resetting numpy printing options
 
 
-if __name__ == "__main__":
-    configurator = Configurator(path_folder="/home/mschuster/projects/SimulationMRSI/config",
-                                file_name="config_04012024.json")
+class CoilSensitivityMaps:
+    """
+    For loading and interpolating the coil sensitivity maps. At the moment, only HDF5 files are supported.
+    The maps can be interpolated on 'cpu' and desired 'gpu'. It is strongly recommended to use the 'gpu'
+    regarding computational performance.
+    An object of the configurator is necessary to get the path to the coil sensitivity maps.
+    """
 
-    metabolic_mask = Mask.load(configurator=configurator,
-                               mask_name="metabolites")
+    def __init__(self, configurator: Configurator):
+        self.configurator = configurator
+        self.maps = None
+
+    def load_h5py(self, keys: list = ["imag", "real"], dtype=np.complex64) -> None:
+        """
+        For loading coil sensitivity maps of the type HDF5. The default keys are 'real' and 'imag' for loading the complex values.
+        If different keys are defined in the HDF5 it is necessary to explicitely define them with the argument 'keys'.
+
+        :param dtype: desired data type. Since the data is complex ude numpy complex data types.
+        :return: None.
+        """
+
+        # Load the HDF5 file via h5py
+        path_maps = self.configurator.data["path"]["maps"]["coil_sensitivity"]
+        h5py_file = h5py.File(path_maps, "r")
+        h5py_file_keys_required = keys
+
+        # If the default keys or by the user defined keys are not available in the HDF5 file:
+        if not all(key in h5py_file.keys() for key in h5py_file_keys_required):
+            Console.add_lines(f"Could not find keys {h5py_file_keys_required} in the HDF5 file")
+            Console.add_lines(f" => Instead the following keys are available: {h5py_file.keys()}.")
+            Console.add_lines(f" => Aborting the program.")
+            Console.printf_collected_lines("error")
+            sys.exit()
+
+        # If the keys are existing in the HDF5 file, load them and convert to complex values:
+        maps_real = h5py_file["real"][:]
+        maps_imag = h5py_file["imag"][:]
+        maps_complex = maps_real + 1j * maps_imag
+        maps_complex = maps_complex.astype(np.complex64)
+
+        Console.add_lines("Coil Sensitivity Maps:")
+        Console.add_lines(f" => Could find keys {h5py_file_keys_required} in the HDF5 file")
+        Console.add_lines(f" => Loaded and converted maps to {maps_complex.dtype}")
+        Console.printf_collected_lines("success")
+
+        self.maps = maps_complex
+
+    def interpolate(self, target_size, order=3, compute_on_device="cpu", gpu_index=0, return_on_device="cpu") -> np.ndarray | cp.ndarray:
+        """
+        To interpolate the loaded coil sensitivity maps with the selected order to a target size on the desired device. Possible is the 'cpu' and 'cuda'.
+        If 'cuda' is selected, with the index the desired device can be chosen. Further, the result can be returned on 'cpu' or 'cuda'.
+
+        :param target_size: target size to interpolate the coil sensitivity maps
+        :param order: desired order (0: Nearest-neighbor, 1: Bilinear interpolation, 2: Quadratic interpolation, 3: Cubic interpolation (default),...). See scipy.ndimage or cupyx.scipy.ndimage for more information.
+        :param compute_on_device: device where the interpolation takes place ('cuda' is recommended)
+        :param gpu_index: if 'cuda' is selected in the param compute_on_device, then possible to choose a gpu if multiple gpus are available. The default is 0.
+        :param return_on_device: After the interpolation, the device where the array should be returned.
+        :return: Interpolated array
+        """
+
+        # Check if maps are already loaded
+        if self.maps is None:
+            Console.printf("error", "No maps data available to interpolate. You might call 'load_h5py' first! Aborting program.")
+            sys.exit()
+
+        # Get the zoom factor, based on the current maps size and desired size
+        zoom_factor = np.divide(target_size, self.maps.shape)
+        Console.printf("info", "Start interpolating coil sensitivity maps")
+        Console.add_lines("Interpolated the coil sensitivity maps:")
+        Console.add_lines(f" => From size: {self.maps.shape} --> {target_size}")
+        Console.add_lines(f" => with interpolation order: {order}")
+        Console.add_lines(f" => on device {compute_on_device}{':' + str(gpu_index) if compute_on_device == 'cuda' else ''} --> and returned on {return_on_device}")
+
+        # Interpolate on CUDA or CPU based on the user decision
+        maps_complex_interpolated = None
+        if compute_on_device == "cpu":
+            maps_complex_interpolated = zoom(input=self.maps, zoom=zoom_factor, order=order)
+        elif compute_on_device == "cuda":
+            with cp.cuda.Device(gpu_index):
+                maps_complex_interpolated = zoom_gpu(input=cp.asarray(self.maps), zoom=zoom_factor, order=order)
+        else:
+            Console.printf("error", f"Device {compute_on_device} not supported. Use either 'cpu' or 'cuda'.")
+
+        Console.printf_collected_lines("success")
+
+        # Return on the desired device after interpolation
+        if return_on_device == "cpu" and isinstance(maps_complex_interpolated, cp.ndarray):
+            maps_complex_interpolated = cp.asnumpy(maps_complex_interpolated)
+        elif return_on_device == "cuda" and isinstance(maps_complex_interpolated, np.ndarray):
+            maps_complex_interpolated = cp.asarray(maps_complex_interpolated)
+        elif return_on_device not in ["cpu", "cuda"]:
+            Console.printf("error", f"Return on device {return_on_device} not supported. Choose either 'cpu' or 'cuda'. Abort program.")
+            sys.exit()
+
+        # Save to object variable
+        self.maps = maps_complex_interpolated
+
+        # Just return the interpolated result..
+        return maps_complex_interpolated
+
+
+class Trajectories:
+    """
+    To read trajectory data from .mat files and prepare it by organising all metadata and trajectory data into a dictionary with lists. This process structures
+    the data from the .mat file in a specific format suitable for further use.
+    """
+
+    def __init__(self, configurator: Configurator, trajectory_type: str):
+        """
+        Initialise the object with the configurator which manages the paths, thus also contains the
+        paths to the respective trajectory file. The trajectory type is defined in the json file which
+        the configurator handles.
+
+        :param configurator: Instantiated configurator object that manages the paths.
+        :param trajectory_type: E.g., 'crt'. However, this example might differ. Check the respective json file which the configurator uses.
+        """
+        self.configurator = configurator.load()
+        self.trajectory_type = trajectory_type
+        self.path = configurator.data["path"]["trajectories"][trajectory_type]
+        self.data = None
+        self.number_of_trajectories = None
+        self.important_keys: list = ["dMaxGradAmpl",
+                                    "NumberOfBrakeRunPoints",
+                                    "NumberOfLaunTrackPoints",
+                                    "NumberOfLoopPoints",
+                                    "NumberOfRewinderPoints",
+                                    "NumberOfAngularInterleaves",
+                                    "dGradValues"]
+
+        self.combined_trajectories: dict = None
+
+    def _combine_trajectories(self) -> None:
+        """
+        Reformat the trajectory data that it result in one dictionary with the respective (defined) keys holding the
+        related values. The dictionary values are stored in lists. Don't call this private method directly from an outside.
+
+        :return: Nothing
+        """
+
+        # create a empty list
+        self.combined_trajectories = {key: [] for key in self.important_keys}       # (1) create pre-defined empty directory
+
+        # use list comprehensions instead of nested for loops:
+        [self.combined_trajectories[key].append(one_trajectory_data[key])           # (4) append to pre-defined empty dictionary           ^
+         for one_trajectory_data in self.data["trajectory_pack"]                    # (2) get one after another trajectory data            |
+         for key in self.important_keys]                                            # (3) get only items from important keys in dictionary |
+
+    def load(self, squeeze_trajectory_data=True) -> dict[list]:
+        """
+        To load the trajectory data from a dict and then combine the data (restructure data) that a dictionary holding only the necessary keys
+        with the values in a respective list.
+        For each trajectory, one list entry of the respective key is represented. E.g., for 32 trajectories each of the 32 list entries storing
+        one numpy array with the trajectory data.
+
+        :param squeeze_trajectory_data: bool if extra dimensions of size 1 should be removed. E.g., if true: shape 1,22,5,1 --> shape 22,5
+        :return: dictionary with the trajectory parameters and values
+        """
+        # (1a) load the data from the .mat file
+        #     Note: load trajectory data and squeeze by default. E.g. shape 1,10,5,1 --> 10,5
+        #     Note: simplify_cells enables to get a dictionary with the right keys to the according values, not a tuple
+        self.data = loadmat(self.path, squeeze_me=squeeze_trajectory_data, simplify_cells=True)
+        # (1b) Also check if the right keys are provided in the matlab file. Missing values are listed in the error message.
+        subset_keys = set(self.important_keys)
+        superset_keys = set(list(self.data["trajectory_pack"][0].keys()))
+        if subset_keys.issubset(superset_keys):
+            Console.printf("success", f"Found necessary keys in {Path(self.path).name} file")
+        else:
+            missing_keys = subset_keys - superset_keys
+            Console.printf("error", f"Missing values in file '{Path(self.path).name}': {missing_keys} Aborting program!")
+            sys.exit()
+        # (2) get number of trajectories
+        self.number_of_trajectories = len(self.data["trajectory_pack"])
+        # (3) combine the data fom all trajectories
+        self._combine_trajectories()
+
+        # (4) print info what has been loaded
+        Console.add_lines(f"Loaded trajectory type: {self.trajectory_type}")
+        Console.add_lines(f"Number of trajectories: {self.number_of_trajectories}")
+        data_keys_formatted = '\n  => '.join(self.important_keys)
+        Console.add_lines(f"Used values from keys: \n  => {data_keys_formatted}")
+        Console.add_lines(f"Loaded from: {self.data['__header__']}")
+        Console.add_lines(f"Path: {self.path}")
+        Console.printf_collected_lines(status="success")
+
+        return self.combined_trajectories
+
+    def print_loaded_data(self):
+        """
+        To print the loaded keys and corresponding values. This excludes the dGradValues due to huge amount of data.
+
+        :return: Nothing
+        """
+        Console.add_lines(f"Loaded data:")
+        for key in self.important_keys:
+            if key != "dGradValues":
+                Console.add_lines(f"{key}: {self.combined_trajectories[key]}")
+        Console.add_lines(f"dGradValues: Not displayed here!")
+        Console.printf_collected_lines("info")
+
+
+if __name__ == "__main__":
+    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/code/config/", file_name="config_15082024.json")
+    configurator.load()
+
+    trajectories = Trajectories(configurator=configurator, trajectory_type="crt")
+    trajectories.load()
+    trajectories.print_loaded_data()
+
+    #coilSensitivityMaps = CoilSensitivityMaps(configurator=configurator)
+    #coilSensitivityMaps.load_h5py()
+    #coilSensitivityMaps.interpolate(target_size=(32, 112, 128, 80), compute_on_device='cpu')
