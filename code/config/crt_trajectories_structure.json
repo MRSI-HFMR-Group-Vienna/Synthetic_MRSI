@@ -1,0 +1,63 @@
+{
+    "file info": {
+        "Author": "Markus Schuster",
+        "Description": "The config file containing the structure of the concentric ring trajectories (crt). Note, the ADC time per angular interleave and the number of points per trajectory (concentric ring) is set the same for each trajectory and thus simplified.",
+        "version": "2024-08-19"
+    },
+
+    "number interleaves": {
+        "angular": 32,
+        "temporal per angular": [
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1
+        ]
+    },
+
+    "number encoding steps": {
+        "frequency": 128,
+        "phase": 64,
+        "partition": 1
+    },
+
+    "number rewinder": {
+        "after each trajectory": 0,
+        "after all trajectories": 0
+    },
+
+    "fow": {
+        "overgrid": 1,
+        "readout direction": 220,
+        "phase direction": 220
+    },
+
+    "brain position": {
+        "coronal": 0,
+        "sagittal": 0,
+        "transverse": 0,
+        "normal vector": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+        }
+    },
+
+    "gyro magnetic ratio over two pi": 42.57747892e+6,
+    "number of FID points": 1,
+    "number channels measured": 1,
+    "ADC time per angular interleave ns": [
+        3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000,
+        3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000,
+        3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000,
+        3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000
+    ],
+    "number temporal interleaves per angular interleave" : [
+        1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1
+    ]
+
+}
+

@@ -11,7 +11,6 @@ import pint
 import rmm
 import sys
 
-
 u = pint.UnitRegistry()  # for using units
 
 import dask.array as da
@@ -29,6 +28,7 @@ import pint
 import dask.array as da
 import math
 import pint
+
 
 class CustomArray2(da.Array):
     def __new__(cls,
@@ -82,7 +82,7 @@ class CustomArray2(da.Array):
                 self.shape[-4] - 1, self.shape[-3] - 1, self.shape[-2] - 1, self.shape[-1] - 1)
 
             meta_repr = (f"\n  {'Type:':.<25} sub-volume of main volume "
-                         f"\n  {'Block number:':.<25} {self.block_number}/{self.total_number_blocks-1}"
+                         f"\n  {'Block number:':.<25} {self.block_number}/{self.total_number_blocks - 1}"
                          f"\n  {'Total number blocks':.<25} {self.main_volume_blocks}"
                          f"\n  {'Block coordinates:':.<25} {self.block_idx} "
                          f"\n  {'Estimated size:':.<25} {round(self.size_mb, 3)} MB "
@@ -97,18 +97,18 @@ class CustomArray2(da.Array):
     def __mul__(self, other):
         result = super().__mul__(other)
         result = CustomArray2(dask_array=result,
-                             block_number=self.block_number,
-                             block_idx=self.block_idx,
-                             main_volume_shape=self.main_volume_shape,
-                             total_number_blocks=self.total_number_blocks,
-                             main_volume_blocks=self.main_volume_blocks,
-                             meta=self.meta)
+                              block_number=self.block_number,
+                              block_idx=self.block_idx,
+                              main_volume_shape=self.main_volume_shape,
+                              total_number_blocks=self.total_number_blocks,
+                              main_volume_blocks=self.main_volume_blocks,
+                              meta=self.meta)
 
         return result
 
     def get_global_index(self, t, x, y, z):
-        #print(f"Block index: {self.block_idx}")
-        #print(f"Shape: {self.shape}")
+        # print(f"Block index: {self.block_idx}")
+        # print(f"Shape: {self.shape}")
 
         if not isinstance(self.block_idx, tuple) or len(self.block_idx) != 4:
             raise ValueError("block_idx must be a tuple of length 4")
@@ -135,13 +135,14 @@ class CustomArray2(da.Array):
     @property
     def blocks(self):
         block_view_object = CustomBlockView2(self,
-                                            main_volume_shape=self.main_volume_shape,
-                                            total_number_blocks=self.total_number_blocks,
-                                            main_volume_blocks=self.main_volume_blocks)
+                                             main_volume_shape=self.main_volume_shape,
+                                             total_number_blocks=self.total_number_blocks,
+                                             main_volume_blocks=self.main_volume_blocks)
         return block_view_object
 
+
 class CustomBlockView2(da.core.BlockView):
-    def __init__(self, custom_array: CustomArray2, main_volume_shape: tuple=None, total_number_blocks: int=None, main_volume_blocks: tuple=None):
+    def __init__(self, custom_array: CustomArray2, main_volume_shape: tuple = None, total_number_blocks: int = None, main_volume_blocks: tuple = None):
         self.main_volume_shape = main_volume_shape
         self.total_number_blocks = total_number_blocks
         self.main_volume_blocks = main_volume_blocks
@@ -164,19 +165,16 @@ class CustomBlockView2(da.core.BlockView):
 
         dask_array = super(CustomBlockView2, self).__getitem__(index)
         custom_dask_array = CustomArray2(dask_array=dask_array,
-                                        block_number=self.block_number,
-                                        block_idx=index,
-                                        main_volume_shape=self.main_volume_shape,
-                                        main_volume_blocks=self.main_volume_blocks,
-                                        total_number_blocks=self.total_number_blocks,
-                                        unit=self.unit)
+                                         block_number=self.block_number,
+                                         block_idx=index,
+                                         main_volume_shape=self.main_volume_shape,
+                                         main_volume_blocks=self.main_volume_blocks,
+                                         total_number_blocks=self.total_number_blocks,
+                                         unit=self.unit)
 
         self.block_number += 1
 
         return custom_dask_array
-
-
-
 
 
 class CustomArray(da.Array):
@@ -211,7 +209,7 @@ class CustomArray(da.Array):
                 block_idx: tuple = None,
                 main_volume_shape: tuple = None,
                 main_volume_blocks: tuple = None,  # number blocks in each dimension
-                total_number_blocks: int = None,   # number blocks
+                total_number_blocks: int = None,  # number blocks
                 unit: pint.UnitRegistry = None,
                 meta: dict = None):
         """
@@ -372,7 +370,7 @@ class CustomBlockView(da.core.BlockView):
     * Unit of the main volume in each block
     """
 
-    def __init__(self, custom_array: CustomArray, main_volume_shape: tuple=None, total_number_blocks: int=None, main_volume_blocks: tuple=None):
+    def __init__(self, custom_array: CustomArray, main_volume_shape: tuple = None, total_number_blocks: int = None, main_volume_blocks: tuple = None):
         """
         Addition additional the main volume shape, the total number of blocks and the unit. Also, call the super constructor.
 
@@ -383,7 +381,7 @@ class CustomBlockView(da.core.BlockView):
         """
         self.main_volume_shape = main_volume_shape
         self.total_number_blocks = total_number_blocks  # total number of blocks as int
-        self.main_volume_blocks = main_volume_blocks    # total number blocks in each dimension as tuple
+        self.main_volume_blocks = main_volume_blocks  # total number blocks in each dimension as tuple
         self.block_number = 0
         self.unit = custom_array.unit
         super().__init__(custom_array)
@@ -436,9 +434,7 @@ class MyLocalCluster:
         self.cluster_type = "cpu"
         self.__start_client()
 
-
-    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", use_rmm_cupy_allocator:bool=False):
-
+    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", use_rmm_cupy_allocator: bool = False):
         if use_rmm_cupy_allocator:
             rmm.reinitialize(pool_allocator=True)
             cp.cuda.set_allocator(rmm_cupy_allocator)
@@ -450,15 +446,13 @@ class MyLocalCluster:
         self.cluster_type = "cuda"
         self.__start_client()
 
-
     def __start_client(self):
         self.client = Client(self.cluster)
-        #self.client = self.cluster.get_client()
+        # self.client = self.cluster.get_client()
         dashboard_url = self.client.dashboard_link
 
         Console.printf("info", f"Started {self.cluster_type} Cluster \n"
                                f" Link to dashboard: {dashboard_url}")
-
 
 
 class ConfiguratorGPU():
@@ -567,3 +561,45 @@ class SpaceEstimator:
         TODO: Implement it.
         """
         raise NotImplementedError("This method is not yet implemented")
+
+
+class JsonConverter:
+    """
+    To convert unusual Json entries to the desired format. This is for already read in json data. It is not a reader.
+    """
+
+    @staticmethod
+    def complex_string_list_to_numpy(array: list[str]) -> np.ndarray:
+        """
+        To convert from list of strings which holds
+                ["Re,Im",
+                 "Re,Im",
+                 "Re,Im",
+                 .......]
+
+        ...to numpy array of complex values:
+               ["Re,Im",
+                 "Re,Im",
+                 "Re,Im",
+                 .......]
+
+        :param array: list of strings with complex values
+        :return:
+        """
+        # (1) From list holding strings of complex numbers to list of numpy complex numbers
+        # Explanation:
+        #  * list comprehension --> instead of for loop
+        #  * 'map'              --> to apply at each entry (2 for complex number)
+        #  * starred expression --> to unpack the to resulting entries (Re, Im) for the 'complex' as input
+        #
+        #   For example: from string: complex(*map("3+5j".split(","))) --> to complex number: (3+5j)
+        #
+        complex_numbers_list = [
+            np.array(complex(*map(float, number.split(','))))  # get both entries and split therefore at ","
+            for number in array  # iterate through all elements ...
+        ]
+
+        # (2) From a list of complex numpy numbers to a numpy array of complex numpy numbers
+        complex_numbers_list = np.vstack(complex_numbers_list)
+
+        return complex_numbers_list
