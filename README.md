@@ -13,21 +13,22 @@ This project is under active development.
 
 ### 1. Installation
 
-#### Prerequisites:
+#### Prerequisites:<br>
 - **Operating System**: Tested on Linux
 - **NVIDIA CUDA**: Version 12.0+ (for GPU support)
 
-#### Steps:
+#### Steps:<br>
 1. **Clone the repository**:
     ```bash
     git clone https://github.com/MRSI-HFMR-Group-Vienna/Synthetic_MRSI
     cd Synthetic_MRSI
     ```
-2. **Install Anaconda**: 
+    
+2. **Install Anaconda**:<br>
    Follow the instructions at the following link to install Anaconda: 
    https://docs.anaconda.com/anaconda/install/
 
-3. **Set up the environment**: 
+3. **Set up the environment**:<br>
     Navigate to the environment folder: 
     ```bash
     cd Synthetic_MRSI/environment
@@ -70,4 +71,7 @@ This project is licensed under the MIT License. See the [LICENSE](./LICENSE) fil
 
 ## Contact
 
-For further inquiries or support, contact **Markus** at markus.schuster@meduniwien.ac.at, **Berhard** at bernhard.strasser@meduniwien.ac.at, **Alireza** (Ali) at alireza.vasfi@meduniwien.ac.at
+For further inquiries or support, contact <br>
+> **Markus** at markus.schuster@meduniwien.ac.at, <br>
+> **Berhard** at bernhard.strasser@meduniwien.ac.at, <br>
+> **Alireza** (Ali) at alireza.vasfi@meduniwien.ac.at
