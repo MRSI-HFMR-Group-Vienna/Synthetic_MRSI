@@ -72,6 +72,7 @@ This project is licensed under the MIT License. See the [LICENSE](./LICENSE) fil
 ## Contact
 
 For further inquiries or support, contact <br>
-> **Markus** at markus.schuster@meduniwien.ac.at, <br>
-> **Berhard** at bernhard.strasser@meduniwien.ac.at, <br>
-> **Alireza** (Ali) at alireza.vasfi@meduniwien.ac.at
+> **Markus Schuster** at markus.schuster[at]meduniwien.ac.at <br>
+> **Berhard Strasser** at bernhard.strasser[at]meduniwien.ac.at <br>
+> **Alireza Vasfi** (Ali) at alireza.vasfi[at]meduniwien.ac.at <br>
+> **Wolfgang Bogner** at wolfgang.bogner[at]meduniwien.ac.at
