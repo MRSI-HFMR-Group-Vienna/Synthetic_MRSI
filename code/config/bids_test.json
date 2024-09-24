@@ -1,0 +1,35 @@
+{
+    "FileInfo": {
+      "Authors": "Markus Schuster",
+      "Description": "This file containing the structure of trajectories. It also aiming to be compatible with the BIDS standard.",
+      "Version": "2024-09-24"
+    },
+    "BIDSVersion": "[OK] TODO",
+
+    "EncodingTechnique": "[OK] TODO",
+
+    "NumberInterleavesAngular": "TODO",
+    "NumberInterleavesTemporalPerAngular": "TODO",
+    "NumberAngularInterleavesPerPartition": "TODO",
+
+    "MatrixSizeKSpace": "TODO",
+    "MatrixSizeImageSpace": "TODO",
+
+    "AcquisitionVoxelSize": "[OK] TODO",
+
+    "VOIReadoutDirection": "TODO",
+    "VOIPhaseDirection": "TODO",
+    "VOIPartitionDirection": "TODO",
+
+    "BrainPositionCoronal": "TODO",
+    "BrainPositionSagittal": "TODO",
+    "BrainPositionTransverse": "TODO",
+    "BrainPositionNormalVectorX": "TODO",
+    "BrainPositionNormalVectorY": "TODO",
+    "BrainPositionNormalVectorZ": "TODO",
+
+    "ResonantNucleus": "TODO -> [BUT DON'T WANT TO HARD CODE IT IN THE CODE, BETTER OUTSIDE]",
+    "NumberReceiveCoilActiveElements": "[OK] TODO",
+    "DwellTime": "[OK] ADC DwellTime",
+    "SpectralWidth": "[OK] 1/(SpectralDwellTime)"
+}

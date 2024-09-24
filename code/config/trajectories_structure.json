@@ -1,0 +1,50 @@
+{
+    "FileInfo": {
+      "Authors": ["Markus Schuster"],
+      "Description": "This file containing the structure of trajectories. It also aiming to be compatible with the BIDS standard.",
+      "Version": "2024-09-24"
+    },
+    "BIDSVersion": "1.10.0",
+
+    "EncodingTechnique": "concentric ring trajectory",
+
+    "NumberInterleavesAngular": 32,
+    "NumberInterleavesTemporalPerAngular":
+        [
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1
+        ],
+    "NumberAngularInterleavesPerPartition": "TODO",
+
+    "MatrixSizeKSpace": [1, 1, 1],
+    "MatrixSizeImageSpace": [22, 22, 2],
+
+    "AcquisitionVoxelSize": [10, 10, 5],
+
+    "VOIReadoutDirection": 220,
+    "VOIPhaseDirection": 220,
+    "VOIPartitionDirection": 10,
+
+    "BrainPositionCoronal": 0,
+    "BrainPositionSagittal": 0,
+    "BrainPositionTransverse": 0,
+    "BrainPositionNormalVectorX": 0,
+    "BrainPositionNormalVectorY": 0,
+    "BrainPositionNormalVectorZ": 1,
+
+    "SpectrometerFrequency": 267.52218708,
+    "ResonantNucleus": "1H",
+    "NumberReceiveCoilActiveElements": 1,
+    "DwellTime": "[OK] ADC DwellTime",
+    "SpectralWidth": "[OK] 1/(SpectralDwellTime)",
+
+    "DwellTimeOfADCPerAngularInterleaf":
+        [
+            3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000,
+            3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000,
+            3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000,
+            3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000
+        ]
+}

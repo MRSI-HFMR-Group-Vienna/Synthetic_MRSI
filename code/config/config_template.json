@@ -1,6 +1,6 @@
 {
     "Author": "Markus Schuster",
-    "Description": "Config file that should contain the used paths. This is just a template. Please add your paths! ;)",
+    "Description": "Paths file that should contain the used paths. This is just a template. Please add your paths! ;)",
     "version": "2024-01-04",
     "path": {
     	"cache": "path/where/simulation/cache/is/stored/on/disc", 

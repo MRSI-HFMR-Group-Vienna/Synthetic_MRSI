@@ -21,11 +21,6 @@
         "partition": 1
     },
 
-    "number rewinder": {
-        "after each trajectory": 0,
-        "after all trajectories": 0
-    },
-
     "fow": {
         "overgrid": 1,
         "readout direction": 220,

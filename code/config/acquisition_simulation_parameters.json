@@ -1,0 +1,7 @@
+# File not yet used
+#
+#TODO: simulaion & aquisition paramater -> at the moment only trajectories_structure.json
+#TODO: Consider things like:
+#       simulation precision
+#       target gpu small tasks
+#       target gpus big tasks

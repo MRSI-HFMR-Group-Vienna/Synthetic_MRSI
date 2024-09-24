@@ -1,8 +1,13 @@
 # Ignore all files in the code/config/ folder
-code/config/config_*
+code/config/paths_*
+code/config/OLD/config_*
+code/config/OLD/paths_*
 code/tests/*
 code/coils_cropped_cartesian_compressed.h5
 cache
 
 # Except for config_template.json
-!code/config/config_template.json
+!code/config/paths_template.json
+!code/config/trajectories_gradient.json
+!code/config/trajectories_structure.json
+!code/config/bids_test.json

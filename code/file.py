@@ -1,6 +1,7 @@
 import default
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 import spectral_spatial_simulation
+from tools import JsonConverter
 from scipy.ndimage import zoom
 from scipy.io import loadmat
 from printer import Console
@@ -545,17 +546,48 @@ class Trajectories:
         self.path = configurator.data["path"]["trajectories"][trajectory_type]
         self.data = None
         self.number_of_trajectories = None
-        self.important_keys: list = ["dMaxGradAmpl",
-                                    "NumberOfBrakeRunPoints",
-                                    "NumberOfLaunTrackPoints",
-                                    "NumberOfLoopPoints",
-                                    "NumberOfRewinderPoints",
-                                    "NumberOfAngularInterleaves",
-                                    "dGradValues"]
+
+        # Only important if def 'load_from_mat_file' is called.
+        self.important_keys_mat_file: list = ["dMaxGradAmpl",
+                                              "NumberOfBrakeRunPoints",
+                                              "NumberOfLaunTrackPoints",
+                                              "NumberOfLoopPoints",
+                                              "NumberOfRewinderPoints",
+                                              "NumberOfAngularInterleaves",
+                                              "dGradValues"]
 
         self.combined_trajectories: dict = None
 
-    def _combine_trajectories(self) -> None:
+    def _combine_trajectories_json_file(self) -> None:
+        # TODO: Under construction
+        pass
+
+    def load_from_json_file(self):
+        # TODO: Under construction
+        # TODO: Docstring
+
+
+        from pprint import pprint
+        # open json file
+        with open(self.path, 'r') as openfile:
+            # Reading from json file
+            json_object = json.load(openfile)
+
+            for i in range(len(json_object)):
+                try:
+                    json_object[f"trajectory {i + 1}"]["gradient values"] = JsonConverter.complex_string_list_to_numpy(json_object[f"trajectory {i + 1}"]["gradient values"])
+                except:
+                    pass
+                finally:
+                    trajectories_data = json_object
+
+        # get number of trajectories
+        # -> combine trajectories
+        # print loaded
+
+        pass
+
+    def _combine_trajectories_mat_file(self) -> None:
         """
         Reformat the trajectory data that it result in one dictionary with the respective (defined) keys holding the
         related values. The dictionary values are stored in lists. Don't call this private method directly from an outside.
@@ -564,14 +596,14 @@ class Trajectories:
         """
 
         # create a empty list
-        self.combined_trajectories = {key: [] for key in self.important_keys}       # (1) create pre-defined empty directory
+        self.combined_trajectories = {key: [] for key in self.important_keys_mat_file}               # (1) create pre-defined empty directory
 
         # use list comprehensions instead of nested for loops:
-        [self.combined_trajectories[key].append(one_trajectory_data[key])           # (4) append to pre-defined empty dictionary           ^
-         for one_trajectory_data in self.data["trajectory_pack"]                    # (2) get one after another trajectory data            |
-         for key in self.important_keys]                                            # (3) get only items from important keys in dictionary |
+        [self.combined_trajectories[key].append(one_trajectory_data[key])  # (4) append to pre-defined empty dictionary           ^
+         for one_trajectory_data in self.data["trajectory_pack"]           # (2) get one after another trajectory data            |
+         for key in self.important_keys_mat_file]                          # (3) get only items from important keys in dictionary |
 
-    def load(self, squeeze_trajectory_data=True) -> dict[list]:
+    def load_from_mat_file(self, squeeze_trajectory_data=True) -> dict[list]:
         """
         To load the trajectory data from a dict and then combine the data (restructure data) that a dictionary holding only the necessary keys
         with the values in a respective list.
@@ -586,7 +618,7 @@ class Trajectories:
         #     Note: simplify_cells enables to get a dictionary with the right keys to the according values, not a tuple
         self.data = loadmat(self.path, squeeze_me=squeeze_trajectory_data, simplify_cells=True)
         # (1b) Also check if the right keys are provided in the matlab file. Missing values are listed in the error message.
-        subset_keys = set(self.important_keys)
+        subset_keys = set(self.important_keys_mat_file)
         superset_keys = set(list(self.data["trajectory_pack"][0].keys()))
         if subset_keys.issubset(superset_keys):
             Console.printf("success", f"Found necessary keys in {Path(self.path).name} file")
@@ -597,12 +629,12 @@ class Trajectories:
         # (2) get number of trajectories
         self.number_of_trajectories = len(self.data["trajectory_pack"])
         # (3) combine the data fom all trajectories
-        self._combine_trajectories()
+        self._combine_trajectories_mat_file()
 
         # (4) print info what has been loaded
         Console.add_lines(f"Loaded trajectory type: {self.trajectory_type}")
         Console.add_lines(f"Number of trajectories: {self.number_of_trajectories}")
-        data_keys_formatted = '\n  => '.join(self.important_keys)
+        data_keys_formatted = '\n  => '.join(self.important_keys_mat_file)
         Console.add_lines(f"Used values from keys: \n  => {data_keys_formatted}")
         Console.add_lines(f"Loaded from: {self.data['__header__']}")
         Console.add_lines(f"Path: {self.path}")
@@ -617,7 +649,7 @@ class Trajectories:
         :return: Nothing
         """
         Console.add_lines(f"Loaded data:")
-        for key in self.important_keys:
+        for key in self.important_keys_mat_file:
             if key != "dGradValues":
                 Console.add_lines(f"{key}: {self.combined_trajectories[key]}")
         Console.add_lines(f"dGradValues: Not displayed here!")
@@ -625,13 +657,14 @@ class Trajectories:
 
 
 if __name__ == "__main__":
-    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/code/config/", file_name="config_15082024.json")
+    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/code/config/", file_name="config_19082024.json")
     configurator.load()
 
     trajectories = Trajectories(configurator=configurator, trajectory_type="crt")
-    trajectories.load()
+    trajectories.load_from_mat_file()
+    #trajectories.load_from_json_file()
     trajectories.print_loaded_data()
 
-    #coilSensitivityMaps = CoilSensitivityMaps(configurator=configurator)
-    #coilSensitivityMaps.load_h5py()
-    #coilSensitivityMaps.interpolate(target_size=(32, 112, 128, 80), compute_on_device='cpu')
+    # coilSensitivityMaps = CoilSensitivityMaps(configurator=configurator)
+    # coilSensitivityMaps.load_h5py()
+    # coilSensitivityMaps.interpolate(target_size=(32, 112, 128, 80), compute_on_device='cpu')

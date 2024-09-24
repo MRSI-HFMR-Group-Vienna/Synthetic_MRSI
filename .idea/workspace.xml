@@ -48,11 +48,11 @@
       <recent name="$PROJECT_DIR$/code" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/code/config/OLD" />
+      <recent name="$PROJECT_DIR$/additional" />
       <recent name="$PROJECT_DIR$/code/config" />
       <recent name="$PROJECT_DIR$/code/old" />
       <recent name="$PROJECT_DIR$/code/visualisation" />
-      <recent name="$PROJECT_DIR$/code/performance" />
-      <recent name="$PROJECT_DIR$/code" />
     </key>
   </component>
   <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
@@ -98,6 +98,11 @@
           <url>file://$PROJECT_DIR$/code/tests/sftDemo2_new/markus/analysis/ellip_calc.py</url>
           <line>67</line>
           <option name="timeStamp" value="6" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/code/tests/sftDemo2_new/markus/processor.py</url>
+          <line>304</line>
+          <option name="timeStamp" value="7" />
         </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>
