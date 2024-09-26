@@ -3,6 +3,7 @@ from cupyx.scipy.ndimage import zoom as zoom_gpu
 import spectral_spatial_simulation
 from tools import JsonConverter
 from scipy.ndimage import zoom
+from tools import deprecated
 from scipy.io import loadmat
 from printer import Console
 from pathlib import Path
@@ -15,9 +16,9 @@ import sys
 import os
 
 
-class JMRUI2:
+class JMRUI:
     """
-    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file. Further, also rename JMRUI instead of JMRUI2!
+    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file. Further, also rename JMRUI instead of JMRUI!
     """
 
     def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
@@ -360,7 +361,7 @@ class FID:
         """
         self.configurator.load()
         path = self.configurator.data["path"]["fid"][fid_name]
-        jmrui = JMRUI2(path=path, signal_data_type=signal_data_type)
+        jmrui = JMRUI(path=path, signal_data_type=signal_data_type)
         data = jmrui.load_m_file()
 
         parameters, signal, time = data["parameters"], data["signal"], data["time"]
@@ -526,8 +527,61 @@ class CoilSensitivityMaps:
         return maps_complex_interpolated
 
 
-class Trajectories:
+class CRTTrajectories:
     """
+    To read the structure and gradient values from JSON trajectories files. Note: It only supports concentric
+    ring trajectories at the moment.
+
+    This requires files:
+        * JSON Structure file
+        * JSON Gradient file
+    """
+
+    def __init__(self, configurator: Configurator):
+        """
+         Initialise the object with the configurator which manages the paths, thus also contains the
+        paths to the respective trajectory file.
+
+        :param configurator: Configurator object that manages the paths.
+        """
+        self.configurator = configurator.load()
+        self.path_structure = configurator.data["path"]["trajectories"]["crt"]["structure"]
+        self.path_gradient = configurator.data["path"]["trajectories"]["crt"]["gradient"]
+        self.loaded_data = None
+
+    def load(self) -> dict:
+        """
+        To load the content of the respective JSON files to get the trajectory data itself and the according information.
+
+        :return: Dictionary with the keys of the json files with the respective data. The file information is removed.
+        """
+
+        # Load all data from structure and gradient file
+        with open(self.path_structure, "r") as file_structure, open(self.path_gradient, "r") as file_gradient:
+            json_structure_content = json.load(file_structure)
+            json_gradient_content = json.load(file_gradient)
+
+        # Merge whole content of both files
+        json_merged_content = json_structure_content | json_gradient_content
+        json_merged_content.pop("FileInfo")
+
+        # Transform the gradient values, represented as string list for each trajectory, to a list
+        # of complex numpy arrays.
+        trajectories_gradient_values: list = []
+        for trajectory_gradient_values in json_merged_content["GradientValues"]:
+            trajectories_gradient_values.append(JsonConverter.complex_string_list_to_numpy(trajectory_gradient_values))
+
+        json_merged_content["GradientValues"] = trajectories_gradient_values
+
+        # Store in object variable, but also return it.
+        self.loaded_data = json_merged_content
+        return json_merged_content
+
+
+@deprecated(reason="This class only supports .mat files. The simulation uses .json files, thus use the class CRTTrajectories.")
+class CRTTrajectoriesMAT:
+    """
+    TODO: Only for CRT now, thus name it or mark it somehow!
     To read trajectory data from .mat files and prepare it by organising all metadata and trajectory data into a dictionary with lists. This process structures
     the data from the .mat file in a specific format suitable for further use.
     """
@@ -556,36 +610,50 @@ class Trajectories:
                                               "NumberOfAngularInterleaves",
                                               "dGradValues"]
 
+        ###self.important_keys_json_file: list = ["MaximumGradientAmplitude",  # TODO: in gradients file!
+        ###                                       "GradientValues",            # TODO: in gradients file!
+        ###                                       "NumberAngularInterleaves",  # TODO: in structure file!
+        ###                                       "NumberRewinderAfterEachTrajectory",   # TODO: in structure file!
+        ###                                       "NumberRewinderAfterAllTrajectories",  # TODO: in structure file! # (=break run points) TODO: Use already?
+        ###                                       ]
+
+        # NumberOfLoopPoints can be calculated -> + rename "number_measured_points"
+
+        # "NumberOfBrakeRunPoints",    # TODO ?????????????????
+        # "NumberOfLaunTrackPoints",   # TODO OK! -> measured points[0][0]-1
+        # "NumberOfLoopPoints",        # TODO DELETE AND USE MeasuredPoints, thus maybe naming_ "number_measured_points": -> measured points[0][1] - measured points[0][0]+1
+        # "NumberOfRewinderPoints",    # TODO -> Maybe not needed? (allways 0)
+        # "NumberOfAngularInterleaves" # TODO -> Maybe not needed? (allways 0, but wrong in intermediate file!?)
+
         self.combined_trajectories: dict = None
 
-    def _combine_trajectories_json_file(self) -> None:
-        # TODO: Under construction
-        pass
-
-    def load_from_json_file(self):
-        # TODO: Under construction
-        # TODO: Docstring
-
-
-        from pprint import pprint
-        # open json file
-        with open(self.path, 'r') as openfile:
-            # Reading from json file
-            json_object = json.load(openfile)
-
-            for i in range(len(json_object)):
-                try:
-                    json_object[f"trajectory {i + 1}"]["gradient values"] = JsonConverter.complex_string_list_to_numpy(json_object[f"trajectory {i + 1}"]["gradient values"])
-                except:
-                    pass
-                finally:
-                    trajectories_data = json_object
-
-        # get number of trajectories
-        # -> combine trajectories
-        # print loaded
-
-        pass
+    ###def _combine_trajectories_json_file(self) -> None:
+    ###    # TODO: Under construction
+    ###    pass
+    ###
+    ###def load_from_json_file(self):
+    ###    # TODO: Under construction
+    ###    # TODO: Docstring
+    ###
+    ###    from pprint import pprint
+    ###    # open json file
+    ###    with open(self.path, 'r') as openfile:
+    ###        # Reading from json file
+    ###        json_object = json.load(openfile)
+    ###
+    ###        for i in range(len(json_object)):
+    ###            try:
+    ###                json_object[f"trajectory {i + 1}"]["gradient values"] = JsonConverter.complex_string_list_to_numpy(json_object[f"trajectory {i + 1}"]["gradient values"])
+    ###            except:
+    ###                pass
+    ###            finally:
+    ###                trajectories_data = json_object
+    ###
+    ###    # get number of trajectories
+    ###    # -> combine trajectories
+    ###    # print loaded
+    ###
+    ###    pass
 
     def _combine_trajectories_mat_file(self) -> None:
         """
@@ -596,12 +664,12 @@ class Trajectories:
         """
 
         # create a empty list
-        self.combined_trajectories = {key: [] for key in self.important_keys_mat_file}               # (1) create pre-defined empty directory
+        self.combined_trajectories = {key: [] for key in self.important_keys_mat_file}  # (1) create pre-defined empty directory
 
         # use list comprehensions instead of nested for loops:
         [self.combined_trajectories[key].append(one_trajectory_data[key])  # (4) append to pre-defined empty dictionary           ^
-         for one_trajectory_data in self.data["trajectory_pack"]           # (2) get one after another trajectory data            |
-         for key in self.important_keys_mat_file]                          # (3) get only items from important keys in dictionary |
+         for one_trajectory_data in self.data["trajectory_pack"]  # (2) get one after another trajectory data            |
+         for key in self.important_keys_mat_file]  # (3) get only items from important keys in dictionary |
 
     def load_from_mat_file(self, squeeze_trajectory_data=True) -> dict[list]:
         """
@@ -657,13 +725,17 @@ class Trajectories:
 
 
 if __name__ == "__main__":
-    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/code/config/", file_name="config_19082024.json")
+    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/OLD/", file_name="config_19082024.json")
     configurator.load()
 
-    trajectories = Trajectories(configurator=configurator, trajectory_type="crt")
+    trajectories = CRTTrajectoriesMAT(configurator=configurator, trajectory_type="crt")
     trajectories.load_from_mat_file()
-    #trajectories.load_from_json_file()
+    # trajectories.load_from_json_file()
     trajectories.print_loaded_data()
+
+    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/", file_name="paths_25092024.json")
+    trajectories = CRTTrajectories(configurator=configurator)
+    trajectories.load()
 
     # coilSensitivityMaps = CoilSensitivityMaps(configurator=configurator)
     # coilSensitivityMaps.load_h5py()

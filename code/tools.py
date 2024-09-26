@@ -11,6 +11,10 @@ import pint
 import rmm
 import sys
 
+import warnings
+import functools
+from typing import Callable
+
 u = pint.UnitRegistry()  # for using units
 
 import dask.array as da
@@ -603,3 +607,45 @@ class JsonConverter:
         complex_numbers_list = np.vstack(complex_numbers_list)
 
         return complex_numbers_list
+
+
+def deprecated(reason, replacement=None) -> Callable:
+    """
+    Decoration to mark functions or classes as deprecated and mention the new alternatives. \n
+
+    It consists of the nested functions:
+
+        (1) deprecated => Outer function: pass arguments (reason, replacement) to the decorator.\n
+        (2) decorator  => Mid inner function: receives function or class and wraps it and creating warning message. \n
+        (3) wrapper    => Inner most function: This function issues the warning and calls the original function or class. \n
+
+    :param reason: Reason for deprecating the function or class (string).
+    :param replacement: Suggestion for what to use instead (string). Default is None.
+    :return: Nothing
+    """
+
+    # This function will act as the actual decorator applied to the function or class.
+    def decorator(function_or_class):
+        """
+        Receives function or class and wraps it and creating warning message
+
+        :param function_or_class:
+        :return:
+        """
+        message = f"{function_or_class.__name__} is deprecated: {reason}."  # deprecated message
+        if replacement:
+            message += f" Use {replacement} instead."
+
+        # Defining the wrapper function for class or function
+        @functools.wraps(function_or_class)
+        def wrapper(*args, **kwargs):
+            warnings.warn(
+                message,
+                category=DeprecationWarning,
+                stacklevel=2
+            )
+            return function_or_class(*args, **kwargs)
+
+        return wrapper
+
+    return decorator

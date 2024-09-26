@@ -30,7 +30,7 @@ class DummyClass:
         #if apply_girf
         # Apply girf
         # Interpolate to ADC
-        # Normalise Trajectories
+        # Normalise CRTTrajectoriesMAT
         # Calculate k-space radii
         # maybe post processing...
         pass

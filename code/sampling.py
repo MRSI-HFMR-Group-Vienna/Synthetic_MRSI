@@ -64,6 +64,16 @@ class Model:
     ###        return xp_compute, xp_return
 
     def _to_device(self, array: da.Array, device: str = 'cpu'):
+        """
+        TODO: Bring to tools -> Because general usage possible.
+        TODO: Then also use at other places? (E.g. spatial_spectral_simulation.Model.assemble_graph (end of code))
+
+        To bring a dask array to the desired device. 'cuda' and 'cpu' is supported.
+
+        :param array:
+        :param device:
+        :return:
+        """
         possible_devices = {'cpu', 'cuda'}
         if device not in possible_devices:
             Console.printf("error", f"Selected device is {device}. However, only {possible_devices} is possible.")
@@ -81,6 +91,13 @@ class Model:
     def apply_coil_sensitivity_maps(self,
                                     compute_on_device: str = 'cpu',
                                     return_on_device: str = 'cpu') -> list[da.Array]:
+        """
+        For applying the coil sensitivity maps to the volume of the spectral spatial model.
+
+        :param compute_on_device: target device (cpu or cuda)
+        :param return_on_device: target device (cpu or cuda)
+        :return: list of dask arrays
+        """
 
         coil_sensitivity_maps = self._to_device(self.coil_sensitivity_maps, device=compute_on_device)
 
@@ -96,6 +113,16 @@ class Model:
                       crop_center_shape: tuple = None,
                       compute_on_device: str = 'cpu',
                       return_on_device: str = 'cpu') -> list[da.Array]:
+        """
+        For bringing the volume into the cartesian k-space via fast fourier transformation (FFT). Usually used after
+        apply the coil sensitivity maps, thus this method deals with a list of dask arrays.
+
+        :param volumes_with_coil_sensitivity_maps: the volume with applied coil sensitivity maps.
+        :param crop_center_shape: tuple with shape values for a symmetrical cut around the center of the volume.
+        :param compute_on_device: target device (cpu or cuda)
+        :param return_on_device: target device (cpu or cuda)
+        :return: list of volumes (one for each coil) in cartesian k-space
+        """
 
         volumes_cartesian_k_space: list[da.Array] = []
         for one_coil_image_domain in volumes_with_coil_sensitivity_maps:
@@ -120,6 +147,27 @@ class Model:
             volumes_cartesian_k_space.append(self._to_device(one_coil_k_space, device=return_on_device))
 
         return volumes_cartesian_k_space
+
+
+    def non_cartesian_FT(self):
+        pass
+        #load necessary data from json file
+        import json
+        with open('data.json', 'r') as file:
+            data = json.load(file)
+
+        data_shape =
+
+    # def non_cartesian_FT
+    # -> this function calculates/uses and operator and multiplies them for getting the volume in non cartesian k-space
+    # -> maybe: to cartesian k-space
+    # -> maybe: to concentric ring k-sapce? or just to non_cartesian_k_space
+    #                                               --> because in and out trajectory is defined! (thus general naming like non_cartesian_k_space/non_cartesian FT?)
+    # ----> need to read the (crt) concentric ring trajectory from json file
+    # ----> need to calculate the cartesian trajectory (based on parameters -> where?)
+
+
+
 
     def cartesian_IFFT(self,
                        volumes_cartesian_k_space: list[da.Array],
