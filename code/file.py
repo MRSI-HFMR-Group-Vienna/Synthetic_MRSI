@@ -10,6 +10,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import cupy as cp
+import pint
 import h5py
 import json
 import sys
@@ -527,10 +528,9 @@ class CoilSensitivityMaps:
         return maps_complex_interpolated
 
 
-class CRTTrajectories:
+class Trajectory:
     """
-    To read the structure and gradient values from JSON trajectories files. Note: It only supports concentric
-    ring trajectories at the moment.
+    To read the parameters and gradient values from JSON trajectories files.
 
     This requires files:
         * JSON Structure file
@@ -539,30 +539,78 @@ class CRTTrajectories:
 
     def __init__(self, configurator: Configurator):
         """
-         Initialise the object with the configurator which manages the paths, thus also contains the
+        Initialise the object with the configurator which manages the paths, thus also contains the
         paths to the respective trajectory file.
 
         :param configurator: Configurator object that manages the paths.
         """
         self.configurator = configurator.load()
-        self.path_structure = configurator.data["path"]["trajectories"]["crt"]["structure"]
-        self.path_gradient = configurator.data["path"]["trajectories"]["crt"]["gradient"]
+        self.path_trajectories = configurator.data["path"]["trajectories"]
+        self.path_simulation_parameters = configurator.data["path"]["simulation_parameters"]
         self.loaded_data = None
 
-    def load(self) -> dict:
+    def load_cartesian(self) -> dict:
+        """
+        To load the simulation parameters of the respective JSON file for being able to construct the cartesian trajectory.
+        Also, renaming of the keys - if desired - can be done here.
+
+        :return: Dictionary with simulation parameters to construct the cartesian trajectory
+        """
+
+        # Need specific parameters from the simulation parameters file
+        with open(self.path_simulation_parameters, "r") as file_simulation_parameters:
+            json_parameters_content = json.load(file_simulation_parameters)
+
+        # For extracting only the desired parameters via keys from the loaded dict
+        desired_parameters = [
+            "MatrixSizeImageSpace",
+            "AcquisitionVoxelSize",
+            "MagneticFieldStrength",
+            "SpectrometerFrequency"
+        ]
+
+
+        # Selecting only the desired parameters based on the defined keys before
+        selected_parameters = {key: json_parameters_content[key] for key in desired_parameters if key in json_parameters_content}
+
+        # Rename key that does not match BIDS (MatrixSizeImageSpace -> MatrixSize)
+        selected_parameters["MatrixSize"] = selected_parameters.pop("MatrixSizeImageSpace")
+
+        # To add units to the parameters
+        u = pint.UnitRegistry()
+        selected_parameters["AcquisitionVoxelSize"] = selected_parameters["AcquisitionVoxelSize"] * u.mm
+        selected_parameters["MagneticFieldStrength"] = selected_parameters["MagneticFieldStrength"] * u.T
+        selected_parameters["SpectrometerFrequency"] = selected_parameters["SpectrometerFrequency"] * u.MHz
+
+        #Console.printf("info", f"Loaded cartesian parameters: {json.dumps(selected_parameters, indent=4)}")
+        Console.add_lines(f"Loaded cartesian parameters from file '{Path(self.path_simulation_parameters).name}':")
+        for key, value in selected_parameters.items():
+            Console.add_lines(f" -> {key:.<25}: {value}")
+
+        Console.printf_collected_lines("success")
+
+        # -> TODO: partition encoding * nuber slices (where to find?)
+        # -> TODO: vector size? Where do I get from?
+        # -> NumberReceiveCoilActiveElements (total channels measured previously)
+
+        return selected_parameters
+
+    def load_concentric_rings(self) -> dict:
         """
         To load the content of the respective JSON files to get the trajectory data itself and the according information.
 
         :return: Dictionary with the keys of the json files with the respective data. The file information is removed.
         """
 
+        path_gradients = self.path_trajectories["crt"]["gradients"]
+
         # Load all data from structure and gradient file
-        with open(self.path_structure, "r") as file_structure, open(self.path_gradient, "r") as file_gradient:
-            json_structure_content = json.load(file_structure)
+        with open(self.path_simulation_parameters, "r") as file_simulation_parameters, open(path_gradients, "r") as file_gradient:
+            json_parameters_content = json.load(file_simulation_parameters)
             json_gradient_content = json.load(file_gradient)
 
         # Merge whole content of both files
-        json_merged_content = json_structure_content | json_gradient_content
+        json_merged_content = json_parameters_content | json_gradient_content
         json_merged_content.pop("FileInfo")
 
         # Transform the gradient values, represented as string list for each trajectory, to a list
@@ -578,7 +626,7 @@ class CRTTrajectories:
         return json_merged_content
 
 
-@deprecated(reason="This class only supports .mat files. The simulation uses .json files, thus use the class CRTTrajectories.")
+@deprecated(reason="This class only supports .mat files. The simulation uses .json files, thus use the class Trajectory.")
 class CRTTrajectoriesMAT:
     """
     TODO: Only for CRT now, thus name it or mark it somehow!
@@ -734,8 +782,8 @@ if __name__ == "__main__":
     trajectories.print_loaded_data()
 
     configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/", file_name="paths_25092024.json")
-    trajectories = CRTTrajectories(configurator=configurator)
-    trajectories.load()
+    trajectories = Trajectory(configurator=configurator)
+    trajectories.load_concentric_rings()
 
     # coilSensitivityMaps = CoilSensitivityMaps(configurator=configurator)
     # coilSensitivityMaps.load_h5py()

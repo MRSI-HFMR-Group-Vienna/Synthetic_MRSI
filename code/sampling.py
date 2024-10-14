@@ -1,8 +1,11 @@
+from file import Configurator
 from tools import Console
 import dask.array as da
 import numpy as np
 import cupy as cp
+import pint
 import dask
+import file
 import sys
 
 from tqdm import tqdm
@@ -20,7 +23,7 @@ class Model:
                  block_size_coil_sensitivity_maps: tuple = None,
                  path_cache: str = None,
                  data_type: str = "complex64",
-                 persist_computational_graph_spectral_spatial_model: bool = False, # Uses more space, but speeds up computation
+                 persist_computational_graph_spectral_spatial_model: bool = False,  # Uses more space, but speeds up computation
                  ):
 
         self.coil_sensitivity_maps = coil_sensitivity_maps
@@ -148,15 +151,15 @@ class Model:
 
         return volumes_cartesian_k_space
 
-
     def non_cartesian_FT(self):
+        " TODO TODO TODO TODO TODO"
         pass
-        #load necessary data from json file
+        # load necessary data from json file
         import json
         with open('data.json', 'r') as file:
             data = json.load(file)
 
-        data_shape =
+        # data_shape =
 
     # def non_cartesian_FT
     # -> this function calculates/uses and operator and multiplies them for getting the volume in non cartesian k-space
@@ -165,9 +168,6 @@ class Model:
     #                                               --> because in and out trajectory is defined! (thus general naming like non_cartesian_k_space/non_cartesian FT?)
     # ----> need to read the (crt) concentric ring trajectory from json file
     # ----> need to calculate the cartesian trajectory (based on parameters -> where?)
-
-
-
 
     def cartesian_IFFT(self,
                        volumes_cartesian_k_space: list[da.Array],
@@ -195,9 +195,9 @@ class Model:
 
         for one_coil_volume in volumes_with_coil_sensitivity_maps:
             one_coil_volume = self._to_device(one_coil_volume.rechunk(chunks=(one_coil_volume.shape[0],
-                                                                              int(one_coil_volume.shape[1]/20),
-                                                                              int(one_coil_volume.shape[2]/20),
-                                                                              int(one_coil_volume.shape[3]/20))), device=compute_on_device)
+                                                                              int(one_coil_volume.shape[1] / 20),
+                                                                              int(one_coil_volume.shape[2] / 20),
+                                                                              int(one_coil_volume.shape[3] / 20))), device=compute_on_device)
 
             #### Get the spectra of all FID signals
             ###spectra = da.map_blocks(cp.fft.fft, one_coil_volume, axis=0)
@@ -207,15 +207,15 @@ class Model:
             ####mean_spectrum = da.map_blocks(cp.asnumpy, mean_spectrum).compute()
             #### Get max peak in spectrum
             ###max_peak = da.map_blocks(cp.amax, mean_spectrum) #.compute()
-            max_peak = cp.array(53.308907-60.410015j)
+            max_peak = cp.array(53.308907 - 60.410015j)
             # Get the desired standard deviation based on the desired snr
 
             noise_std_desired = max_peak / (2 * snr_desired)
             # Generate noise
-            #print(one_coil_volume.shape[0])
-            #print(noise_std_desired.compute())
-            #input("=================================")
-            #noise = cp.random.normal(0+0j, noise_std_desired.compute(), size=one_coil_volume.shape[0])
+            # print(one_coil_volume.shape[0])
+            # print(noise_std_desired.compute())
+            # input("=================================")
+            # noise = cp.random.normal(0+0j, noise_std_desired.compute(), size=one_coil_volume.shape[0])
 
             noise_real = cp.random.normal(0, cp.abs(noise_std_desired), size=one_coil_volume.shape[0], dtype=cp.float32)
             noise_imag = cp.random.normal(0, cp.abs(noise_std_desired), size=one_coil_volume.shape[0], dtype=cp.float32)
@@ -223,9 +223,9 @@ class Model:
             noise = noise.astype(cp.complex64)
             noise = noise.reshape(1536, 1, 1, 1)
 
-            #noise = da.asarray(noise, chunks=one_coil_volume.shape[0])
-            #noise = da.random.normal(0, noise_std_desired, size=mean_spectrum.shape, chunks=mean_spectrum.compute_chunk_sizes())
-            #noise = noise.map_blocks(cp.asarray) #.compute()
+            # noise = da.asarray(noise, chunks=one_coil_volume.shape[0])
+            # noise = da.random.normal(0, noise_std_desired, size=mean_spectrum.shape, chunks=mean_spectrum.compute_chunk_sizes())
+            # noise = noise.map_blocks(cp.asarray) #.compute()
             # Add to each spectrum (each voxel)
             one_coil_volume_noisy = one_coil_volume + noise
             one_coil_volume_noisy = one_coil_volume_noisy.rechunk(chunks=one_coil_volume.shape)
@@ -233,9 +233,6 @@ class Model:
             volumes_image_domain_noisy.append(one_coil_volume_noisy)
 
         return volumes_image_domain_noisy
-
-
-
 
     def coil_combination(self,
                          volumes_with_coil_sensitivity_maps: list[da.Array],
@@ -258,7 +255,7 @@ class Model:
             else:
                 cumulative_sum_coils += one_coil_volume
 
-            print(cumulative_sum_coils.shape) # TODO: Remove!!!
+            print(cumulative_sum_coils.shape)  # TODO: Remove!!!
 
         if compute_each_coil:
             if isinstance(cumulative_sum_coils, np.ndarray) and return_on_device == 'cpu':
@@ -273,6 +270,75 @@ class Model:
             return self._to_device(cumulative_sum_coils, device=return_on_device)
 
         return cumulative_sum_coils
+
+
+class Trajectory:
+    def __init__(self, configurator: file.Configurator, size_x: int, size_y: int):
+        self.configurator = configurator
+        self.size_x = size_x
+        self.size_y = size_y
+
+    def get_cartesian_2D(self) -> None:
+        """
+        To simulate other relevant parameters after loading the parameters from the json file.
+
+        TODO: check if units are correct of "encoding_field"
+        TODO: self.size_x, self.size_y has no units? (was nFreqEnc and nPhasEnc)
+
+        :return: None
+        """
+        # Use trajectory from file module
+        u = pint.UnitRegistry()
+
+        # Load the required parameters form a defined json file
+        parameters = file.Trajectory(configurator=self.configurator).load_cartesian()
+
+        # Get relevant parameters from loaded paramaters
+        larmor_frequency = parameters["SpectrometerFrequency"]
+        field_strength = parameters["MagneticFieldStrength"]
+        matrix_size = parameters["MatrixSize"]
+        voxel_size = parameters["AcquisitionVoxelSize"]
+
+        # Calculate relevant parameters
+        field_strength = field_strength.to(u.mT)  # convert from [T] to [mT] to fit final units
+        gyromagnetic_ratio_over_two_pi = larmor_frequency / field_strength
+        field_of_view = matrix_size * voxel_size
+        field_of_view = field_of_view.to(u.meter)  # convert from [mm] to [m]
+        field_of_view_x = field_of_view[0]
+        delta_gradient_moment_x = 1 / (field_of_view_x * gyromagnetic_ratio_over_two_pi)
+
+        # Create the 2D encoding field:
+        #  (a) with just indices [0, ... size] in the respective dimension.
+        #     e.g., x-dimension:         e.g., y-dimension:
+        #      [0, 1, 2, ... x]           [0, 0, 0, ... 0]
+        #      [0, 1, 2, ... x]           [1, 1, 1, ... 1]
+        #      [0, 1, 2, ... x]           [2, 2, 2, ... 2]
+        #      [0, 1, 2, ... x]           [y, y, y, ... y]
+        size_x, size_y = self.size_x, self.size_y
+        encoding_field = np.indices((size_x, size_y))
+        # (b) now, bring the zeros in the center of the field and thus also check if
+        #     dimension shape is odd or even with modulo operator. (Shorthand If Else btw.)
+        x_field, y_field = encoding_field[0, :, :], encoding_field[0, :, :]
+        encoding_field[0, :, :] = x_field - np.floor(size_x / 2) + 0.5 if size_x / 2 % 2 == 0 else x_field - np.floor(size_x / 2)
+        encoding_field[1, :, :] = y_field - np.floor(size_y / 2) + 0.5 if size_y / 2 % 2 == 0 else y_field - np.floor(size_y / 2)
+        # (c) create delta gradient moment field finally & normalize trajectory:
+        maximum_radius_x = delta_gradient_moment_x * size_x / 2  # maximum trajectory radius
+        encoding_field = encoding_field * delta_gradient_moment_x / (maximum_radius_x * 2)
+
+        Console.add_lines("Created 2D cartesian trajectory:")
+        Console.add_lines(f" -> with shape: {encoding_field.shape}")
+        Console.add_lines(f" -> from parameters:")
+        Console.add_lines(f"    -> {'field strength':.<20}: {field_strength}")
+        Console.add_lines(f"    -> {'larmor frequency':.<20}: {larmor_frequency}")
+        Console.add_lines(f"    -> {'field of view':.<20}: {field_of_view}")
+        Console.printf_collected_lines("success")
+
+        return encoding_field
+
+    def get_concentric_rings(self):
+        # use trajectoy from file module
+        pass
+
 
 ###class Model:
 ###    def __init__(self, spectral_spatial_model: SpectralSpatialModel, data_type: str = "complex64", compute_on_device: str = "cpu", return_on_device: str = "cpu"):
@@ -297,3 +363,10 @@ class Model:
 ###            computational_graph = self.computational_graph.map_blocks(cp.asarray)
 ###
 ###        return computational_graph
+
+
+if __name__ == "__main__":
+    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/", file_name="paths_25092024.json")
+
+    trajectory = Trajectory(configurator=configurator, size_x=128, size_y=64)
+    trajectory.get_cartesian_2D()

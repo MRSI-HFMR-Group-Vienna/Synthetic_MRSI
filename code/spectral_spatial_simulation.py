@@ -111,9 +111,9 @@ class FID:
 
         signal *= 1/divisor
 
-        # delete old entries
+        # delete OLD entries
         self.signal = np.delete(self.signal, indices, axis=0)
-        self.name = [name for name in self.name if name not in names] # delete the old names by getting subset
+        self.name = [name for name in self.name if name not in names] # delete the OLD names by getting subset
 
         # insert new entries
         self.signal = np.vstack((self.signal, signal))
