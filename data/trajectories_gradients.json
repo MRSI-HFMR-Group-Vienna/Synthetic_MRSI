@@ -5,6 +5,7 @@
         "Version": "2024-08-21"
     },
     "EncodingTechnique": "concentric ring trajectory",
+    "GradientRasterTime": 0.01,
 
     "MaximumGradientAmplitude":
     [

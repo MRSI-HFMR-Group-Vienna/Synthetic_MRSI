@@ -1,7 +1,7 @@
 {
     "file info": {
         "Author": "Markus Schuster",
-        "Description": "The config file containing the structure of the concentric ring trajectories (crt). Note, the ADC time per angular interleave and the number of points per trajectory (concentric ring) is set the same for each trajectory and thus simplified.",
+        "Description": "The config file containing the simulation parameters of the concentric ring trajectories (crt). Note, the ADC time per angular interleave and the number of points per trajectory (concentric ring) is set the same for each trajectory and thus simplified.",
         "version": "2024-08-19"
     },
 

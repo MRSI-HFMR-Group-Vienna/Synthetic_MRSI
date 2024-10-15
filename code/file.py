@@ -547,7 +547,6 @@ class Trajectory:
         self.configurator = configurator.load()
         self.path_trajectories = configurator.data["path"]["trajectories"]
         self.path_simulation_parameters = configurator.data["path"]["simulation_parameters"]
-        self.loaded_data = None
 
     def load_cartesian(self) -> dict:
         """
@@ -569,7 +568,6 @@ class Trajectory:
             "SpectrometerFrequency"
         ]
 
-
         # Selecting only the desired parameters based on the defined keys before
         selected_parameters = {key: json_parameters_content[key] for key in desired_parameters if key in json_parameters_content}
 
@@ -582,7 +580,6 @@ class Trajectory:
         selected_parameters["MagneticFieldStrength"] = selected_parameters["MagneticFieldStrength"] * u.T
         selected_parameters["SpectrometerFrequency"] = selected_parameters["SpectrometerFrequency"] * u.MHz
 
-        #Console.printf("info", f"Loaded cartesian parameters: {json.dumps(selected_parameters, indent=4)}")
         Console.add_lines(f"Loaded cartesian parameters from file '{Path(self.path_simulation_parameters).name}':")
         for key, value in selected_parameters.items():
             Console.add_lines(f" -> {key:.<25}: {value}")
@@ -602,27 +599,36 @@ class Trajectory:
         :return: Dictionary with the keys of the json files with the respective data. The file information is removed.
         """
 
-        path_gradients = self.path_trajectories["crt"]["gradients"]
-
         # Load all data from structure and gradient file
-        with open(self.path_simulation_parameters, "r") as file_simulation_parameters, open(path_gradients, "r") as file_gradient:
+        with open(self.path_simulation_parameters, "r") as file_simulation_parameters, open(self.path_trajectories["crt"], "r") as file_gradients:
             json_parameters_content = json.load(file_simulation_parameters)
-            json_gradient_content = json.load(file_gradient)
+            json_gradients_content = json.load(file_gradients)
 
         # Merge whole content of both files
-        json_merged_content = json_parameters_content | json_gradient_content
+        json_merged_content = json_parameters_content | json_gradients_content
         json_merged_content.pop("FileInfo")
 
         # Transform the gradient values, represented as string list for each trajectory, to a list
         # of complex numpy arrays.
-        trajectories_gradient_values: list = []
+        trajectories_gradients_values: list = []
         for trajectory_gradient_values in json_merged_content["GradientValues"]:
-            trajectories_gradient_values.append(JsonConverter.complex_string_list_to_numpy(trajectory_gradient_values))
+            trajectories_gradients_values.append(JsonConverter.complex_string_list_to_numpy(trajectory_gradient_values))
 
-        json_merged_content["GradientValues"] = trajectories_gradient_values
+        json_merged_content["GradientValues"] = trajectories_gradients_values
 
-        # Store in object variable, but also return it.
-        self.loaded_data = json_merged_content
+        # Just for printing loaded data (which is not too long) to the console.
+        Console.add_lines(f"\nUsed files for concentric rings trajectory:")
+        Console.add_lines(f" a) {Path(self.path_simulation_parameters)}")
+        Console.add_lines(f" b) {self.path_trajectories['crt']}")
+        Console.add_lines(f"\nLoaded parameters and data:")
+        for key, value in json_merged_content.items():
+            if len(str(value)) < 50: # convert each value to string and count length to omit too long data
+                Console.add_lines(f" -> {key:.<40}: {value}")
+            else:
+                Console.add_lines(f" -> {key:.<40}: (!) Too long. Not displayed.")
+
+        Console.printf_collected_lines("success")
+
         return json_merged_content
 
 
@@ -776,10 +782,10 @@ if __name__ == "__main__":
     configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/OLD/", file_name="config_19082024.json")
     configurator.load()
 
-    trajectories = CRTTrajectoriesMAT(configurator=configurator, trajectory_type="crt")
-    trajectories.load_from_mat_file()
+    # trajectories = CRTTrajectoriesMAT(configurator=configurator, trajectory_type="crt")
+    # trajectories.load_from_mat_file()
     # trajectories.load_from_json_file()
-    trajectories.print_loaded_data()
+    # trajectories.print_loaded_data()
 
     configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/", file_name="paths_25092024.json")
     trajectories = Trajectory(configurator=configurator)

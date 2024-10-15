@@ -293,7 +293,7 @@ class Trajectory:
         # Load the required parameters form a defined json file
         parameters = file.Trajectory(configurator=self.configurator).load_cartesian()
 
-        # Get relevant parameters from loaded paramaters
+        # Get relevant parameters from loaded parameters
         larmor_frequency = parameters["SpectrometerFrequency"]
         field_strength = parameters["MagneticFieldStrength"]
         matrix_size = parameters["MatrixSize"]
@@ -336,8 +336,24 @@ class Trajectory:
         return encoding_field
 
     def get_concentric_rings(self):
-        # use trajectoy from file module
-        pass
+        # TODO: Girf not included, but maybe it shouldn't be here
+
+        # Load the required parameters form defined json files
+        parameters_and_data = file.Trajectory(configurator=self.configurator).load_concentric_rings()
+
+        # Get relevant parameters from loaded parameters
+        gradient_raster_time = parameters_and_data["GradientRasterTime"] # TODO: unit
+        dwell_time_of_adc_per_angular_interleaf = parameters_and_data["DwellTimeOfADCPerAngularInterleaf"] # TODO: unit
+        measured_points = parameters_and_data["MeasuredPoints"]
+        maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"] # TODO: unit
+
+        # Calculate additional necessary parameters
+        launch_track_points = measured_points[:, 0] - 1
+        number_of_loop_points = measured_points[:, 1] - measured_points[:, 0]
+        oversampling_ADC = gradient_raster_time / dwell_time_of_adc_per_angular_interleaf
+
+
+
 
 
 ###class Model:
@@ -369,4 +385,5 @@ if __name__ == "__main__":
     configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/", file_name="paths_25092024.json")
 
     trajectory = Trajectory(configurator=configurator, size_x=128, size_y=64)
-    trajectory.get_cartesian_2D()
+    #trajectory.get_cartesian_2D()
+    trajectory.get_concentric_rings()

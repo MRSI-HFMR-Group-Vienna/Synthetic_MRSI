@@ -16,7 +16,7 @@
             1, 1, 1, 1, 1, 1, 1, 1,
             1, 1, 1, 1, 1, 1, 1, 1
         ],
-    "NumberAngularInterleavesPerPartition": "TODO",
+    "NumberAngularInterleavesPerPartition": [32],
 
     "MatrixSizeKSpace": [1, 1, 1],
     "MatrixSizeImageSpace": [22, 22, 2],
@@ -33,7 +33,8 @@
     "BrainPositionNormalVectorY": 0,
     "BrainPositionNormalVectorZ": 1,
 
-    "SpectrometerFrequency": 267.52218708,
+    "SpectrometerFrequency": 298.042,
+    "MagneticFieldStrength": 7,
     "ResonantNucleus": "1H",
 
     "NumberReceiveCoilActiveElements": 1,
