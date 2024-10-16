@@ -582,13 +582,13 @@ class JsonConverter:
                  .......]
 
         ...to numpy array of complex values:
-               ["Re,Im",
-                 "Re,Im",
-                 "Re,Im",
-                 .......]
+               np.array(Re+Im,
+                        Re+Im,
+                        Re+Im,
+                        .....)
 
         :param array: list of strings with complex values
-        :return:
+        :return: one numpy array of complex numbers
         """
         # (1) From list holding strings of complex numbers to list of numpy complex numbers
         # Explanation:
@@ -596,17 +596,14 @@ class JsonConverter:
         #  * 'map'              --> to apply at each entry (2 for complex number)
         #  * starred expression --> to unpack the to resulting entries (Re, Im) for the 'complex' as input
         #
-        #   For example: from string: complex(*map("3+5j".split(","))) --> to complex number: (3+5j)
+        #   For example: from string: complex(*map("3,5j".split(","))) --> to complex number: (3+5j)
         #
-        complex_numbers_list = [
-            np.array(complex(*map(float, number.split(','))))  # get both entries and split therefore at ","
-            for number in array  # iterate through all elements ...
-        ]
+        complex_numbers_numpy = np.asarray([
+            complex(*map(float, number.split(',')))  # get both entries and split therefore at ","
+            for number in array                                # iterate through all elements ...
+        ])
 
-        # (2) From a list of complex numpy numbers to a numpy array of complex numpy numbers
-        complex_numbers_list = np.vstack(complex_numbers_list)
-
-        return complex_numbers_list
+        return complex_numbers_numpy
 
 
 def deprecated(reason, replacement=None) -> Callable:

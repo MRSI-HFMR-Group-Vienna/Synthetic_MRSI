@@ -1,3 +1,5 @@
+from scipy.integrate import cumulative_trapezoid, trapezoid
+from scipy.interpolate import CubicSpline
 from file import Configurator
 from tools import Console
 import dask.array as da
@@ -287,7 +289,7 @@ class Trajectory:
 
         :return: None
         """
-        # Use trajectory from file module
+
         u = pint.UnitRegistry()
 
         # Load the required parameters form a defined json file
@@ -338,22 +340,62 @@ class Trajectory:
     def get_concentric_rings(self):
         # TODO: Girf not included, but maybe it shouldn't be here
 
+
+        #-------------------------
+        # GV ... gradient values
+        # GM ... gradient moment
+        #-------------------------
+
+        u = pint.UnitRegistry()
+
         # Load the required parameters form defined json files
         parameters_and_data = file.Trajectory(configurator=self.configurator).load_concentric_rings()
 
-        # Get relevant parameters from loaded parameters
-        gradient_raster_time = parameters_and_data["GradientRasterTime"] # TODO: unit
-        dwell_time_of_adc_per_angular_interleaf = parameters_and_data["DwellTimeOfADCPerAngularInterleaf"] # TODO: unit
+        # Get and prepare relevant parameters from loaded parameters
+        gradient_raster_time = (parameters_and_data["GradientRasterTime"] * u.ms).to(u.us)
+        gradient_raster_time = gradient_raster_time.to(u.us)
+        dwell_time_of_adc_per_angular_interleaf = (np.asarray(parameters_and_data["DwellTimeOfADCPerAngularInterleaf"]) * u.ns).to(u.us)
         measured_points = parameters_and_data["MeasuredPoints"]
-        maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"] # TODO: unit
+        measured_points = np.asarray(measured_points)[:, 0, :]  # prepare data: lit to numpy array and also drop one dimension
+        maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"]  # TODO: unit
+        gradient_values_all_rings: np.ndarray = parameters_and_data["GradientValues"]  # TODO: unit
 
         # Calculate additional necessary parameters
         launch_track_points = measured_points[:, 0] - 1
         number_of_loop_points = measured_points[:, 1] - measured_points[:, 0]
         oversampling_ADC = gradient_raster_time / dwell_time_of_adc_per_angular_interleaf
+        oversampling_ADC = oversampling_ADC.magnitude  # dimensionless, thus just get values
+
+        gradient_raster_time = gradient_raster_time.magnitude # just extract values without the unit for further operations
+
+        # Since the Gradient Moment (GM) is given by GM=∫G(t)dt
+
+        for i, gradient_values_one_ring in enumerate(gradient_values_all_rings):
+            launch_track_GV = gradient_values_one_ring[:launch_track_points[i]]
+            launch_track_GM = -trapezoid(launch_track_GV * maximum_gradient_amplitude[i] * gradient_raster_time)
+
+            trajectory_GV = gradient_values_one_ring[launch_track_points[i] - 1: (launch_track_points[i] + number_of_loop_points[i])]
+            trajectory_GV = np.tile(trajectory_GV, 3)
+
+            # To interpolate from current x values to desired x values
+            trajectory_length = len(trajectory_GV)
+            x_currently = np.arange(0, trajectory_length)
+            x_interpolate = np.arange(0, trajectory_length, 1 / oversampling_ADC[i])
+            trajectory_GV_interpolated = CubicSpline(x=x_currently, y=trajectory_GV, extrapolate=False)(x_interpolate)
+
+            # Remove extra points used for interpolation, thus take central 1/3 values
+            x_range = [len(trajectory_GV_interpolated) // 3,     # from 1/3 of the data
+                       len(trajectory_GV_interpolated) // 3 * 2] # ..to 2/3 of the data
+            trajectory_GV_interpolated = trajectory_GV_interpolated[x_range[0]:x_range[1]]
 
 
 
+
+
+            # print(cu)
+            # gradient_values_trajectory = \
+            # cs = CubicSpline(x, CurTraj, extrapolate=True)
+            # yi = cs(xi)
 
 
 ###class Model:
@@ -385,5 +427,5 @@ if __name__ == "__main__":
     configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/", file_name="paths_25092024.json")
 
     trajectory = Trajectory(configurator=configurator, size_x=128, size_y=64)
-    #trajectory.get_cartesian_2D()
+    # trajectory.get_cartesian_2D()
     trajectory.get_concentric_rings()
