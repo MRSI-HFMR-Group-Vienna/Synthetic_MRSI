@@ -338,7 +338,7 @@ class Trajectory:
         return encoding_field
 
 
-    def get_concentric_rings(self):
+    def get_concentric_rings(self, radius_maximum: float, plot:bool = False):
         # TODO: Girf not included, but maybe it shouldn't be here
 
 
@@ -357,7 +357,8 @@ class Trajectory:
         gradient_raster_time = gradient_raster_time.to(u.us)
         dwell_time_of_adc_per_angular_interleaf = (np.asarray(parameters_and_data["DwellTimeOfADCPerAngularInterleaf"]) * u.ns).to(u.us)
         measured_points = parameters_and_data["MeasuredPoints"]
-        measured_points = np.asarray(measured_points)[:, 0, :]  # prepare data: lit to numpy array and also drop one dimension
+        measured_points = np.asarray(measured_points)[:, 0, :]  # prepare data: pint to numpy array and also drop one dimension
+
 
         # Maximum Gradient Amplitude refers to the peak gradient strength
         #  -> represents the highest magnetic field gradient that the system can generate during the pulse sequence
@@ -376,13 +377,6 @@ class Trajectory:
         #gradient_raster_time = gradient_raster_time.magnitude # just extract values without the unit for further operations
 
         # Since the Gradient Moment (GM) is given by GM=∫G(t)dt
-
-        # Creating subplots
-        fig, axs = plt.subplots(4, 3, figsize=(15, 16))
-
-        # Initialize the plots (empty)
-        for ax in axs.flatten():
-            ax.cla()  # Clear all axes
 
         for i, one_ring_GV in enumerate(all_rings_GV):
             """
@@ -443,60 +437,13 @@ class Trajectory:
             scaling_factor_launch_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude
             launch_track_GM = -trapezoid(launch_track_GV) * scaling_factor_launch_track # gradient_raster_time.magnitude to get only value without unit, otherwise warning message. Nothing else!
 
+
             final_GM = launch_track_GM + loop_track_GM
 
-            # Add new data to the existing plots (hold on effect)
-            # Plot scaling_factor (real only)
-            #axs[0, 0].plot(np.ones_like(gradient_values_one_ring) * scaling_factor)
+            radius_maximum = self.size_x *
 
-            # Plot loop_track_GM real part as line plot
-            axs[1, 0].plot(loop_track_GM.real)
-
-            # Plot loop_track_GM imaginary part as line plot
-            axs[1, 1].plot(loop_track_GM.imag)
-
-            # Plot scatter of real vs imaginary for loop_track_GM
-            axs[1, 2].scatter(loop_track_GM.real, loop_track_GM.imag, s=1)  # Smaller point size
-
-            # Plot launch_track_GM real part as line plot
-            axs[2, 0].plot(np.full(launch_track_points[0], launch_track_GM.real))
-
-            # Plot launch_track_GM imaginary part as line plot
-            axs[2, 1].plot(np.full(launch_track_points[0], launch_track_GM.imag))
-
-            # Plot scatter of real vs imaginary for launch_track_GM
-            axs[2, 2].scatter([launch_track_GM.real] * launch_track_points[0], [launch_track_GM.imag] * launch_track_points[0], s=1)  # Smaller point size
-
-            # Plot GM real part as line plot
-            axs[3, 0].plot(final_GM.real)
-
-            # Plot GM imaginary part as line plot
-            axs[3, 1].plot(final_GM.imag)
-
-            # Plot scatter of real vs imaginary for GM
-            axs[3, 2].scatter(final_GM.real, final_GM.imag, s=1)  # Smaller point size
-
-        # Set titles and labels for all plots
-        axs[0, 0].set_title('Scaling Factor (Real)')
-        axs[0, 0].set_ylabel('Value')
-
-        axs[1, 0].set_title('Loop Track GM (Real)')
-        axs[1, 1].set_title('Loop Track GM (Imaginary)')
-        axs[1, 2].set_title('Loop Track GM (Real vs Imaginary)')
-
-        axs[2, 0].set_title('Launch Track GM (Real)')
-        axs[2, 1].set_title('Launch Track GM (Imaginary)')
-        axs[2, 2].set_title('Launch Track GM (Real vs Imaginary)')
-
-        axs[3, 0].set_title('Total GM (Real)')
-        axs[3, 1].set_title('Total GM (Imaginary)')
-        axs[3, 2].set_title('Total GM (Real vs Imaginary)')
-
-        plt.tight_layout()
-
-        # Show the figure at the end
-        plt.show()
-
+        print(len(all_rings_GV))
+        input("- - - -")
 
 
 
@@ -530,4 +477,10 @@ if __name__ == "__main__":
 
     trajectory = Trajectory(configurator=configurator, size_x=128, size_y=64)
     # trajectory.get_cartesian_2D()
+
+    # Radius is defined inside cartesian trajectory
+    # -> given by: DeltaGM * DataSize[0] / 2
+    # -> DeltaGM computed in cartesian trajectory:
+    #     --> DeltaGM = 10**9 / (FOV*gyromagnetic ratio over 2 pi) = 106.75724962474001
+    #     --> DataSize[0] = 128 ==> self.size_x
     trajectory.get_concentric_rings()
