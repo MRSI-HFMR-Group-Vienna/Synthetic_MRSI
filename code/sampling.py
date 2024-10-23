@@ -337,6 +337,7 @@ class Trajectory:
 
         return encoding_field
 
+
     def get_concentric_rings(self):
         # TODO: Girf not included, but maybe it shouldn't be here
 
@@ -363,7 +364,7 @@ class Trajectory:
         #  -> Further reading: https://mriquestions.com/gradient-specifications.html
         maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"] * u.mT / u.m # TODO: right unit?
 
-        gradient_values_all_rings = [ring*u.mT/u.m for ring in parameters_and_data["GradientValues"]]  # TODO: right unit?
+        all_rings_GV = [ring*u.mT/u.m for ring in parameters_and_data["GradientValues"]]  # TODO: right unit?
 
 
         # Calculate additional necessary parameters
@@ -376,12 +377,22 @@ class Trajectory:
 
         # Since the Gradient Moment (GM) is given by GM=∫G(t)dt
 
-        for i, gradient_values_one_ring in enumerate(gradient_values_all_rings):
+        # Creating subplots
+        fig, axs = plt.subplots(4, 3, figsize=(15, 16))
+
+        # Initialize the plots (empty)
+        for ax in axs.flatten():
+            ax.cla()  # Clear all axes
+
+        for i, one_ring_GV in enumerate(all_rings_GV):
+            """
+            GV... Gradient Values
+            """
 
             ###
             #Interpolation of the GM values
             ###
-            trajectory_GV = gradient_values_one_ring[launch_track_points[i] - 1: (launch_track_points[i] + number_of_loop_points[i])]
+            trajectory_GV = one_ring_GV[launch_track_points[i] - 1: (launch_track_points[i] + number_of_loop_points[i])]
             trajectory_GV = np.tile(trajectory_GV, 3)
 
             # To interpolate from current x values to desired x values
@@ -426,13 +437,65 @@ class Trajectory:
             # ADC oversampling....... How finely you sample the signal relative to the Nyquist criterion.
 
             scaling_factor_loop_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude / oversampling_ADC[i]
-            loop_track_GM = -cumulative_trapezoid(gradient_values_one_ring, initial=0) * scaling_factor_loop_track
+            loop_track_GM = -cumulative_trapezoid(trajectory_GV_interpolated, initial=0) * scaling_factor_loop_track
 
-            launch_track_GV = gradient_values_one_ring[:launch_track_points[i]]
+            launch_track_GV = one_ring_GV[:launch_track_points[i]]
             scaling_factor_launch_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude
             launch_track_GM = -trapezoid(launch_track_GV) * scaling_factor_launch_track # gradient_raster_time.magnitude to get only value without unit, otherwise warning message. Nothing else!
 
             final_GM = launch_track_GM + loop_track_GM
+
+            # Add new data to the existing plots (hold on effect)
+            # Plot scaling_factor (real only)
+            #axs[0, 0].plot(np.ones_like(gradient_values_one_ring) * scaling_factor)
+
+            # Plot loop_track_GM real part as line plot
+            axs[1, 0].plot(loop_track_GM.real)
+
+            # Plot loop_track_GM imaginary part as line plot
+            axs[1, 1].plot(loop_track_GM.imag)
+
+            # Plot scatter of real vs imaginary for loop_track_GM
+            axs[1, 2].scatter(loop_track_GM.real, loop_track_GM.imag, s=1)  # Smaller point size
+
+            # Plot launch_track_GM real part as line plot
+            axs[2, 0].plot(np.full(launch_track_points[0], launch_track_GM.real))
+
+            # Plot launch_track_GM imaginary part as line plot
+            axs[2, 1].plot(np.full(launch_track_points[0], launch_track_GM.imag))
+
+            # Plot scatter of real vs imaginary for launch_track_GM
+            axs[2, 2].scatter([launch_track_GM.real] * launch_track_points[0], [launch_track_GM.imag] * launch_track_points[0], s=1)  # Smaller point size
+
+            # Plot GM real part as line plot
+            axs[3, 0].plot(final_GM.real)
+
+            # Plot GM imaginary part as line plot
+            axs[3, 1].plot(final_GM.imag)
+
+            # Plot scatter of real vs imaginary for GM
+            axs[3, 2].scatter(final_GM.real, final_GM.imag, s=1)  # Smaller point size
+
+        # Set titles and labels for all plots
+        axs[0, 0].set_title('Scaling Factor (Real)')
+        axs[0, 0].set_ylabel('Value')
+
+        axs[1, 0].set_title('Loop Track GM (Real)')
+        axs[1, 1].set_title('Loop Track GM (Imaginary)')
+        axs[1, 2].set_title('Loop Track GM (Real vs Imaginary)')
+
+        axs[2, 0].set_title('Launch Track GM (Real)')
+        axs[2, 1].set_title('Launch Track GM (Imaginary)')
+        axs[2, 2].set_title('Launch Track GM (Real vs Imaginary)')
+
+        axs[3, 0].set_title('Total GM (Real)')
+        axs[3, 1].set_title('Total GM (Imaginary)')
+        axs[3, 2].set_title('Total GM (Real vs Imaginary)')
+
+        plt.tight_layout()
+
+        # Show the figure at the end
+        plt.show()
 
 
 
