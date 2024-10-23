@@ -280,14 +280,14 @@ class Trajectory:
         self.size_x = size_x
         self.size_y = size_y
 
-    def get_cartesian_2D(self) -> None:
+    def _get_delta_gradient_moment_x(self):
         """
-        To simulate other relevant parameters after loading the parameters from the json file.
+        Just a helper function.
 
-        TODO: check if units are correct of "encoding_field"
-        TODO: self.size_x, self.size_y has no units? (was nFreqEnc and nPhasEnc)
+        ΔG_x = 1/(FOV_x⋅γ/2π). The bigger the field of view (FOV) the smaller the gradient moment which
+        yields a lower spatial resolution.
 
-        :return: None
+        :return:
         """
 
         u = pint.UnitRegistry()
@@ -309,6 +309,36 @@ class Trajectory:
         field_of_view_x = field_of_view[0]
         delta_gradient_moment_x = 1 / (field_of_view_x * gyromagnetic_ratio_over_two_pi)
 
+        return delta_gradient_moment_x
+
+    def _get_maximum_radius_x(self):
+        """
+        Just a helper function.
+
+        Defines the maximum trajectory radius. Therefore, it uses the ΔGM (delta gradient moment) computed from the
+        parameters for the cartesian trajectory.
+
+        TODO: r_max_x = ΔG_x⋅k_x/2. Thus, the maximal radius in k-space is given multiplying the delta gradient moment in x-direction
+        TODO: with half of the size in the "frequency encoding".
+
+        :return:
+        """
+
+        maximum_radius_x = self._get_delta_gradient_moment_x() * self.size_x / 2  # maximum trajectory radius
+
+        return maximum_radius_x
+
+
+    def get_cartesian_2D(self) -> None:
+        """
+        To simulate other relevant parameters after loading the parameters from the json file.
+
+        TODO: check if units are correct of "encoding_field"
+        TODO: self.size_x, self.size_y has no units? (was nFreqEnc and nPhasEnc)
+
+        :return: None
+        """
+
         # Create the 2D encoding field:
         #  (a) with just indices [0, ... size] in the respective dimension.
         #     e.g., x-dimension:         e.g., y-dimension:
@@ -324,15 +354,14 @@ class Trajectory:
         encoding_field[0, :, :] = x_field - np.floor(size_x / 2) + 0.5 if size_x / 2 % 2 == 0 else x_field - np.floor(size_x / 2)
         encoding_field[1, :, :] = y_field - np.floor(size_y / 2) + 0.5 if size_y / 2 % 2 == 0 else y_field - np.floor(size_y / 2)
         # (c) create delta gradient moment field finally & normalize trajectory:
-        maximum_radius_x = delta_gradient_moment_x * size_x / 2  # maximum trajectory radius
-        encoding_field = encoding_field * delta_gradient_moment_x / (maximum_radius_x * 2)
+        encoding_field = encoding_field * self._get_delta_gradient_moment_x() / (self._get_maximum_radius_x() * 2)
 
         Console.add_lines("Created 2D cartesian trajectory:")
         Console.add_lines(f" -> with shape: {encoding_field.shape}")
-        Console.add_lines(f" -> from parameters:")
-        Console.add_lines(f"    -> {'field strength':.<20}: {field_strength}")
-        Console.add_lines(f"    -> {'larmor frequency':.<20}: {larmor_frequency}")
-        Console.add_lines(f"    -> {'field of view':.<20}: {field_of_view}")
+        ###Console.add_lines(f" -> from parameters:")
+        ###Console.add_lines(f"    -> {'field strength':.<20}: {field_strength}")
+        ###Console.add_lines(f"    -> {'larmor frequency':.<20}: {larmor_frequency}")
+        ###Console.add_lines(f"    -> {'field of view':.<20}: {field_of_view}")
         Console.printf_collected_lines("success")
 
         return encoding_field
@@ -366,7 +395,7 @@ class Trajectory:
         maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"] * u.mT / u.m # TODO: right unit?
 
         all_rings_GV = [ring*u.mT/u.m for ring in parameters_and_data["GradientValues"]]  # TODO: right unit?
-
+        all_rings_GM = [] # TODO: another place -> will get filled during loop below!
 
         # Calculate additional necessary parameters
         launch_track_points = measured_points[:, 0] - 1
@@ -413,8 +442,8 @@ class Trajectory:
             # Gradient Raster Time: Update frequency of position in k-space
             # ADC Oversampling: how finely the signal gets sampled in relation to the Nyquist criterion
 
-            #kummulativen effeckt über die zeit
-            # gesamteffeckt von gradienten in k-raum -> gesamtakkumulierte position?
+            #kumulativen effekt über die zeit
+            # gesamteffekt von gradienten im k-raum -> gesamt akkumulierte position?
 
 
             #  = ∫G(t)*G_max*Δt/OSR
@@ -437,13 +466,14 @@ class Trajectory:
             scaling_factor_launch_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude
             launch_track_GM = -trapezoid(launch_track_GV) * scaling_factor_launch_track # gradient_raster_time.magnitude to get only value without unit, otherwise warning message. Nothing else!
 
+            combined_GM = launch_track_GM + loop_track_GM
+            radius_maximum_x = self._get_maximum_radius_x()
 
-            final_GM = launch_track_GM + loop_track_GM
+            normalised_GM = combined_GM / (radius_maximum_x * 2)
 
-            radius_maximum = self.size_x *
+            all_rings_GM.append(normalised_GM)
 
-        print(len(all_rings_GV))
-        input("- - - -")
+        return all_rings_GM
 
 
 
