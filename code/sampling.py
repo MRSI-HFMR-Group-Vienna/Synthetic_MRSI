@@ -357,8 +357,14 @@ class Trajectory:
         dwell_time_of_adc_per_angular_interleaf = (np.asarray(parameters_and_data["DwellTimeOfADCPerAngularInterleaf"]) * u.ns).to(u.us)
         measured_points = parameters_and_data["MeasuredPoints"]
         measured_points = np.asarray(measured_points)[:, 0, :]  # prepare data: lit to numpy array and also drop one dimension
-        maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"]  # TODO: unit
-        gradient_values_all_rings: np.ndarray = parameters_and_data["GradientValues"]  # TODO: unit
+
+        # Maximum Gradient Amplitude refers to the peak gradient strength
+        #  -> represents the highest magnetic field gradient that the system can generate during the pulse sequence
+        #  -> Further reading: https://mriquestions.com/gradient-specifications.html
+        maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"] * u.mT / u.m # TODO: right unit?
+
+        gradient_values_all_rings = [ring*u.mT/u.m for ring in parameters_and_data["GradientValues"]]  # TODO: right unit?
+
 
         # Calculate additional necessary parameters
         launch_track_points = measured_points[:, 0] - 1
@@ -366,14 +372,15 @@ class Trajectory:
         oversampling_ADC = gradient_raster_time / dwell_time_of_adc_per_angular_interleaf
         oversampling_ADC = oversampling_ADC.magnitude  # dimensionless, thus just get values
 
-        gradient_raster_time = gradient_raster_time.magnitude # just extract values without the unit for further operations
+        #gradient_raster_time = gradient_raster_time.magnitude # just extract values without the unit for further operations
 
         # Since the Gradient Moment (GM) is given by GM=∫G(t)dt
 
         for i, gradient_values_one_ring in enumerate(gradient_values_all_rings):
-            launch_track_GV = gradient_values_one_ring[:launch_track_points[i]]
-            launch_track_GM = -trapezoid(launch_track_GV * maximum_gradient_amplitude[i] * gradient_raster_time)
 
+            ###
+            #Interpolation of the GM values
+            ###
             trajectory_GV = gradient_values_one_ring[launch_track_points[i] - 1: (launch_track_points[i] + number_of_loop_points[i])]
             trajectory_GV = np.tile(trajectory_GV, 3)
 
@@ -389,13 +396,45 @@ class Trajectory:
             trajectory_GV_interpolated = trajectory_GV_interpolated[x_range[0]:x_range[1]]
 
 
+            #TODO: DID MOT USE INTERPOLATED VALUES!!!!
+
+            # to how finely the MRI system is able to encode spatial frequencies
+            # -> Maximum Gradient Amplitude dictates how fast you can move through k-space
+            # -> Gradient Raster Time dictates how often you update the position in k-space.
+            # -> ADC Oversampling adjusts how finely you sample the signal relative to the Nyquist criterion.
+            #maximum_gradient_amplitude * gradient_raster_time / oversampling_ADC
+
+            # Maximum Gradient Amplitude: "speed" through the k-space
+            # Gradient Raster Time: Update frequency of position in k-space
+            # ADC Oversampling: how finely the signal gets sampled in relation to the Nyquist criterion
+
+            #kummulativen effeckt über die zeit
+            # gesamteffeckt von gradienten in k-raum -> gesamtakkumulierte position?
 
 
+            #  = ∫G(t)*G_max*Δt/OSR
+            # Let G be the gradient, G_max the maximal gradient amplitude, Δt as gradient raster time and OSR the oversampling rate.
 
-            # print(cu)
-            # gradient_values_trajectory = \
-            # cs = CubicSpline(x, CurTraj, extrapolate=True)
-            # yi = cs(xi)
+            # Gradient values........ Defines the speed and the direction of the movement in k-space.
+            #                         The real position is given by: k(t)=γ*∫G(τ)dτ
+            #
+            # Gradient Moment (GM)... Cumulative effect of gradients over time = ∫G(τ)dτ
+            #
+            # Gradient Raster Time... In which Δt you are able to update the gradients and thus also effects
+            #                         how often you update the position in k-space.
+            #
+            # ADC oversampling....... How finely you sample the signal relative to the Nyquist criterion.
+
+            scaling_factor_loop_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude / oversampling_ADC[i]
+            loop_track_GM = -cumulative_trapezoid(gradient_values_one_ring, initial=0) * scaling_factor_loop_track
+
+            launch_track_GV = gradient_values_one_ring[:launch_track_points[i]]
+            scaling_factor_launch_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude
+            launch_track_GM = -trapezoid(launch_track_GV) * scaling_factor_launch_track # gradient_raster_time.magnitude to get only value without unit, otherwise warning message. Nothing else!
+
+            final_GM = launch_track_GM + loop_track_GM
+
+
 
 
 ###class Model:
