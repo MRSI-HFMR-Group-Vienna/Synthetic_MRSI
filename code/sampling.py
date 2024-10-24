@@ -1,8 +1,10 @@
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.interpolate import CubicSpline
+import matplotlib.pyplot as plt
 from file import Configurator
 from tools import Console
 import dask.array as da
+from tqdm import tqdm
 import numpy as np
 import cupy as cp
 import pint
@@ -10,9 +12,7 @@ import dask
 import file
 import sys
 
-from tqdm import tqdm
 
-import matplotlib.pyplot as plt
 
 
 class Model:
@@ -275,21 +275,35 @@ class Model:
 
 
 class Trajectory:
-    def __init__(self, configurator: file.Configurator, size_x: int, size_y: int):
-        self.configurator = configurator
-        self.size_x = size_x
-        self.size_y = size_y
+    """
+    To calculate and prepare the trajectories for respective parameters, e.g., stored in json files.
+    This includes at the moment the cartesian trajectory and the concentric ring trajectory.
+    """
 
-    def _get_delta_gradient_moment_x(self):
+    def __init__(self, configurator: file.Configurator, size_x: int, size_y: int):
+        """
+        To set parameters used by the methods. Since the cartesian and concentric rings trajectory are 'paired' in size,
+        one object - programmatically speaking - with shared size makes absolute sense.
+
+        :param configurator: object that holds the information of the paths to the necessary files.
+        :param size_x: size of trajectory in x direction (historically called frequency encoding direction)
+        :param size_y: size of trajectory in y direction (historically called phase encoding direction)
+        """
+
+        self.configurator = configurator
+        self.size_x = size_x    # for cartesian and concentric rings trajectory necessary.
+        self.size_y = size_y    # for only cartesian trajectory necessary.
+
+    def _get_delta_gradient_moment_x(self) -> pint.Quantity:
         """
         Just a helper function.
 
-        ΔG_x = 1/(FOV_x⋅γ/2π). The bigger the field of view (FOV) the smaller the gradient moment which
-        yields a lower spatial resolution.
+        \nFormular:\n ΔG_x = 1/(FOV_x⋅γ/2π). The bigger the field of view (FOV) the smaller the gradient moment, which yields a lower spatial resolution.
 
-        :return:
+        :return: A pint Quantity with a numpy array inside. Thus, the delta gradient moment (ΔGM) in x direction with unit.
         """
 
+        # To be able to use units
         u = pint.UnitRegistry()
 
         # Load the required parameters form a defined json file
@@ -318,25 +332,24 @@ class Trajectory:
         Defines the maximum trajectory radius. Therefore, it uses the ΔGM (delta gradient moment) computed from the
         parameters for the cartesian trajectory.
 
-        TODO: r_max_x = ΔG_x⋅k_x/2. Thus, the maximal radius in k-space is given multiplying the delta gradient moment in x-direction
-        TODO: with half of the size in the "frequency encoding".
+        \nFormular:\n maximum radius in x = kx size / 2, where kx is the 'frequency encoding direction. The x-direction is just historically named in that way.
 
-        :return:
+        :return: A pint Quantity with a numpy array inside. Thus, the maximum radius in x direction with respective units.
         """
 
         maximum_radius_x = self._get_delta_gradient_moment_x() * self.size_x / 2  # maximum trajectory radius
 
         return maximum_radius_x
 
-
-    def get_cartesian_2D(self) -> None:
+    def get_cartesian_2D(self) -> np.ndarray:
         """
-        To simulate other relevant parameters after loading the parameters from the json file.
+        To compute the encoding field for the 2D cartesian trajectory, thus use the parameters from the respective json file. This parameters will be loaded and used by helper functions that will be used in this method.
 
-        TODO: check if units are correct of "encoding_field"
-        TODO: self.size_x, self.size_y has no units? (was nFreqEnc and nPhasEnc)
+        \nThe functionalities of the mentioned helper functions:
+        * the delta gradient moment in x direction,
+        * the maximum radius in x of the trajectory in k-space.
 
-        :return: None
+        :return: Numpy array that represents the 2D cartesian trajectory encoding field.
         """
 
         # Create the 2D encoding field:
@@ -366,36 +379,36 @@ class Trajectory:
 
         return encoding_field
 
+    def get_concentric_rings(self, plot: bool = False) -> list[np.ndarray]:
+        """
+        The results are the Gradient Moment (GM) values of the concentric rings trajectory.
 
-    def get_concentric_rings(self, radius_maximum: float, plot:bool = False):
-        # TODO: Girf not included, but maybe it shouldn't be here
+        \nThis incorporates:
+        * the launch track points,
+        * the loop track points,
+        * the oversampling of the ADC, given by = gradient_raster_time / dwell_time_of_adc_per_angular_interleaf.
+          Based on that, the loop points will be interpolated.
 
+        \nNote the abbreviations in the code:
+        * GV... Gradient Values
+        * GM... Gradient Moments
 
-        #-------------------------
-        # GV ... gradient values
-        # GM ... gradient moment
-        #-------------------------
+        :param plot: If True a plot of launch track points, loop points and the normalized combination will be displayed.
+        :return: A list of numpy arrays. Each numpy array represents the normalized gradient moment (GM) values of one concentric ring trajectory (includes launch track + loop track).
+        """
 
+        # For beeing able to work with units
         u = pint.UnitRegistry()
 
         # Load the required parameters form defined json files
         parameters_and_data = file.Trajectory(configurator=self.configurator).load_concentric_rings()
 
-        # Get and prepare relevant parameters from loaded parameters
+        # Get and prepare (shape, right unit) relevant parameters from loaded parameters
         gradient_raster_time = (parameters_and_data["GradientRasterTime"] * u.ms).to(u.us)
         gradient_raster_time = gradient_raster_time.to(u.us)
         dwell_time_of_adc_per_angular_interleaf = (np.asarray(parameters_and_data["DwellTimeOfADCPerAngularInterleaf"]) * u.ns).to(u.us)
         measured_points = parameters_and_data["MeasuredPoints"]
         measured_points = np.asarray(measured_points)[:, 0, :]  # prepare data: pint to numpy array and also drop one dimension
-
-
-        # Maximum Gradient Amplitude refers to the peak gradient strength
-        #  -> represents the highest magnetic field gradient that the system can generate during the pulse sequence
-        #  -> Further reading: https://mriquestions.com/gradient-specifications.html
-        maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"] * u.mT / u.m # TODO: right unit?
-
-        all_rings_GV = [ring*u.mT/u.m for ring in parameters_and_data["GradientValues"]]  # TODO: right unit?
-        all_rings_GM = [] # TODO: another place -> will get filled during loop below!
 
         # Calculate additional necessary parameters
         launch_track_points = measured_points[:, 0] - 1
@@ -403,78 +416,97 @@ class Trajectory:
         oversampling_ADC = gradient_raster_time / dwell_time_of_adc_per_angular_interleaf
         oversampling_ADC = oversampling_ADC.magnitude  # dimensionless, thus just get values
 
-        #gradient_raster_time = gradient_raster_time.magnitude # just extract values without the unit for further operations
+        # The Maximum Gradient Amplitude refers to the peak gradient strength:
+        #  -> represents the highest magnetic field gradient that the system can generate during the pulse sequence
+        #  -> Further reading: https://mriquestions.com/gradient-specifications.html
+        maximum_gradient_amplitude = parameters_and_data["MaximumGradientAmplitude"] * u.mT / u.m  # TODO: right unit?
 
-        # Since the Gradient Moment (GM) is given by GM=∫G(t)dt
+        # Prepare values and lists
+        all_rings_GV = [ring * u.mT / u.m for ring in parameters_and_data["GradientValues"]]  # TODO: right unit?
+        all_rings_GM = []  # will be filled later in the for loop
 
-        for i, one_ring_GV in enumerate(all_rings_GV):
-            """
-            GV... Gradient Values
-            """
+        # Create a figure with subplots (4 rows, 3 columns)
+        fig, axs = plt.subplots(3, 3, figsize=(15, 12))
 
-            ###
-            #Interpolation of the GM values
-            ###
-            trajectory_GV = one_ring_GV[launch_track_points[i] - 1: (launch_track_points[i] + number_of_loop_points[i])]
-            trajectory_GV = np.tile(trajectory_GV, 3)
+        # Calculate the final gradient moment (GM) values for each ring:
+        for i, one_ring_GV in tqdm(enumerate(all_rings_GV), total=len(all_rings_GV)):
+            # To get the gradient values of the
+            #  (a) launch track
+            #  (b) loop track and interpolate based on the oversampling factor.
+            #      To have no issue with the boundaries in interpolation, the array gets tripled,
+            #      which will be deleted later on (2/3 extra values)
+            launch_track_GV = one_ring_GV[:launch_track_points[i]]
+            loop_track_GV = one_ring_GV[launch_track_points[i] - 1: (launch_track_points[i] + number_of_loop_points[i])]
+            loop_track_GV = np.tile(loop_track_GV, 3)  # Triple array for interpolation as described above.
 
             # To interpolate from current x values to desired x values
-            trajectory_length = len(trajectory_GV)
-            x_currently = np.arange(0, trajectory_length)
-            x_interpolate = np.arange(0, trajectory_length, 1 / oversampling_ADC[i])
-            trajectory_GV_interpolated = CubicSpline(x=x_currently, y=trajectory_GV, extrapolate=False)(x_interpolate)
+            loop_track_length = len(loop_track_GV)
+            x_currently = np.arange(0, loop_track_length)
+            x_interpolate = np.arange(0, loop_track_length, 1 / oversampling_ADC[i])
+            loop_track_GV_interpolated = CubicSpline(x=x_currently, y=loop_track_GV, extrapolate=False)(x_interpolate)
 
             # Remove extra points used for interpolation, thus take central 1/3 values
-            x_range = [len(trajectory_GV_interpolated) // 3,     # from 1/3 of the data
-                       len(trajectory_GV_interpolated) // 3 * 2] # ..to 2/3 of the data
-            trajectory_GV_interpolated = trajectory_GV_interpolated[x_range[0]:x_range[1]]
+            x_range = [len(loop_track_GV_interpolated) // 3,  # from 1/3 of the data
+                       len(loop_track_GV_interpolated) // 3 * 2]  # ..to 2/3 of the data
+            loop_track_GV_interpolated = loop_track_GV_interpolated[x_range[0]:x_range[1]]
 
+            """
+            Some additional explanations for the calculations in the code below:
+            
+            Gradient values........ Defines the speed and the direction of the movement in k-space.
+                                    The real position is given by: k(t)=γ*∫G(τ)dτ
+            
+            Gradient Moment (GM)... Cumulative effect of gradients over time = ∫G(τ)dτ, with G as gradient values
+            
+            Gradient Raster Time... In which Δt you are able to update the gradients and thus also effects
+                                    how often you update the position in k-space.
+            
+            ADC oversampling....... How finely you sample the signal relative to the Nyquist criterion.
+            
+            Note: 'scaling factor' is just a random name, introduced, since it 'scales' the GM values.
+            """
 
-            #TODO: DID MOT USE INTERPOLATED VALUES!!!!
-
-            # to how finely the MRI system is able to encode spatial frequencies
-            # -> Maximum Gradient Amplitude dictates how fast you can move through k-space
-            # -> Gradient Raster Time dictates how often you update the position in k-space.
-            # -> ADC Oversampling adjusts how finely you sample the signal relative to the Nyquist criterion.
-            #maximum_gradient_amplitude * gradient_raster_time / oversampling_ADC
-
-            # Maximum Gradient Amplitude: "speed" through the k-space
-            # Gradient Raster Time: Update frequency of position in k-space
-            # ADC Oversampling: how finely the signal gets sampled in relation to the Nyquist criterion
-
-            #kumulativen effekt über die zeit
-            # gesamteffekt von gradienten im k-raum -> gesamt akkumulierte position?
-
-
-            #  = ∫G(t)*G_max*Δt/OSR
-            # Let G be the gradient, G_max the maximal gradient amplitude, Δt as gradient raster time and OSR the oversampling rate.
-
-            # Gradient values........ Defines the speed and the direction of the movement in k-space.
-            #                         The real position is given by: k(t)=γ*∫G(τ)dτ
-            #
-            # Gradient Moment (GM)... Cumulative effect of gradients over time = ∫G(τ)dτ
-            #
-            # Gradient Raster Time... In which Δt you are able to update the gradients and thus also effects
-            #                         how often you update the position in k-space.
-            #
-            # ADC oversampling....... How finely you sample the signal relative to the Nyquist criterion.
-
-            scaling_factor_loop_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude / oversampling_ADC[i]
-            loop_track_GM = -cumulative_trapezoid(trajectory_GV_interpolated, initial=0) * scaling_factor_loop_track
-
-            launch_track_GV = one_ring_GV[:launch_track_points[i]]
+            # Just factory that modify the Gradient Moment (GM) values
             scaling_factor_launch_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude
-            launch_track_GM = -trapezoid(launch_track_GV) * scaling_factor_launch_track # gradient_raster_time.magnitude to get only value without unit, otherwise warning message. Nothing else!
+            scaling_factor_loop_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude / oversampling_ADC[i]
+            # To get gradient moment values GM = ∫GV(τ)dτ, but also product with a respective scaling factor
+            loop_track_GM = -cumulative_trapezoid(loop_track_GV_interpolated, initial=0) * scaling_factor_loop_track
+            launch_track_GM = -trapezoid(launch_track_GV) * scaling_factor_launch_track
 
+            # TODO: combined in the right way?
+            # Combine gradient values (GM) of launch track und loop track
             combined_GM = launch_track_GM + loop_track_GM
-            radius_maximum_x = self._get_maximum_radius_x()
 
+            # Normalise the combined gradient moment (GM) values to the maximum radius in x-direction in k-space
+            radius_maximum_x = self._get_maximum_radius_x()
             normalised_GM = combined_GM / (radius_maximum_x * 2)
 
+            # Store all ring data in a list of numpy arrays
             all_rings_GM.append(normalised_GM)
 
-        return all_rings_GM
+            # Just for plotting the gradient moment (GM) values of the launch track, loop track and normalized combination
+            # (Part 1/2)
+            if plot:
+                sets_for_plotting = [launch_track_GV, loop_track_GM, normalised_GM]
+                sets_names = ["Launch tracks GMs", "Loop tracks GMs", "Normalised GMs"]
+                for i, (set_name, set_values) in enumerate(zip(sets_names, sets_for_plotting)):
+                    # Plot real and imaginary parts
+                    axs[i, 0].plot(set_values.real, set_values.imag, linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
+                    axs[i, 1].plot(set_values.real, label="Real Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
+                    axs[i, 2].plot(set_values.imag, label="Imaginary Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
 
+                    axs[i, 0].set_title(f"{set_name}: Real vs Imaginary")
+                    axs[i, 1].set_title(f"{set_name}: Real Part")
+                    axs[i, 2].set_title(f"{set_name}: Imaginary Part")
+
+        # To show the assembled plot if plot = True
+        # (Part 1/2)
+        if plot:
+            plt.tight_layout()
+            plt.show()
+
+        # Return the list of numpy arrays, containing the gradient moment (GM) values for the concentric ring trajectory (CRT).
+        return all_rings_GM
 
 
 ###class Model:
@@ -513,4 +545,4 @@ if __name__ == "__main__":
     # -> DeltaGM computed in cartesian trajectory:
     #     --> DeltaGM = 10**9 / (FOV*gyromagnetic ratio over 2 pi) = 106.75724962474001
     #     --> DataSize[0] = 128 ==> self.size_x
-    trajectory.get_concentric_rings()
+    trajectory.get_concentric_rings(plot=False)

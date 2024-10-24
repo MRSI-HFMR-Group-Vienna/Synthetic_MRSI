@@ -548,7 +548,7 @@ class Trajectory:
         self.path_trajectories = configurator.data["path"]["trajectories"]
         self.path_simulation_parameters = configurator.data["path"]["simulation_parameters"]
 
-    def load_cartesian(self) -> dict:
+    def load_cartesian(self, console_output : bool = False) -> dict:
         """
         To load the simulation parameters of the respective JSON file for being able to construct the cartesian trajectory.
         Also, renaming of the keys - if desired - can be done here.
@@ -580,11 +580,13 @@ class Trajectory:
         selected_parameters["MagneticFieldStrength"] = selected_parameters["MagneticFieldStrength"] * u.T
         selected_parameters["SpectrometerFrequency"] = selected_parameters["SpectrometerFrequency"] * u.MHz
 
-        Console.add_lines(f"Loaded cartesian parameters from file '{Path(self.path_simulation_parameters).name}':")
-        for key, value in selected_parameters.items():
-            Console.add_lines(f" -> {key:.<25}: {value}")
+        # Output to the console if True
+        if console_output:
+            Console.add_lines(f"Loaded cartesian parameters from file '{Path(self.path_simulation_parameters).name}':")
+            for key, value in selected_parameters.items():
+                Console.add_lines(f" -> {key:.<25}: {value}")
 
-        Console.printf_collected_lines("success")
+            Console.printf_collected_lines("success")
 
         # -> TODO: partition encoding * nuber slices (where to find?)
         # -> TODO: vector size? Where do I get from?
