@@ -537,6 +537,9 @@ class Trajectory:
         * JSON Gradient file
     """
 
+    # Class variable (thus not bound to an object)
+    u = pint.UnitRegistry()  # for using units with the same Registry
+
     def __init__(self, configurator: Configurator):
         """
         Initialise the object with the configurator which manages the paths, thus also contains the
@@ -547,6 +550,17 @@ class Trajectory:
         self.configurator = configurator.load()
         self.path_trajectories = configurator.data["path"]["trajectories"]
         self.path_simulation_parameters = configurator.data["path"]["simulation_parameters"]
+
+    @staticmethod
+    def get_pint_unit_registry() -> pint.UnitRegistry:
+        """
+        For using the same registry as used to load the trajectory parameters and data.
+        Usefully for methods and functions that implement the file.Trajectory class.
+
+        :return: pint.UnitRegistry(), often used just as "u." (e.g., u.mm for millimeter).
+        """
+
+        return Trajectory.u
 
     def load_cartesian(self, console_output : bool = False) -> dict:
         """
@@ -575,7 +589,7 @@ class Trajectory:
         selected_parameters["MatrixSize"] = selected_parameters.pop("MatrixSizeImageSpace")
 
         # To add units to the parameters
-        u = pint.UnitRegistry()
+        u = self.get_pint_unit_registry() # get class variable u
         selected_parameters["AcquisitionVoxelSize"] = selected_parameters["AcquisitionVoxelSize"] * u.mm
         selected_parameters["MagneticFieldStrength"] = selected_parameters["MagneticFieldStrength"] * u.T
         selected_parameters["SpectrometerFrequency"] = selected_parameters["SpectrometerFrequency"] * u.MHz

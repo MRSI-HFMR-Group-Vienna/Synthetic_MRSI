@@ -294,6 +294,10 @@ class Trajectory:
         self.size_x = size_x    # for cartesian and concentric rings trajectory necessary.
         self.size_y = size_y    # for only cartesian trajectory necessary.
 
+        # For introducing units with pint. For just having one pint registry using the class variable from file.Trajectory.
+        # Therefore, able to use one registry for different instances of the file.Trajectory.
+        self.u = file.Trajectory.get_pint_unit_registry()
+
     def _get_delta_gradient_moment_x(self) -> pint.Quantity:
         """
         Just a helper function.
@@ -304,7 +308,7 @@ class Trajectory:
         """
 
         # To be able to use units
-        u = pint.UnitRegistry()
+        u = self.u
 
         # Load the required parameters form a defined json file
         parameters = file.Trajectory(configurator=self.configurator).load_cartesian()
@@ -360,15 +364,18 @@ class Trajectory:
         #      [0, 1, 2, ... x]           [2, 2, 2, ... 2]
         #      [0, 1, 2, ... x]           [y, y, y, ... y]
         size_x, size_y = self.size_x, self.size_y
-        encoding_field = np.indices((size_x, size_y))
+        encoding_field = np.indices((size_x, size_y)).astype(dtype=np.float64)
+
         # (b) now, bring the zeros in the center of the field and thus also check if
         #     dimension shape is odd or even with modulo operator. (Shorthand If Else btw.)
-        x_field, y_field = encoding_field[0, :, :], encoding_field[0, :, :]
-        encoding_field[0, :, :] = x_field - np.floor(size_x / 2) + 0.5 if size_x / 2 % 2 == 0 else x_field - np.floor(size_x / 2)
+        x_field, y_field = encoding_field[0, :, :], encoding_field[1, :, :]
+        encoding_field[0, :, :] = (x_field - np.floor(size_x / 2) + 0.5) if (size_x / 2 % 2 == 0) else (x_field - np.floor(size_x / 2))
         encoding_field[1, :, :] = y_field - np.floor(size_y / 2) + 0.5 if size_y / 2 % 2 == 0 else y_field - np.floor(size_y / 2)
+
         # (c) create delta gradient moment field finally & normalize trajectory:
         encoding_field = encoding_field * self._get_delta_gradient_moment_x() / (self._get_maximum_radius_x() * 2)
 
+        # Print some information of the cartesian trajectory to the console
         Console.add_lines("Created 2D cartesian trajectory:")
         Console.add_lines(f" -> with shape: {encoding_field.shape}")
         ###Console.add_lines(f" -> from parameters:")
@@ -397,8 +404,8 @@ class Trajectory:
         :return: A list of numpy arrays. Each numpy array represents the normalized gradient moment (GM) values of one concentric ring trajectory (includes launch track + loop track).
         """
 
-        # For beeing able to work with units
-        u = pint.UnitRegistry()
+        # For being able to work with units
+        u = self.u
 
         # Load the required parameters form defined json files
         parameters_and_data = file.Trajectory(configurator=self.configurator).load_concentric_rings()
@@ -481,7 +488,7 @@ class Trajectory:
             radius_maximum_x = self._get_maximum_radius_x()
             normalised_GM = combined_GM / (radius_maximum_x * 2)
 
-            # Store all ring data in a list of numpy arrays
+            # Store all ring data in a list of numpy arrays.
             all_rings_GM.append(normalised_GM)
 
             # Just for plotting the gradient moment (GM) values of the launch track, loop track and normalized combination
@@ -505,33 +512,40 @@ class Trajectory:
             plt.tight_layout()
             plt.show()
 
-        # Return the list of numpy arrays, containing the gradient moment (GM) values for the concentric ring trajectory (CRT).
+        # Return list of numpy arrays, containing the gradient moment (GM) values for each concentric rings trajectory (CRT).
         return all_rings_GM
 
+    def get_operator(self, input_trajectory_GM, output_trajectory_GM):
+        # TODO: Operator to transform the data from one trajectory to the other on
+        # TODO: input trajectory need shape 2 * x * y, where 2 corresponds x field and y field
+        print(f"input_trajectory_GM.shape: {input_trajectory_GM.shape}")
 
-###class Model:
-###    def __init__(self, spectral_spatial_model: SpectralSpatialModel, data_type: str = "complex64", compute_on_device: str = "cpu", return_on_device: str = "cpu"):
-###
-###        # Input only dask graph or also numpy, cupy array?
-###        self.spectral_spatial_model: SpectralSpatialModel = spectral_spatial_model
-###        self.computational_graph = self.spectral_spatial_model.assemble_graph()
-###        self.compute_on_device = compute_on_device
-###        self.return_on_device = return_on_device
-###
-###        if self.compute_on_device == "cuda":
-###            self.xp = cp  # use cupy
-###        elif self.compute_on_device == "cpu":
-###            self.xp = np  # use numpy
-###
-###    def cartesian_FFT_graph(self):
-###        computational_graph = self.computational_graph.map_blocks(self.xp.fft.fftn, dtype=self.xp.complex64, axes=(1, 2, 3))
-###
-###        if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
-###            computational_graph = self.computational_graph.map_blocks(cp.asnumpy)
-###        elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
-###            computational_graph = self.computational_graph.map_blocks(cp.asarray)
-###
-###        return computational_graph
+        output_trajectory_GM_numpy = np.concatenate(output_trajectory_GM, axis=0)
+
+        # separate imag and real: TODO: NOTE IMAG AND REAL IS REVERSE, FIRST IMAG AND THEN REAL!
+        #[OK with Ali's values]
+        output_trajectory_GM_numpy = np.column_stack((output_trajectory_GM_numpy.imag, output_trajectory_GM_numpy.real))
+
+        # The cartesian one! [OK with Ali's values]
+        input_trajectory_GM = input_trajectory_GM * self.size_x
+
+        #x_shape = input_trajectory_GM.shape[1]
+        #y_shape = input_trajectory_GM.shape[2]
+
+        #print(f"output_trajectory_GM.shape: {output_trajectory_GM}")
+        # radius_maximum_x = self._get_maximum_radius_x()
+
+
+
+
+        pass
+
+    def transformation(self):
+        # TODO: One trajectory to the other one (data)!
+        pass
+
+
+
 
 
 if __name__ == "__main__":
@@ -545,4 +559,6 @@ if __name__ == "__main__":
     # -> DeltaGM computed in cartesian trajectory:
     #     --> DeltaGM = 10**9 / (FOV*gyromagnetic ratio over 2 pi) = 106.75724962474001
     #     --> DataSize[0] = 128 ==> self.size_x
-    trajectory.get_concentric_rings(plot=False)
+    cartesian_trajectory_GM = trajectory.get_cartesian_2D()
+    concentric_rings_trajectory_GM = trajectory.get_concentric_rings(plot=False)
+    trajectory.get_operator(input_trajectory_GM=cartesian_trajectory_GM, output_trajectory_GM=concentric_rings_trajectory_GM)

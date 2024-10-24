@@ -106,22 +106,7 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/code/tests/sftDemo2_new/markus/config.py</url>
-          <line>184</line>
-          <option name="timeStamp" value="8" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/code/tests/sftDemo2_new/markus/config.py</url>
-          <line>185</line>
-          <option name="timeStamp" value="9" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/code/tests/sftDemo2_new/markus/config.py</url>
-          <line>177</line>
-          <option name="timeStamp" value="10" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/code/tests/sftDemo2_new/markus/config.py</url>
-          <line>145</line>
+          <line>146</line>
           <option name="timeStamp" value="11" />
         </line-breakpoint>
       </breakpoints>
