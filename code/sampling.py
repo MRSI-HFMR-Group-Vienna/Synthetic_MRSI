@@ -386,7 +386,7 @@ class Trajectory:
 
         return encoding_field
 
-    def get_concentric_rings(self, plot: bool = False) -> list[np.ndarray]:
+    def get_concentric_rings(self, plot: bool = False) -> np.ndarray:
         """
         The results are the Gradient Moment (GM) values of the concentric rings trajectory.
 
@@ -400,8 +400,11 @@ class Trajectory:
         * GV... Gradient Values
         * GM... Gradient Moments
 
+        \nFurther to note in the code:
+        (!) Since pint is used for introducing units, e.g., variable.magnitude just extracts the value without the unit. Don't confuse with the mathematical magnitude |x|!
+
         :param plot: If True a plot of launch track points, loop points and the normalized combination will be displayed.
-        :return: A list of numpy arrays. Each numpy array represents the normalized gradient moment (GM) values of one concentric ring trajectory (includes launch track + loop track).
+        :return: One numpy array, containing the values of each trajectory appended together. The values are representing the normalized gradient moment (GM) values of all concentric ring trajectories (includes launch track + loop track).
         """
 
         # For being able to work with units
@@ -450,37 +453,42 @@ class Trajectory:
             loop_track_length = len(loop_track_GV)
             x_currently = np.arange(0, loop_track_length)
             x_interpolate = np.arange(0, loop_track_length, 1 / oversampling_ADC[i])
-            loop_track_GV_interpolated = CubicSpline(x=x_currently, y=loop_track_GV, extrapolate=False)(x_interpolate)
+            loop_track_GV_interpolated = CubicSpline(x=x_currently, y=loop_track_GV.magnitude, extrapolate=True)(x_interpolate)
 
             # Remove extra points used for interpolation, thus take central 1/3 values
-            x_range = [len(loop_track_GV_interpolated) // 3,  # from 1/3 of the data
+            x_range = [len(loop_track_GV_interpolated) // 3,      # from 1/3 of the data
                        len(loop_track_GV_interpolated) // 3 * 2]  # ..to 2/3 of the data
             loop_track_GV_interpolated = loop_track_GV_interpolated[x_range[0]:x_range[1]]
 
             """
-            Some additional explanations for the calculations in the code below:
+            a) Additional explanations for the calculations in the code below:
             
-            Gradient values........ Defines the speed and the direction of the movement in k-space.
-                                    The real position is given by: k(t)=γ*∫G(τ)dτ
-            
-            Gradient Moment (GM)... Cumulative effect of gradients over time = ∫G(τ)dτ, with G as gradient values
-            
-            Gradient Raster Time... In which Δt you are able to update the gradients and thus also effects
-                                    how often you update the position in k-space.
-            
-            ADC oversampling....... How finely you sample the signal relative to the Nyquist criterion.
-            
-            Note: 'scaling factor' is just a random name, introduced, since it 'scales' the GM values.
+            - Gradient Values........ Defines the speed and direction of movement in k-space.
+                                      The actual position in k-space is given by: k(t)=γ⋅∫G(τ)dτ, with G(τ) as gradient values over time.
+                                      
+            - Gradient Moment (GM)... Cumulative effect of gradients over time, calculated as ∫G(τ)dτ.
+            - Gradient Raster Time... In which Δt you are able to update the gradients and thus also effects how often you update the position in k-space.
+            - ADC Oversampling....... For sampling the signal at a higher rate than the minimum Nyquist rate, allowing finer sampling of the signal.
+
+
+            b) To compute the Gradient Moment (GM) in discrete space:
+
+              ∫ GV(τ) dτ  --->  ∑ GV_i ⋅ Δτ
+
+            - Explanation: The integral (∫) of gradient values GV(τ) over continuous time τ is approximated by a summation (∑) of discrete gradient values GV_i, each multiplied by the interval Δτ.
+              - dτ: Represents an infinitesimally small time interval in continuous space, corresponding to the gradient raster time in this context.
+              - Δτ: The discrete time interval representing the spacing between sampled points, also set by the gradient raster time.
+
+            (!) Note: When oversampling is applied, Δτ is adjusted by dividing it by the ADC oversampling factor, effectively refining the interval Δτ/(ADC factor).
             """
 
-            # Just factory that modify the Gradient Moment (GM) values
-            scaling_factor_launch_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude
-            scaling_factor_loop_track = maximum_gradient_amplitude[i].magnitude * gradient_raster_time.magnitude / oversampling_ADC[i]
-            # To get gradient moment values GM = ∫GV(τ)dτ, but also product with a respective scaling factor
-            loop_track_GM = -cumulative_trapezoid(loop_track_GV_interpolated, initial=0) * scaling_factor_loop_track
-            launch_track_GM = -trapezoid(launch_track_GV) * scaling_factor_launch_track
+            loop_track_GM = -cumulative_trapezoid(loop_track_GV_interpolated, initial=0) * gradient_raster_time.magnitude / oversampling_ADC[i]
+            launch_track_GM = -trapezoid(launch_track_GV.magnitude) * gradient_raster_time.magnitude
 
-            # TODO: combined in the right way?
+            # Then, applying scaling via maximum gradient amplitude
+            loop_track_GM = loop_track_GM * maximum_gradient_amplitude[i].magnitude
+            launch_track_GM = launch_track_GM * maximum_gradient_amplitude[i].magnitude
+
             # Combine gradient values (GM) of launch track und loop track
             combined_GM = launch_track_GM + loop_track_GM
 
@@ -494,17 +502,17 @@ class Trajectory:
             # Just for plotting the gradient moment (GM) values of the launch track, loop track and normalized combination
             # (Part 1/2)
             if plot:
-                sets_for_plotting = [launch_track_GV, loop_track_GM, normalised_GM]
+                sets_for_plotting = [launch_track_GV.magnitude, loop_track_GM, normalised_GM.magnitude]
                 sets_names = ["Launch tracks GMs", "Loop tracks GMs", "Normalised GMs"]
-                for i, (set_name, set_values) in enumerate(zip(sets_names, sets_for_plotting)):
+                for u, (set_name, set_values) in enumerate(zip(sets_names, sets_for_plotting)):
                     # Plot real and imaginary parts
-                    axs[i, 0].plot(set_values.real, set_values.imag, linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
-                    axs[i, 1].plot(set_values.real, label="Real Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
-                    axs[i, 2].plot(set_values.imag, label="Imaginary Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
+                    axs[u, 0].plot(set_values.real, set_values.imag, linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
+                    axs[u, 1].plot(set_values.real, label="Real Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
+                    axs[u, 2].plot(set_values.imag, label="Imaginary Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
 
-                    axs[i, 0].set_title(f"{set_name}: Real vs Imaginary")
-                    axs[i, 1].set_title(f"{set_name}: Real Part")
-                    axs[i, 2].set_title(f"{set_name}: Imaginary Part")
+                    axs[u, 0].set_title(f"{set_name}: Real vs Imaginary")
+                    axs[u, 1].set_title(f"{set_name}: Real Part")
+                    axs[u, 2].set_title(f"{set_name}: Imaginary Part")
 
         # To show the assembled plot if plot = True
         # (Part 1/2)
@@ -512,40 +520,72 @@ class Trajectory:
             plt.tight_layout()
             plt.show()
 
-        # Return list of numpy arrays, containing the gradient moment (GM) values for each concentric rings trajectory (CRT).
-        return all_rings_GM
+        # Return one numpy array containing all the gradient moment (GM) values for each concentric rings trajectory (CRT) merged.
+        return np.concatenate(all_rings_GM, axis=0)
 
-    def get_operator(self, input_trajectory_GM, output_trajectory_GM):
-        # TODO: Operator to transform the data from one trajectory to the other on
-        # TODO: input trajectory need shape 2 * x * y, where 2 corresponds x field and y field
-        print(f"input_trajectory_GM.shape: {input_trajectory_GM.shape}")
+    def get_operator(self, input_trajectory_GM: np.ndarray, output_trajectory_GM: np.ndarray, inverse_FT: bool = False) -> np.ndarray:
+        """
+        To get the operator E for transformation either (A) from i-space (image-space) to k-space or (B) vice versa.
 
-        output_trajectory_GM_numpy = np.concatenate(output_trajectory_GM, axis=0)
+        For a better understanding of the operator:
 
-        # separate imag and real: TODO: NOTE IMAG AND REAL IS REVERSE, FIRST IMAG AND THEN REAL!
-        #[OK with Ali's values]
-        output_trajectory_GM_numpy = np.column_stack((output_trajectory_GM_numpy.imag, output_trajectory_GM_numpy.real))
+        (1) Let the 2D Discrete Fourier Transformation (DFT)
+              F(kx, ky) = ΣΣ f(x, y) ⋅ e^(-j2π (kx⋅x/N + ky⋅y/M)), with
+                    - N and M as the shape of X and Y,
+                    - x and y as image space indices, and
+                    - kx and ky as k-space positions
 
-        # The cartesian one! [OK with Ali's values]
-        input_trajectory_GM = input_trajectory_GM * self.size_x
+        (2) To bring it to a matrix form, let's define all values kx, ky, x, y in their respective vectors kx_vector,
+            ky_vector, x_vector, and y_vector. Then let K be the matrix of frequency vectors [kx_vector, ky_vector] and
+            R the matrix containing the spatial coordinate vectors [x_vector, y_vector].
 
-        #x_shape = input_trajectory_GM.shape[1]
-        #y_shape = input_trajectory_GM.shape[2]
+        (3) Then, the expression kx⋅x + ky⋅y can be expressed as below, yielding a combination of each frequency
+            component (kx, ky) with each spatial coordinate (x, y).
 
-        #print(f"output_trajectory_GM.shape: {output_trajectory_GM}")
-        # radius_maximum_x = self._get_maximum_radius_x()
+            K × R^T, where T indicates transposing the matrix to fit the dimensionality.
+
+        (4) Finally, to get the complex exponential matrix E:
+
+            E = e^(-j2π ⋅ (K × R^T))
+
+            Each entry E(i, j) in E represents e^(-j2π ⋅ (kx(i)⋅x(j) + ky(i)⋅y(j))), representing each combination of kx, ky, and x, y.
+
+        =========================================
+
+        Then, for case (A) to bring the image to k-space:
+
+        (5) To bring an image into k-space via this operator, first flatten the image matrix into a vector:
+
+            f ∈ ℝ^(m×n) → f ∈ ℝ^(m⋅n)
+
+        (6) Finally, obtain the Fourier-transformed image F by multiplication:
+
+            F = E × f
 
 
+        :param input_trajectory_GM: trajectory of the source space,
+        :param output_trajectory_GM: trajectory of the target space
+        :param inverse_FT: set True if you would like to go from k-space to i-space (image-space), and False in the opposite direction.
+        :return: the operator
+        """
 
+        # TODO: Check why first imag and then real??
+        # TODO: Maybe already with two columns for real and image in previous method
+        output_trajectory_GM = np.column_stack((output_trajectory_GM.imag, output_trajectory_GM.real))
+        # TODO: Why is here with * self.size_x multiplied? What is the purpose and not better in previous method or does it depend on the operator? Is this a normalisation, but then why multiplication?
+        input_trajectory_GM = (input_trajectory_GM * self.size_x).reshape(2, -1)
 
-        pass
+        # complex angular frequency coefficient
+        # TODO: From i-space to k-space -2 normally, right? But get than opposite like Ali. My issue?
+        complex_coefficient = (2 if inverse_FT else -2) * np.pi * 1j
+        operator = np.exp(complex_coefficient * output_trajectory_GM.magnitude @ input_trajectory_GM.magnitude)
+
+        return operator
+
 
     def transformation(self):
         # TODO: One trajectory to the other one (data)!
         pass
-
-
-
 
 
 if __name__ == "__main__":
@@ -561,4 +601,4 @@ if __name__ == "__main__":
     #     --> DataSize[0] = 128 ==> self.size_x
     cartesian_trajectory_GM = trajectory.get_cartesian_2D()
     concentric_rings_trajectory_GM = trajectory.get_concentric_rings(plot=False)
-    trajectory.get_operator(input_trajectory_GM=cartesian_trajectory_GM, output_trajectory_GM=concentric_rings_trajectory_GM)
+    trajectory.get_operator(input_trajectory_GM=cartesian_trajectory_GM, output_trajectory_GM=concentric_rings_trajectory_GM, inverse_FT=False)
