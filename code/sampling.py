@@ -1,5 +1,7 @@
 from scipy.integrate import cumulative_trapezoid, trapezoid
+from shapely.geometry import Polygon, Point
 from scipy.interpolate import CubicSpline
+from scipy.spatial import Voronoi
 import matplotlib.pyplot as plt
 from file import Configurator
 from tools import Console
@@ -386,7 +388,7 @@ class Trajectory:
 
         return encoding_field
 
-    def get_concentric_rings(self, plot: bool = False) -> np.ndarray:
+    def get_concentric_rings(self, plot: bool = False) -> list[np.ndarray]:
         """
         The results are the Gradient Moment (GM) values of the concentric rings trajectory.
 
@@ -404,7 +406,7 @@ class Trajectory:
         (!) Since pint is used for introducing units, e.g., variable.magnitude just extracts the value without the unit. Don't confuse with the mathematical magnitude |x|!
 
         :param plot: If True a plot of launch track points, loop points and the normalized combination will be displayed.
-        :return: One numpy array, containing the values of each trajectory appended together. The values are representing the normalized gradient moment (GM) values of all concentric ring trajectories (includes launch track + loop track).
+        :return: A list of numpy arrays where each entry contains the values of one concentric ring. These values are representing the normalized gradient moment (GM) values (includes launch track + loop track).
         """
 
         # For being able to work with units
@@ -520,8 +522,21 @@ class Trajectory:
             plt.tight_layout()
             plt.show()
 
-        # Return one numpy array containing all the gradient moment (GM) values for each concentric rings trajectory (CRT) merged.
-        return np.concatenate(all_rings_GM, axis=0)
+        # Return a list of numpy arrays (one per concentric ring), each element containing all the gradient moment (GM) values.
+        return all_rings_GM
+
+
+    def flatten_concentric_rings(self, all_rings_GM_list: list) -> np.ndarray:
+        """
+        To transform a list containing the gradient moment (GM) values of the respective concentric ring as numpy arrays to one numpy array.
+
+        [np.array(GM_values_ring_1), ..., np.array(GM_values_ring_n)] -> np.array(GM_values_all_rings)
+
+        :param all_rings_GM_list:
+        :return: a numpy array containing a vector of gradient moment values (of all trajectories).
+        """
+        return np.concatenate(all_rings_GM_list, axis=0)
+
 
     def get_operator(self, input_trajectory_GM: np.ndarray, output_trajectory_GM: np.ndarray, inverse_FT: bool = False) -> np.ndarray:
         """
@@ -552,7 +567,7 @@ class Trajectory:
 
         =========================================
 
-        Then, for case (A) to bring the image to k-space:
+        Then, for the case (A) to bring the image to k-space:
 
         (5) To bring an image into k-space via this operator, first flatten the image matrix into a vector:
 
@@ -561,7 +576,6 @@ class Trajectory:
         (6) Finally, obtain the Fourier-transformed image F by multiplication:
 
             F = E × f
-
 
         :param input_trajectory_GM: trajectory of the source space,
         :param output_trajectory_GM: trajectory of the target space
@@ -578,9 +592,211 @@ class Trajectory:
         # complex angular frequency coefficient
         # TODO: From i-space to k-space -2 normally, right? But get than opposite like Ali. My issue?
         complex_coefficient = (2 if inverse_FT else -2) * np.pi * 1j
+
         operator = np.exp(complex_coefficient * output_trajectory_GM.magnitude @ input_trajectory_GM.magnitude)
 
         return operator
+
+    def density_compensation_concentric_rings(self, trajectory:list):
+        number_concentric_rings = len(trajectory)
+        radii = np.array([np.array(ring.magnitude[0]) for ring in trajectory])
+        # Euclidean distance to get radius (from real and imag)
+        radii = np.sqrt(radii.real**2 + radii.imag**2)
+        # Get maximum radius
+        maximum_radius = np.max(radii)
+
+        print(trajectory[0])
+
+        import sys
+        sys.exit()
+
+        Rm = maximum_radius
+        R = radii
+        N = number_concentric_rings
+        annuli = [] #should then contain all annulus
+        annulus = None
+
+        for i in range(len(radii)):
+            if i == 0:
+                annulus = ((R[i]/Rm + R[i+1]/Rm)**2 / 4 - (R[i-1]/Rm + R[i]/Rm)**2 / 4)**1 * np.pi
+            elif i < len(radii):
+                annulus = (0.25 * np.pi * (R[0]/Rm + R[1]/Rm)**2)
+            else:
+                annulus = np.pi * ((1.5 * R[N-1]/Rm - 0.5 * R[N-2]/Rm)**2 - (0.5 * R[N-1]/Rm + 0.5 * R[N-2]/Rm)**2)
+
+            annuli.append(annulus)
+
+        print(annuli)
+
+        # TODO: Under construction
+
+
+        #np.pi * ((radii[i]))
+
+    def sampling_density_voronoi(self, K, MaxRad=None, plot=False):
+        import numpy as np
+        from scipy.spatial import Voronoi, voronoi_plot_2d
+        from scipy.spatial.distance import cdist
+
+        """
+        Compute Density Compensation Based on Voronoi polygon
+        Parameters:
+            K (numpy.ndarray): k-space trajectory coordinates (Nx2 array for 2D)
+            MaxRad (float): Maximum radius of the encoding disk (optional)
+        Returns:
+            W (numpy.ndarray): Density compensation weights for each point in K
+        """
+        # Center K around its mean
+        K = K - np.mean(K, axis=0)
+
+        if MaxRad is None:
+            MaxRad = np.max(np.sqrt(K[:, 0] ** 2 + K[:, 1] ** 2))
+
+        # Find unique points in K
+        uK, indices, inverse_indices = np.unique(K, axis=0, return_index=True, return_inverse=True)
+
+
+        # Compute Voronoi diagram
+        vor = Voronoi(uK)
+
+        if plot:
+            # Plot the Voronoi diagram
+            #plt.figure(figsize=(8, 8))
+            voronoi_plot_2d(vor, show_vertices=False, line_colors='blue', line_width=0.5)
+            #plt.scatter(uK[:, 0], uK[:, 1], color='blue', s=5, label="k-space points")
+            plt.gca().set_aspect('equal')
+            plt.title("Voronoi Diagram of k-Space Points")
+            plt.xlabel("k_x")
+            plt.ylabel("k_y")
+            plt.legend()
+            plt.show()
+
+        VArea = np.zeros(len(vor.regions))
+        VRadius = np.zeros(len(vor.regions))
+
+        for i, region_index in enumerate(vor.point_region):
+            region = vor.regions[region_index]
+
+            if -1 in region:  # Check for unbounded regions
+                VArea[i] = np.nan
+                continue
+
+            vertices = np.array([vor.vertices[j] for j in region])
+            v1 = vertices[:, 0]
+            v2 = vertices[:, 1]
+
+            # Find vertices outside the encoding disk
+            outside_mask = (v1 ** 2 + v2 ** 2) > (MaxRad ** 2)
+            if np.any(outside_mask):
+                v1[outside_mask] = np.inf
+                v2[outside_mask] = np.inf
+
+            if np.all(np.isinf(v1)) or np.all(np.isinf(v2)):  # No valid area
+                VArea[i] = np.nan
+                continue
+
+            VRadius[i] = np.sqrt(np.mean(v1[np.isfinite(v1)]) ** 2 + np.mean(v2[np.isfinite(v2)]) ** 2)
+            try:
+                VArea[i] = 0.5 * np.abs(np.dot(v1, np.roll(v2, 1)) - np.dot(v2, np.roll(v1, 1)))
+            except ValueError:
+                VArea[i] = np.nan
+
+        # Assign areas to NaN regions
+        valid_areas = VArea[~np.isnan(VArea)]
+        max_area = np.max(valid_areas) if valid_areas.size > 0 else 1
+        VArea[np.isnan(VArea)] = max_area
+
+        # Map areas back to original K points
+        W = VArea[inverse_indices]
+
+        return W
+
+    def sampling_density_voronoi_new(self, values_GM, plot=False):
+        import numpy as np
+        from scipy.spatial import Voronoi, voronoi_plot_2d
+        from scipy.spatial.distance import cdist
+
+        """
+        Compute Density Compensation Based on Voronoi polygon
+        Parameters:
+            K (numpy.ndarray): k-space trajectory coordinates (Nx2 array for 2D)
+        Returns:
+            W (numpy.ndarray): Density compensation weights for each point in K
+        """
+
+        # TODO First image or real ????
+
+        # (1) To center trajectory around it's mean to origin (0,0)
+        values_GM = values_GM - np.mean(values_GM, axis=0)
+
+        # (2) Remove duplicated points for Voronoi computation
+        unique_values_GM, indices, inverse_indices = np.unique(values_GM, axis=0, return_index=True, return_inverse=True)
+        Console.printf("info", f"Number of duplicated points removed: {len(values_GM) - len(unique_values_GM)}")
+
+        # (3) Compute the Voronoi Diagram based cleared points.
+        #     The Voronoi diagram divides the given space into (called Voronoi regions).
+        #     Each Voronoi region has a center (called seed); here the k-space points are used therefore.
+        #
+        #     Mathematically, a k-space point x belongs to a Voronoi region R[i] if the distance is minimum to its center K[i].
+        #     Further note that K[j] are all centers that are not K[i].
+        #
+        #                     x ∈ R[i] if ∥x-K[i]∥ ≤ ∥x-K[j]∥   ∀ j≠i
+        #
+        #     Additional infos: The voronoi diagram consists of:
+        #                        * edges ........................ borders between regions
+        #                        * vertices ..................... point where edges meet
+        #                        * seeds (aka centers or sites).. points that define the regions
+        #                        * faces ........................ the regions themselves
+        voronoi_diagram = Voronoi(unique_values_GM)
+
+        # To plot the voronoi diagram
+        if plot:
+            plt.figure()
+            voronoi_plot_2d(voronoi_diagram, show_vertices=True, line_colors="blue", line_width=0.5)
+            plt.scatter(unique_values_GM[:, 0], unique_values_GM[:, 1], color="red", s=20, marker="x", label="k-space points == Seeds here (blue)")
+            plt.gca().set_aspect("equal") # equal distance of axes
+            plt.title("Voronoi Diagram of k-Space Points")
+            plt.xlabel("k_x")
+            plt.ylabel("k_y")
+            plt.legend()
+            plt.show()
+
+        # (4) Define bounding disk for clipping (based on max radius of values_GM in k-space)
+        max_radius = np.max(np.linalg.norm(values_GM, axis=1))
+        bounding_disk = Point(0, 0).buffer(max_radius)
+
+        # To collect the areas of the Voronoi Regions
+        areas = []
+        for region_index in voronoi_diagram.point_region:
+            region = voronoi_diagram.regions[region_index]
+
+            # Skip the infinite regions
+            if not region or -1 in region:
+                areas.append(np.nan)
+                continue
+
+            # Create a polygon for the respective region
+            polygon_coordinates = [voronoi_diagram.vertices[i] for i in region]
+            polygon = Polygon(polygon_coordinates)
+
+            # Clip the polygon to the bounding disk
+            clipped_polygon = polygon.intersection(bounding_disk)
+
+            # Calculate area of the valid polygon
+            area = clipped_polygon.area if not clipped_polygon.is_empty else np.nan
+            areas.append(area)
+
+        # Convert areas to a NumPy array
+        areas = np.array(areas)
+
+        # Handle NaN areas by assigning max valid area
+        max_area = np.nanmax(areas)
+        areas = np.where(np.isnan(areas), max_area, areas)
+
+        # Map areas back to the original points
+        W = areas[inverse_indices]
+
+        return W
 
 
     def transformation(self):
@@ -600,5 +816,21 @@ if __name__ == "__main__":
     #     --> DeltaGM = 10**9 / (FOV*gyromagnetic ratio over 2 pi) = 106.75724962474001
     #     --> DataSize[0] = 128 ==> self.size_x
     cartesian_trajectory_GM = trajectory.get_cartesian_2D()
+
     concentric_rings_trajectory_GM = trajectory.get_concentric_rings(plot=False)
-    trajectory.get_operator(input_trajectory_GM=cartesian_trajectory_GM, output_trajectory_GM=concentric_rings_trajectory_GM, inverse_FT=False)
+    trajectory.get_operator(input_trajectory_GM=cartesian_trajectory_GM,
+                            output_trajectory_GM=trajectory.flatten_concentric_rings(concentric_rings_trajectory_GM),
+                            inverse_FT=False)
+
+    # TODO: Change the required input data of the GM values in sampling_density_voronoi_new handles
+    # TODO: Remove sampling_density_voronoi
+    #trajectory.density_compensation_concentric_rings(concentric_rings_trajectory_GM)
+    data = np.vstack((trajectory.flatten_concentric_rings(concentric_rings_trajectory_GM).real, trajectory.flatten_concentric_rings(concentric_rings_trajectory_GM).imag))
+    data = np.transpose(data)
+
+    print(trajectory.sampling_density_voronoi(data.magnitude, plot=False).shape)
+    print(trajectory.sampling_density_voronoi_new(data.magnitude, plot=False).shape)
+
+    print(trajectory.sampling_density_voronoi(data.magnitude, plot=False)[0:10])
+    print(trajectory.sampling_density_voronoi_new(data.magnitude, plot=True)[0:10])
+
