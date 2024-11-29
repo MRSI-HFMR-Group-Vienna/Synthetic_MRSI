@@ -1,7 +1,8 @@
 from scipy.integrate import cumulative_trapezoid, trapezoid
+from scipy.spatial import Voronoi, voronoi_plot_2d
 from shapely.geometry import Polygon, Point
 from scipy.interpolate import CubicSpline
-from scipy.spatial import Voronoi
+from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
 from file import Configurator
 from tools import Console
@@ -13,7 +14,6 @@ import pint
 import dask
 import file
 import sys
-
 
 
 
@@ -633,95 +633,10 @@ class Trajectory:
 
         #np.pi * ((radii[i]))
 
-    def sampling_density_voronoi(self, K, MaxRad=None, plot=False):
-        import numpy as np
-        from scipy.spatial import Voronoi, voronoi_plot_2d
-        from scipy.spatial.distance import cdist
-
-        """
-        Compute Density Compensation Based on Voronoi polygon
-        Parameters:
-            K (numpy.ndarray): k-space trajectory coordinates (Nx2 array for 2D)
-            MaxRad (float): Maximum radius of the encoding disk (optional)
-        Returns:
-            W (numpy.ndarray): Density compensation weights for each point in K
-        """
-        # Center K around its mean
-        K = K - np.mean(K, axis=0)
-
-        if MaxRad is None:
-            MaxRad = np.max(np.sqrt(K[:, 0] ** 2 + K[:, 1] ** 2))
-
-        # Find unique points in K
-        uK, indices, inverse_indices = np.unique(K, axis=0, return_index=True, return_inverse=True)
-
-
-        # Compute Voronoi diagram
-        vor = Voronoi(uK)
-
-        if plot:
-            # Plot the Voronoi diagram
-            #plt.figure(figsize=(8, 8))
-            voronoi_plot_2d(vor, show_vertices=False, line_colors='blue', line_width=0.5)
-            #plt.scatter(uK[:, 0], uK[:, 1], color='blue', s=5, label="k-space points")
-            plt.gca().set_aspect('equal')
-            plt.title("Voronoi Diagram of k-Space Points")
-            plt.xlabel("k_x")
-            plt.ylabel("k_y")
-            plt.legend()
-            plt.show()
-
-        VArea = np.zeros(len(vor.regions))
-        VRadius = np.zeros(len(vor.regions))
-
-        for i, region_index in enumerate(vor.point_region):
-            region = vor.regions[region_index]
-
-            if -1 in region:  # Check for unbounded regions
-                VArea[i] = np.nan
-                continue
-
-            vertices = np.array([vor.vertices[j] for j in region])
-            v1 = vertices[:, 0]
-            v2 = vertices[:, 1]
-
-            # Find vertices outside the encoding disk
-            outside_mask = (v1 ** 2 + v2 ** 2) > (MaxRad ** 2)
-            if np.any(outside_mask):
-                v1[outside_mask] = np.inf
-                v2[outside_mask] = np.inf
-
-            if np.all(np.isinf(v1)) or np.all(np.isinf(v2)):  # No valid area
-                VArea[i] = np.nan
-                continue
-
-            VRadius[i] = np.sqrt(np.mean(v1[np.isfinite(v1)]) ** 2 + np.mean(v2[np.isfinite(v2)]) ** 2)
-            try:
-                VArea[i] = 0.5 * np.abs(np.dot(v1, np.roll(v2, 1)) - np.dot(v2, np.roll(v1, 1)))
-            except ValueError:
-                VArea[i] = np.nan
-
-        # Assign areas to NaN regions
-        valid_areas = VArea[~np.isnan(VArea)]
-        max_area = np.max(valid_areas) if valid_areas.size > 0 else 1
-        VArea[np.isnan(VArea)] = max_area
-
-        # Map areas back to original K points
-        W = VArea[inverse_indices]
-
-        return W
 
     def sampling_density_voronoi_new(self, values_GM, plot=False):
-        import numpy as np
-        from scipy.spatial import Voronoi, voronoi_plot_2d
-        from scipy.spatial.distance import cdist
-
         """
         Compute Density Compensation Based on Voronoi polygon
-        Parameters:
-            K (numpy.ndarray): k-space trajectory coordinates (Nx2 array for 2D)
-        Returns:
-            W (numpy.ndarray): Density compensation weights for each point in K
         """
 
         # TODO First image or real ????
@@ -794,9 +709,11 @@ class Trajectory:
         areas = np.where(np.isnan(areas), max_area, areas)
 
         # Map areas back to the original points
-        W = areas[inverse_indices]
+        density_compensation_weights = areas[inverse_indices]
 
-        return W
+        # Return the weights, which are just the areas of the Voronoi regions corresponding to each k-space point.
+        # Thus, each region can be seen as fractions of the total k-space area.
+        return density_compensation_weights
 
 
     def transformation(self):
