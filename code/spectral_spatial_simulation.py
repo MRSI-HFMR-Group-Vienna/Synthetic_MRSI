@@ -4,11 +4,15 @@ if TYPE_CHECKING:                       #TODO: due to circular import. Maybe sol
     from spatial_metabolic_distribution import MetabolicPropertyMap  #TODO: due to circular import. Maybe solve different!
 
 from dask.diagnostics import ProgressBar
+from scipy.interpolate import interp1d
+import matplotlib.pyplot as plt
 from tools import CustomArray
 from dask.array import Array
 from printer import Console
 import dask.array as da
+import seaborn as sns
 from tqdm import tqdm
+import pandas as pd
 import numpy as np
 # import numba
 # from numba import cuda
@@ -19,7 +23,8 @@ import dask
 import sys
 import os
 
-import xarray as xr
+
+#import xarray as xr
 
 
 class FID:
@@ -442,7 +447,7 @@ class Model:
 
     def assemble_graph(self) -> CustomArray:
         """
-        Greate a computational dask graph. It can be used to compute it or to add further operations.
+        Create a computational dask graph. It can be used to compute it or to add further operations.
 
         :return: CustomArray with numpy or cupy, based on the selected device when created the model.
         """
@@ -546,7 +551,7 @@ class Model:
 
     def build(self):
         """
-        Do we need this?
+        Do we need this? I guess not!
 
         :return:
         """
@@ -579,8 +584,362 @@ class Simulator:
 
     def water_suppression(self):
         # TODO: Perform on signal of FID? Spectrum required?
+
+        # TODO: Currently working on this.
+        # TODO: I need a dictionary and an input
+        #   Does this method apply / use the water suppression or also simulates the Dictionary
+
         raise NotImplementedError("This method is not yet implemented")
 
     def lipid_suppression(self):
         # TODO: Perform on signal of FID? Spectrum required?
         raise NotImplementedError("This method is not yet implemented")
+
+
+
+class LookupTableWET:
+    """
+    This class is for creating a lookup table for water suppression. The technique is WET.
+    The suppression is given as a ratio of suppressed signal to non-suppressed signal.
+    """
+    def __init__(self,
+                 T1_range: np.ndarray | list = np.ndarray([300, 5000]),                 # e.g., [300, 5000] in ms
+                 T1_step_size: float = 50.0,                                            # e.g., 50 ms
+                 T2: float = 250,                                                       # e.g., 250
+                 B1_scales_inhomogeneity: np.ndarray | list = np.ndarray([0, 2]),        # e.g., [0, 2]
+                 B1_scales_gauss: np.ndarray | list = np.array([0.01, 1]),              # e.g., [0.01, 1]
+                 B1_scales_inhomogeneity_step_size: float = 0.05,                       # e.g., 0.05
+                 B1_scales_gauss_step_size: float = 0.05,                               # e.g., 0.05
+                 TR: float = 600.0,
+                 TE: float = 0.0,
+                 flip_angle_excitation_degree: float = 47.0,
+                 flip_angles_WET_degree: np.ndarray | list = np.array([89.2, 83.4, 160.8]),
+                 time_gaps_WET: np.ndarray | list = np.ndarray([30, 30, 30])
+                 ):
+
+        # A) Fixed input variables for Bloch Simulation
+        self.TR = TR
+        self.TE = TE
+        self.T2 = T2
+        self.flip_angle_excitation_rad = np.deg2rad(flip_angle_excitation_degree)
+        self.flip_angles_WET_rad = np.deg2rad(flip_angles_WET_degree)
+        self.time_gaps_WET = time_gaps_WET
+
+        # B) Variables containing ranges for generating the dictionary
+        #   Generate T1 values vector
+        self.T1_values = np.arange(T1_range[0],                 # lower border
+                                   T1_range[1]+T1_step_size,    # upper border, not inclusive (see math) and thus + step size
+                                   T1_step_size)                # the step size
+
+        #   Generate B1 values (scaling values) vector
+        self._B1_scales_lower_border = np.min([B1_scales_gauss[0], B1_scales_inhomogeneity[0]])
+        self._B1_scales_upper_border = np.max([B1_scales_gauss[1], B1_scales_inhomogeneity[1]])
+        self._B1_scales_step_size = np.min([B1_scales_inhomogeneity_step_size, B1_scales_gauss_step_size])
+        self.B1_scales_effective_values = np.arange(
+            self._B1_scales_lower_border,                           # lower border
+            self._B1_scales_upper_border+self._B1_scales_step_size, # upper border, not inclusive (see math) and thus + step size
+            self._B1_scales_step_size                               # the step size
+        )
+
+        # C) Create Bloch Simulation object via fixed input variables
+        self.bloch_simulation_WET = LookupTableWET._BlochSimulation(flip_angles=self.flip_angles_WET_rad,
+                                                                    time_gap=self.time_gaps_WET,
+                                                                    flip_final_excitation=self.flip_angle_excitation_rad,
+                                                                    T2=self.T2,
+                                                                    TE1=self.TE,
+                                                                    TR=self.TR,
+                                                                    off_resonance=0)
+
+        # D) Storage of the lookup table data. Get lookup table of b1_scales and T1/TR
+        self.simulated_data = pd.DataFrame(-111, # just initial value for each entry, very low and maybe helpfully to detect not filled values
+                                           index=self.B1_scales_effective_values,
+                                           columns=self.T1_values / self.TR)
+
+    #@delayed, possible to accelerate with dask!
+    def _compute_one_attenuation_value(self, T1: float | np.float64, B1_scale: float | np.float64) -> np.float64:
+        """
+        Just for computing the attenuation for one T1 value and B1-scale value combination.
+
+        :return: attenuation value for just one T1 and B1-scale value.
+        """
+        signal_without_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=False)
+        signal_with_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=True)
+
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            attenuation = np.divide(signal_with_WET, signal_without_WET)
+
+        return attenuation
+
+
+    def create(self):
+        """
+        For creating the lookup table.
+        :return: Nothing
+        """
+        for T1 in tqdm(self.T1_values):
+            for B1_scale in self.B1_scales_effective_values:
+                self.simulated_data.at[B1_scale, T1/self.TR] = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+
+        Console.printf("success", f"Created WET lookup table with {self.simulated_data.size} entries")
+
+
+    def plot(self):
+        """
+        To plot the created lookup table as heatmap.
+        :return: Nothing
+        """
+        T1_over_TR_formatted = [f"{val/self.TR:.2f}" for val in self.T1_values]
+        B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
+
+        plt.figure(figsize=(8, 6))
+        ax = sns.heatmap(self.simulated_data,
+                         annot=False,
+                         cmap='viridis',
+                         robust=True,
+                         xticklabels=T1_over_TR_formatted,
+                         yticklabels=B1_scale_formatted)
+        plt.title('Heatmap of Lookup Table')
+        plt.ylabel('B1 Scale Value')
+        plt.xlabel('T1/TR Value')
+
+        ax.set_xticklabels(ax.get_xticklabels(), fontsize=7)
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=7)
+
+        plt.tight_layout()
+
+        plt.show()
+
+    def get_entry(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", ):
+        """
+        Get nearest entry from lookup table.
+
+        :param B1_scale: Need to be within the range of the B1 scale effective.
+        :param T1_over_TR: Need to be within the range of the T1/TR range. T1 range and TR is input of the class.
+        :param interpolation: only "nearest" is available at the moment!
+        :return: nearest entry from lookup table.
+        """
+        # Create objects for interpolation
+        nearest_index = interp1d(self.B1_scales_effective_values, self.B1_scales_effective_values, kind=interpolation_type, fill_value="extrapolate")
+        nearest_column = interp1d(self.T1_values/self.TR, self.T1_values/self.TR, kind=interpolation_type, fill_value="extrapolate")
+
+        # interpolate based on nearest neighbour and get the value
+        return self.simulated_data.loc[nearest_index(B1_scale), nearest_column(T1_over_TR)]
+
+
+    class _BlochSimulation:
+        """
+        Simulate Water Suppression (WET) pulses and compute the resulting magnetization
+        using the Bloch equations.
+
+        This class performs simulations using NumPy and runs only on the CPU.
+        It is designed to store constant simulation parameters as instance attributes.
+        """
+
+        def __init__(self, flip_angles, time_gap, flip_final_excitation, T2, TE1, TR, off_resonance):
+            """
+            Initialize the simulation with constant parameters.
+
+            :param flip_angles: Sequence of flip angles (in radians) for each WET pulse.
+            :param time_gap: Sequence of durations between pulses (ms).
+            :param flip_final_excitation: Flip angle (in radians) for the final excitation pulse.
+            :param T2: Transverse relaxation time (ms).
+            :param TE1: Echo time from the last pulse to acquisition (ms).
+            :param TR: Repetition time (ms).
+            :param off_resonance: Off-resonance frequency (Hz).
+            """
+            self.flip_angles = flip_angles
+            self.time_gap = time_gap
+            self.flip_final_excitation = flip_final_excitation
+            self.T2 = T2
+            self.TE1 = TE1
+            self.TR = TR
+            self.off_resonance = off_resonance
+
+        @staticmethod
+        def free_precess(time_interval, t1, t2, off_resonance):
+            """
+            Simulate free precession and decay over a given time interval.
+
+            :param time_interval: Time interval in milliseconds (ms).
+            :param t1: Longitudinal relaxation time in ms.
+            :param t2: Transverse relaxation time in ms.
+            :param off_resonance: Off-resonance frequency in Hz.
+            :return: Tuple (a_fp, b_fp) where:
+                     a_fp (np.ndarray, 3x3): Rotation and relaxation matrix.
+                     b_fp (np.ndarray, 3,): Recovery term added to the magnetization.
+            """
+            angle = 2.0 * np.pi * off_resonance * time_interval / 1000.0  # radians
+            e1 = np.exp(-time_interval / t1)
+            e2 = np.exp(-time_interval / t2)
+
+            decay_matrix = np.array([
+                [e2, 0.0, 0.0],
+                [0.0, e2, 0.0],
+                [0.0, 0.0, e1]
+            ], dtype=float)
+
+            z_rot_matrix = LookupTableWET._BlochSimulation.z_rot(angle)
+            a_fp = decay_matrix @ z_rot_matrix
+            b_fp = np.array([0.0, 0.0, 1.0 - e1], dtype=float)
+
+            return a_fp, b_fp
+
+        @staticmethod
+        def y_rot(angle):
+            """
+            Generate a rotation matrix for a rotation about the y-axis.
+
+            :param angle: Rotation angle in radians.
+            :return: np.ndarray (3x3) representing the rotation matrix about the y-axis.
+            """
+            cos_val = np.cos(angle)
+            sin_val = np.sin(angle)
+            return np.array([
+                [cos_val, 0.0, sin_val],
+                [0.0, 1.0, 0.0],
+                [-sin_val, 0.0, cos_val]
+            ], dtype=float)
+
+        @staticmethod
+        def z_rot(angle):
+            """
+            Generate a rotation matrix for a rotation about the z-axis.
+
+            :param angle: Rotation angle in radians.
+            :return: np.ndarray (3x3) representing the rotation matrix about the z-axis.
+            """
+            cos_val = np.cos(angle)
+            sin_val = np.sin(angle)
+            return np.array([
+                [cos_val, -sin_val, 0.0],
+                [sin_val, cos_val, 0.0],
+                [0.0, 0.0, 1.0]
+            ], dtype=float)
+
+        def compute_signal_after_pulses(self, T1: float, B1_scale: float, with_WET: bool=True) -> tuple:
+            """
+            Compute the signal after multiple WET pulses followed by a final excitation pulse.
+            Only T1 and B1_scale are provided since the other parameters are stored as instance attributes.
+
+            :param T1: Longitudinal relaxation time (ms) for this simulation.
+            :param B1_scale: Scaling factor for the B1 field.
+            :return: Tuple (magnetization_fid_last, magnetization_fid_rest) where:
+                     magnetization_fid_last (float): x-component of the magnetization at the final echo.
+                     magnetization_fid_rest (np.ndarray): x-components after each WET pulse.
+            """
+
+            # Check if water suppression should be applied or not. If not, assign just empty list []
+            flip_angles = self.flip_angles if with_WET else []
+            time_gap = self.time_gap if with_WET else []
+
+            n_wet_pulses = len(time_gap)
+            total_delay = np.sum(time_gap)
+
+            # Spoiler matrix: destroys transverse magnetization.
+            spoiler_matrix = np.array([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0]
+            ], dtype=float)
+
+            # Precompute rotations and free precession for each WET pulse.
+            r_flip = []
+            a_exc_to_next_exc = []
+            b_exc_to_next_exc = []
+
+            for ii in range(n_wet_pulses):
+                r_flip.append(LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii]))
+                a_fp, b_fp = LookupTableWET._BlochSimulation.free_precess(time_gap[ii], T1, self.T2, self.off_resonance)
+                a_exc_to_next_exc.append(spoiler_matrix @ a_fp)
+                b_exc_to_next_exc.append(b_fp)
+
+            # Final excitation pulse.
+            r_flip_last = LookupTableWET._BlochSimulation.y_rot(B1_scale * self.flip_final_excitation)
+
+            # Free precession from final WET pulse to acquisition.
+            a_exc_last_to_acq, b_exc_last_to_acq = LookupTableWET._BlochSimulation.free_precess(self.TE1, T1, self.T2,
+                                                                                                self.off_resonance)
+
+            # Free precession from acquisition to the end of TR.
+            a_tr, b_tr = LookupTableWET._BlochSimulation.free_precess(self.TR - self.TE1 - total_delay, T1, self.T2, self.off_resonance)
+            a_tr = spoiler_matrix @ a_tr  # Apply spoiler after acquisition.
+
+            # Containers for magnetization states.
+            magnetizations = [None] * ((n_wet_pulses + 1) * 2 + 2)
+            magnetizations_fid = [None] * (n_wet_pulses + 1)
+
+            # Start magnetization along +z.
+            magnetizations[0] = np.array([0.0, 0.0, 1.0], dtype=float)
+
+            # Iterate multiple times to approach steady state.
+            for _ in range(30):
+                idx = 0
+                for ii in range(n_wet_pulses):
+                    magnetizations[idx + 1] = r_flip[ii] @ magnetizations[idx]
+                    idx += 1
+
+                    magnetizations_fid[ii] = magnetizations[idx]
+
+                    magnetizations[idx + 1] = (a_exc_to_next_exc[ii] @ magnetizations[idx] +
+                                               b_exc_to_next_exc[ii])
+                    idx += 1
+
+                magnetizations[idx + 1] = r_flip_last @ magnetizations[idx]
+                idx += 1
+
+                magnetizations[idx + 1] = (a_exc_last_to_acq @ magnetizations[idx] +
+                                           b_exc_last_to_acq)
+                idx += 1
+
+                magnetizations_fid[n_wet_pulses] = magnetizations[idx]
+
+                magnetizations[idx + 1] = a_tr @ magnetizations[idx] + b_tr
+                idx += 1
+
+                magnetizations[0] = magnetizations[idx]
+
+            magnetization_fid_rest = np.array(
+                [magnetizations_fid[i][0] for i in range(n_wet_pulses)],
+                dtype=float
+            )
+            magnetization_fid_last = magnetizations_fid[n_wet_pulses][0]
+
+            return magnetization_fid_last, magnetization_fid_rest
+
+
+if __name__ == '__main__':
+    lookup_table_WET_test = LookupTableWET(T1_range=[300, 5000],
+                                           T1_step_size=50,
+                                           T2=250,
+                                           B1_scales_inhomogeneity=[0,2],
+                                           B1_scales_gauss=[0.01, 1],
+                                           B1_scales_inhomogeneity_step_size=0.05,
+                                           B1_scales_gauss_step_size=0.05,
+                                           TR=600,
+                                           TE=0, # TODO -> why 0???
+                                           flip_angle_excitation_degree=47.0,
+                                           flip_angles_WET_degree=[89.2, 83.4, 160.8],
+                                           time_gaps_WET=[30, 30, 30])
+
+    lookup_table_WET_test.create()
+    #lookup_table_WET_test.plot()
+    print(lookup_table_WET_test.get_entry(B1_scale=1.0, T1_over_TR=2.1))
+
+    import file
+    configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
+                                     file_name="paths_25092024.json")
+    configurator.load()
+    print(configurator.data["path"]["maps"]["B1"])
+    #configurator.print_formatted()
+    #loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1")
+    #loaded_B1_map.load_file() # TODO should now also support nii files, not only h5!!!!!
+    #print(loaded_B1_map.loaded_maps)
+
+    import nibabel as nib
+
+    T1_map = nib.load(configurator.data["path"]["maps"]["B1"]).get_fdata()
+    plt.imshow(T1_map[:,:,50])
+    plt.show()
+
+    # TODO: load B1+ map via Configurator

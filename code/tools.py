@@ -1,7 +1,7 @@
 from rmm.allocators.cupy import rmm_cupy_allocator
 from dask.distributed import Client, LocalCluster
 from dask_cuda import LocalCUDACluster
-from printer import Console
+#from printer import Console
 import dask.array as da
 import numpy as np
 import cupy as cp
@@ -16,18 +16,6 @@ import functools
 from typing import Callable
 
 u = pint.UnitRegistry()  # for using units
-
-import dask.array as da
-import math
-import pint
-
-import dask.array as da
-import math
-import pint
-
-import dask.array as da
-import math
-import pint
 
 import dask.array as da
 import math
@@ -451,6 +439,8 @@ class MyLocalCluster:
         self.__start_client()
 
     def __start_client(self):
+        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+
         self.client = Client(self.cluster)
         # self.client = self.cluster.get_client()
         dashboard_url = self.client.dashboard_link
@@ -473,6 +463,8 @@ class ConfiguratorGPU():
         self.free_space_selected_gpu: torch.Tensor = None
 
     def select_least_busy_gpu(self):
+        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+
         # based on percentage free
         free_space_devices = []
         for device in range(self.available_gpus):
@@ -489,6 +481,8 @@ class ConfiguratorGPU():
         self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
 
     def print_available_gpus(self):
+        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+
         Console.add_lines("Available GPU(s) and free space on it:")
 
         for device in range(self.available_gpus):
@@ -500,11 +494,14 @@ class ConfiguratorGPU():
         Console.printf_collected_lines("info")
 
     def select_gpu(self, gpu_index: int = 0):
+        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+
         torch.cuda.set_device(gpu_index)
         self.selected_gpu = gpu_index
         Console.printf("info", f"Selected GPU {gpu_index} -> manually selected by the user!")
 
     def enough_space_available(self) -> bool:
+        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
 
         if self.selected_gpu is not None:
             self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
