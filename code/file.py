@@ -1,6 +1,7 @@
 import default
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 import spectral_spatial_simulation
+from typing_extensions import Self
 from tools import JsonConverter
 from scipy.ndimage import zoom
 from tools import deprecated
@@ -258,58 +259,126 @@ class T1Image:
 
 
 class Maps:
+    """
+    This class can be used at the moment for carious purposes:
+
+    1) To load data:
+        -> from one nii file, yields dictionary of just values
+        -> from one h5 file, yields dictionary (e.g., with keys 'imag', 'real')
+        -> from multiple nii files in a respective dictionary (for metabolites)
+
+    2) To interpolate data
+        -> one or dictionary of nii
+        -> one h5 with multiple items (e.g., 'imag', 'real)
+
+    The class automatically figures out the filetype, at the moment based on '.nii', '.nii.gz', '.h5', '.hdf5'.
+    """
     # TODO: Maybe program more flexible
 
-    def __init__(self, configurator: Configurator, map_type_name: str, file_type: str = 'nii'):
+    def __init__(self, configurator: Configurator, map_type_name: str):
         self.configurator = configurator
         self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
-        self.loaded_maps: dict[
-            str, np.memmap | h5py._hl.dataset.Dataset] = {}  # key is abbreviation like "Glu" for better matching, h5py._hl.dataset.Dataset behaves like a memmap? and returns a numpy array if specific value accessed
-        self.file_type_allowed = ['nii', 'h5']
+        self.loaded_maps: dict[str, np.memmap | h5py._hl.dataset.Dataset] | np.memmap = None
+        self.file_type_allowed = ['.nii', '.nii.gz', '.h5', '.hdf5']
 
-        if file_type not in self.file_type_allowed:
-            Console.printf("error", f"Only possible to load formats: {self.file_type_allowed}. But it was given: {file_type}")
+
+
+        self.main_path = Path(self.configurator.data["path"]["maps"][self.map_type_name])
+        if self.main_path.is_file():
+            # Case 1: the main_path points to just one file
+            Console.printf("info", "Maps object: The provided path points to a file")
+            self.file_type = self.main_path.suffix
+
+        elif self.main_path.is_dir():
+            # Case 2: the main_path points to a folder containing multiple files
+            Console.printf("info", "Maps object: The provided path points to a folder")
+            #  Check if multiple extensions available. If just same, and since "set" used, entries cannot be twice.
+            files_extensions = {file.suffix.lower() for file in self.main_path.iterdir() if file.is_file()}
+            if len(files_extensions) == 1:
+                self.file_type = files_extensions.pop() # get from set the extension (only one is available here (e.g., {".nii})
+            else:
+                raise ValueError(f"Multiple file types found: {files_extensions}, folder operation not possible!")
+
+        else:
+            Console.printf("info", "Maps object: The provided does not exist or is neither a file nor a folder. Exiting system.")
             sys.exit()
+
+        if self.file_type not in self.file_type_allowed:
+            Console.printf("error", f"Only possible to load formats: {self.file_type_allowed}. But it was given: {self.file_type}")
+            sys.exit()
+
+        self.configurator.load()
+
 
     def load_file(self):
         """
-        To load a single map from file. At the moment only h5 is supported. TODO: Implement also nii!
-
-        :return:
+        Load a single map from file.
+        Supports both H5 and NIfTI (nii) formats.
         """
+        self.loaded_maps = {}  # key is abbreviation like "Glu" for better matching
 
-        Console.printf("warning", "Maps.load_file ==> by standard h5 is loaded. No nii support yet!")
+        if self.file_type == '.h5' or self.file_type == '.hdf5':
+            """
+            Case 1: To handle h5 files: Results in dictionary ->  self.loaded_maps[key] = values 
+            """
+            Console.printf("info", f"Loading h5 file for map type {self.map_type_name}")
+            with h5py.File(self.main_path, "r") as file:
+                for key in file.keys():
+                    item = file[key]
 
-        self.configurator.load()
-        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+                    if isinstance(item, h5py.Dataset):
+                        Console.add_lines(f" => Key: {key:<5} | Type: {'Dataset':<10} | Shape: {item.shape} | Data Type: {item.dtype}")
+                    elif isinstance(item, h5py.Group):
+                        Console.add_lines(f" => Key: {key:<5} | Type: {'Group':<10}")
 
-        Console.add_lines(f"Loaded h5py {self.map_type_name} map named: {os.path.basename(main_path)}")
-        with h5py.File(main_path, "r") as file:
-            for key in file.keys():
-                item = file[key]
+                    Console.add_lines("     Attributes: ")
+                    if len(item.attrs.items()) == 0:
+                        Console.add_lines("      Not available")
+                    else:
+                        for attr_key, attr_val in item.attrs.items():
+                            Console.add_lines(f"        Attribute key: {attr_key:<10} | value: {attr_val:<20}")
 
-                if isinstance(item, h5py.Dataset):
-                    Console.add_lines(f" => Key: {key:<5} | Type: {'Dataset':<10} | Shape: {item.shape} | Data Type: {item.dtype}")
-                elif isinstance(item, h5py.Group):
-                    Console.add_lines(f" => Key: {key:<5} | Type: {'Group':<10}")
-
-                Console.add_lines("     Attributes: ")
-                if len(item.attrs.items()) == 0:
-                    Console.add_lines(f"      Not available")
-                else:
-                    for attr_key, attr_val in item.attrs.items():
-                        Console.add_lines(f"        Attribute key: {attr_key:<10} | value: {attr_val:<20}")
-
-                self.loaded_maps[key] = item
+                    self.loaded_maps[key] = item
 
             Console.printf_collected_lines("success")
 
-    def load_files_from_folder(self, working_name_and_file_name: dict[str, str]):
-        # TODO
+        elif self.file_type == '.nii' or self.file_type == '.nii.gz':
+            """
+            Case 2: TO handle nii files: Results NOT in dictionary ->  self.loaded_maps = values
+            """
+            Console.printf("info", f"Loading nii file for map type {self.map_type_name}")
+            # Using NeuroImage to load nii file
+            loaded_map = NeuroImage(path=self.main_path).load_nii(mute=True).data
+            # Use map_type_name as the key, or choose an appropriate one
+            self.loaded_maps = loaded_map
+            Console.add_lines(
+                f"Loaded nii map: {os.path.basename(self.main_path)} | Shape: {loaded_map.shape} | "
+                f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}]"
+            )
+            Console.printf_collected_lines("success")
+        else:
+            Console.printf("error", f"Unsupported file type: {self.file_type}")
+            sys.exit()
 
+    def load_files_from_folder(self, working_name_and_file_name: dict[str, str]) -> Self:
+        """
+        (!) At the moment mainly for loading metabolites. As example use the dictionary to load:
+
+        working_name_and_file_name = {  "Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii",
+                                        "Gln": "MetMap_Gln_con_map_TargetRes_HiRes.nii",
+                                        "m-Ins": "MetMap_Ins_con_map_TargetRes_HiRes.nii",
+                                        "NAA": "MetMap_NAA_con_map_TargetRes_HiRes.nii",
+                                        "Cr+PCr": "MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii",
+                                        "GPC+PCh": "MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii" }
+
+        :param working_name_and_file_name: a dictionary containing as key the desired 'working name, like Glu' and the corresponding real filename as value
+        :return: the object of the whole class
+        """
         Console.printf("warning", "Maps.load_files_from_folder ==> by standard nii is loaded. No h5 support yet!")
         self.configurator.load()
         main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+
+        self.loaded_maps: dict = {} # dict required for the operations afterwards
 
         Console.add_lines("Loaded maps: ")
         for i, (working_name, file_name) in enumerate(working_name_and_file_name.items()):
@@ -318,23 +387,126 @@ class Maps:
             self.loaded_maps[working_name] = loaded_map
 
             Console.add_lines(
-                f"  {(i)}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] ")
+                f"  {i}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | "
+                f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] "
+            )
         Console.printf_collected_lines("success")
 
         return self
 
-    def interpolate_to_target_size(self, target_size: tuple, order: int = 3):
-        # TODO Docstring
-        # TODO tqdm/progressbar for interpolation!
+    def interpolate_to_target_size(self, target_size: tuple, order: int = 3) -> Self:
+        """
+        To interpolate one or multiple maps to the desired target size. Check for more information direct this
+        method and the comments.
 
-        Console.add_lines("Interpolate loaded maps: ")
-        for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
-            zoom_factor = np.divide(target_size, loaded_map.shape)
-            self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
-            Console.add_lines(f"  {(i)}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
-        Console.printf_collected_lines("success")
+        :param target_size: desired size as tuple
+        :param order: interpolation order
+        :return: the object of the whole class
+        """
 
+        if isinstance(self.loaded_maps, dict):
+            """
+            Case 1: Multiple maps are handled in the Maps class. Thus a dictionary with keys is used.
+                    This can be for example either due to multiple nii maps (Glucose , Choline, ...),
+                    but also if o h5 file has "real" and "imag" for example.
+            """
+            Console.add_lines("Interpolate loaded maps: ")
+            for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
+                zoom_factor = np.divide(target_size, loaded_map.shape)
+                self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+                Console.add_lines(f"  {i}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
+            Console.printf_collected_lines("success")
+        else:
+            """
+            Case 2: Only one map is handled in the Maps class. This can be for example one nii file. 
+                    In this case, no dictionary is used.
+            """
+            initial_shape = self.loaded_maps.shape
+            zoom_factor = np.divide(target_size, self.loaded_maps.shape)
+            self.loaded_maps = zoom(input=self.loaded_maps, zoom=zoom_factor, order=order)
+            Console.printf("success", f"Only one map exits: Interpolated map: \n {initial_shape} --> {self.loaded_maps.shape}")
         return self
+
+###class Maps:
+###    # TODO: Maybe program more flexible
+###
+###    def __init__(self, configurator: Configurator, map_type_name: str, file_type: str = 'nii'):
+###        self.configurator = configurator
+###        self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
+###        self.loaded_maps: dict[
+###            str, np.memmap | h5py._hl.dataset.Dataset] = {}  # key is abbreviation like "Glu" for better matching, h5py._hl.dataset.Dataset behaves like a memmap? and returns a numpy array if specific value accessed
+###        self.file_type_allowed = ['nii', 'h5']
+###
+###        if file_type not in self.file_type_allowed:
+###            Console.printf("error", f"Only possible to load formats: {self.file_type_allowed}. But it was given: {file_type}")
+###            sys.exit()
+###
+###    def load_file(self):
+###        """
+###        To load a single map from file. At the moment only h5 is supported. TODO: Implement also nii!
+###
+###        :return:
+###        """
+###
+###        Console.printf("warning", "Maps.load_file ==> by standard h5 is loaded. No nii support yet!")
+###
+###        self.configurator.load()
+###        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+###
+###        Console.add_lines(f"Loaded h5py {self.map_type_name} map named: {os.path.basename(main_path)}")
+###        with h5py.File(main_path, "r") as file:
+###            for key in file.keys():
+###                item = file[key]
+###
+###                if isinstance(item, h5py.Dataset):
+###                    Console.add_lines(f" => Key: {key:<5} | Type: {'Dataset':<10} | Shape: {item.shape} | Data Type: {item.dtype}")
+###                elif isinstance(item, h5py.Group):
+###                    Console.add_lines(f" => Key: {key:<5} | Type: {'Group':<10}")
+###
+###                Console.add_lines("     Attributes: ")
+###                if len(item.attrs.items()) == 0:
+###                    Console.add_lines(f"      Not available")
+###                else:
+###                    for attr_key, attr_val in item.attrs.items():
+###                        Console.add_lines(f"        Attribute key: {attr_key:<10} | value: {attr_val:<20}")
+###
+###                self.loaded_maps[key] = item
+###
+###            Console.printf_collected_lines("success")
+###
+###    def load_files_from_folder(self, working_name_and_file_name: dict[str, str]):
+###        # TODO
+###
+###        self.loaded_maps = {}
+###
+###        Console.printf("warning", "Maps.load_files_from_folder ==> by standard nii is loaded. No h5 support yet!")
+###        self.configurator.load()
+###        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+###
+###        Console.add_lines("Loaded maps: ")
+###        for i, (working_name, file_name) in enumerate(working_name_and_file_name.items()):
+###            path_to_map = os.path.join(main_path, file_name)
+###            loaded_map = NeuroImage(path=path_to_map).load_nii(mute=True).data
+###            self.loaded_maps[working_name] = loaded_map
+###
+###            Console.add_lines(
+###                f"  {(i)}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] ")
+###        Console.printf_collected_lines("success")
+###
+###        return self
+###
+###    def interpolate_to_target_size(self, target_size: tuple, order: int = 3):
+###        # TODO Docstring
+###        # TODO tqdm/progressbar for interpolation!
+###
+###        Console.add_lines("Interpolate loaded maps: ")
+###        for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
+###            zoom_factor = np.divide(target_size, loaded_map.shape)
+###            self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+###            Console.add_lines(f"  {(i)}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
+###        Console.printf_collected_lines("success")
+###
+###        return self
 
 
 class FID:
