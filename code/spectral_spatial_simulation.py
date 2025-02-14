@@ -3,7 +3,8 @@ from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe sol
 if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
     from spatial_metabolic_distribution import MetabolicPropertyMap  #TODO: due to circular import. Maybe solve different!
 
-from cupyx.scipy.interpolate import interpn
+from cupyx.scipy.interpolate import interpn as interpn_gpu
+from scipy.interpolate import interpn as interpn_cpu
 from dask.diagnostics import ProgressBar
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
@@ -723,6 +724,146 @@ class LookupTableWET:
 
         plt.show()
 
+
+    def get_entry4(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
+        """
+        TODO
+        Get only indices available in lookup table
+
+        """
+
+        if interpolation_type != "nearest":
+            raise ValueError("Only 'nearest' interpolation is supported at the moment.")
+
+        if device.lower() not in ["cpu", "cuda", "gpu"]:
+            raise ValueError(f"Device must be 'cpu' or 'gpu', but got '{device}'.")
+
+        # Select appropriate NumPy or CuPy
+        xp = np if device == "cpu" else cp
+        interpn = interpn_cpu if device == "cpu" else interpn_gpu
+
+        # Convert lookup tables to array format
+        B1_scales_effective_values = xp.asarray(self.B1_scales_effective_values)
+        T1_values = xp.asarray(self.T1_values)
+        TR = xp.asarray(self.TR)
+
+        # Create 1D grid
+        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
+        x_grid_T1 = xp.arange(len(T1_values))
+
+        # Compute T1/TR values
+        T1_over_TR_values = T1_values / TR
+
+        # Prepare interpolation points
+        #xi_B1 = xp.atleast_1d(B1_scale).reshape(-1, 1)
+        #xi_T1_over_TR = xp.atleast_1d(T1_over_TR).reshape(-1, 1)
+        xi_B1 = B1_scale.reshape(-1)  # Convert from (1000, 1) to (1000,)
+        xi_T1_over_TR = T1_over_TR.reshape(-1)  # Convert from (1000, 1) to (1000,)
+
+        print(f"B1_scales_effective_values shape: {B1_scales_effective_values.shape}")
+        print(f"T1_values shape: {T1_values.shape}")
+        #print(f"TR shape: {TR.shape}")
+        print(f"T1_over_TR_values shape: {T1_over_TR_values.shape}")
+        print(f"x_grid_B1_scales shape: {x_grid_B1_scales.shape}")
+        print(f"x_grid_T1 shape: {x_grid_T1.shape}")
+        print(f"xi_B1 shape: {xi_B1.shape}")
+        print(f"xi_T1_over_TR shape: {xi_T1_over_TR.shape}")
+
+
+        # Perform interpolation
+        row_key = interpn((x_grid_B1_scales,),
+                          B1_scales_effective_values,
+                          xi_B1,
+                          method="nearest",
+                          bounds_error=False,
+                          fill_value=None)
+        col_key = interpn((x_grid_T1,),
+                          T1_over_TR_values,
+                          xi_T1_over_TR,
+                          method="nearest",
+                          bounds_error=False,
+                          fill_value=None)
+
+        # Reshape to original shape
+        row_key = row_key.reshape(B1_scale.shape)
+        col_key = col_key.reshape(T1_over_TR.shape)
+
+        return xp.stack([row_key, col_key], axis=0)
+
+    @staticmethod
+    def get_entry3(B1_scale, T1_over_TR, B1_scales_effective_values, T1_values, TR, interpolation_type: str = "nearest", device="cpu"):
+        print(B1_scale, T1_over_TR, interpolation_type, device)
+
+
+        if interpolation_type != "nearest":
+            Console.printf("error", "Only nearest neighbours supported at the moment. Exiting the program!")
+            sys.exit()
+
+
+        # TODO: replace interp1d ==> with interpn als in scipy and thus enable interpolation of multiple values at once!
+        if device.lower() == "cpu":
+            xp = np
+            interpn = interpn_cpu
+        elif device.lower() == "gpu" or device.lower() == "cuda":
+            xp = cp
+            interpn = interpn_gpu
+        else:
+            Console.printf("error", f"device need to be either gpu, cuda, or cpu. But '{device}' was given. Terminate program!")
+            sys.exit()
+
+        ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
+        B1_scales_effective_values = xp.asarray(B1_scales_effective_values)
+        T1_values = xp.asarray(T1_values)
+        TR = xp.asarray(TR)
+
+        ## Interpolation of B1 & T1 / TR
+        # a) 1D grid required (e.g., just x axis of f(x))
+        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
+        x_grid_T1 = xp.arange(len(T1_values))
+
+        points_B1 = (x_grid_B1_scales,)  # Note: tuple for a 1D grid required in interpn
+        points_T1 = (x_grid_T1,)  # Note: tuple for a 1D grid required in interpn
+
+        # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
+        xi_B1 = xp.asarray(B1_scale).reshape(-1, 1)             # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+        xi_T1_over_TR = xp.asarray(T1_over_TR).reshape(-1, 1)   # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+        # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
+        T1_over_TR_values = xp.array(T1_values / TR)
+
+
+        # c) Perform interpolation/extrapolation
+        #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
+        row_key = interpn(points=points_B1,
+                          values=B1_scales_effective_values,
+                          xi=xi_B1,
+                          method=interpolation_type,
+                          bounds_error=False,
+                          fill_value=None)
+
+        # c) Perform interpolation/extrapolation
+        col_key = interpn(points=points_T1,
+                          values=T1_over_TR_values,
+                          xi=xi_T1_over_TR,
+                          method=interpolation_type,
+                          bounds_error=False,
+                          fill_value=None)
+
+        print(B1_scale, xi_B1, row_key)
+        print(xi_T1_over_TR, col_key)
+        #input("----")
+
+        # Reshape back flattened array to original shape
+        row_key = row_key.reshape(xi_B1.shape)
+        col_key = col_key.reshape(xi_T1_over_TR.shape)
+
+        ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
+        row_key = row_key.get() if device.lower() in ["cuda", "gpu"] else row_key
+        col_key = col_key.get() if device.lower() in ["cuda", "gpu"] else col_key
+###
+###
+###        return xp.stack([row_key, col_key], axis=0)
+
+
     def get_entry2(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
         """
         Get an entry from the lookup table using interpolation on effective values.
@@ -735,83 +876,151 @@ class LookupTableWET:
         :param device: "cpu" or "cuda". Determines whether to use CPU (SciPy) or GPU (CuPy) interpolation.
         :return: The lookup table entry corresponding to the interpolated effective values.
         """
+        #print(B1_scale, T1_over_TR, interpolation_type, device)
+
         if interpolation_type != "nearest":
             Console.printf("error", "Only nearest neighbours supported at the moment. Exiting the program!")
             sys.exit()
 
+
+        # TODO: replace interp1d ==> with interpn als in scipy and thus enable interpolation of multiple values at once!
         if device.lower() == "cpu":
-            """
-            # (A) CPU Case
-            """
-            # 1) Create objects of interp1 from scipy
-            #     x = just 1D grid x for f(x)
-            #     y = values to interpolate f(x)
-            #     Also, enable extrapolation
-            nearest_index = interp1d(x=np.arange(0, len(self.B1_scales_effective_values)),
-                                     y=self.B1_scales_effective_values,
-                                     kind=interpolation_type,
-                                     fill_value="extrapolate")
-            nearest_column = interp1d(x=np.arange(0, len(self.T1_values)),
-                                      y=self.T1_values / self.TR,
-                                      kind=interpolation_type,
-                                      fill_value="extrapolate")
-
-            # 2) Get the nearest value
-            row_key = nearest_index(B1_scale)
-            col_key = nearest_column(T1_over_TR)
-            # Use them to index into your lookup table (assumed to be a pandas DataFrame).
-            return self.simulated_data.loc[row_key, col_key]
-
-        elif device.lower() == "cuda":
-            """
-            # (B) GPU/CUDA Case
-            """
-            ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
-            B1_scales_effective_values_gpu = cp.asarray(self.B1_scales_effective_values)
-            T1_values_gpu = cp.asarray(self.T1_values)
-            TR_gpu = cp.asarray(self.TR)
-
-            ## Interpolation of B1
-            # a) 1D grid required (e.g., just x axis of f(x))
-            x_grid = cp.arange(len(B1_scales_effective_values_gpu))
-            points_B1 = (x_grid,)  # Note: tuple for a 1D grid required in interpn
-
-            # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
-            xi = cp.asarray(B1_scale).reshape(-1, 1)
-
-            # c) Perform interpolation/extrapolation
-            #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
-            row_key_gpu = interpn(points=points_B1,
-                                  values=B1_scales_effective_values_gpu,
-                                  xi=xi,
-                                  method=interpolation_type,
-                                  bounds_error=False,
-                                  fill_value=None)
-
-            ## Interpolation of T1 / TR
-            # a) 1D grid required (e.g., just x axis of f(x))
-            x_grid_T1 = cp.arange(len(T1_values_gpu))
-            points_T1 = (x_grid_T1,) # Note: tuple for a 1D grid required in interpn
-
-            # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
-            T1_over_TR_values_gpu = T1_values_gpu / TR_gpu
-            xi = cp.asarray(T1_over_TR).reshape(-1, 1)
-
-            # c) Perform interpolation/extrapolation
-            col_key_gpu = interpn(points=points_T1,
-                                  values=T1_over_TR_values_gpu,
-                                  xi=xi,
-                                  method=interpolation_type,
-                                  bounds_error=False,
-                                  fill_value=None)
-
-            ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
-            row_key = row_key_gpu.get()
-            col_key = col_key_gpu.get()
-            return self.simulated_data.loc[row_key, col_key]
-
+            xp = np
+            interpn = interpn_cpu
+        elif device.lower() == "gpu" or device.lower() == "cuda":
+            xp = cp
+            interpn = interpn_gpu
         else:
-            raise ValueError("Invalid device specified. Please choose 'cpu' or 'cuda'.")
+            Console.printf("error", f"device need to be either gpu, cuda, or cpu. But '{device}' was given. Terminate program!")
+            sys.exit()
+
+        ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
+        B1_scales_effective_values = xp.asarray(self.B1_scales_effective_values)
+        T1_values = xp.asarray(self.T1_values)
+        TR = xp.asarray(self.TR)
+
+        ## Interpolation of B1 & T1 / TR
+        # a) 1D grid required (e.g., just x axis of f(x))
+        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
+        x_grid_T1 = xp.arange(len(T1_values))
+
+        points_B1 = (x_grid_B1_scales,)  # Note: tuple for a 1D grid required in interpn
+        points_T1 = (x_grid_T1,)  # Note: tuple for a 1D grid required in interpn
+
+        # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
+        xi_B1 = xp.ravel(xp.atleast_1d(B1_scale))[:, None]
+        xi_T1_over_TR = xp.ravel(xp.atleast_1d(T1_over_TR))[:, None]
+        ### xi_B1 = xp.asarray(B1_scale).reshape(-1, 1)             # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+        ### xi_T1_over_TR = xp.asarray(T1_over_TR).reshape(-1, 1)   # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+        # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
+        T1_over_TR_values = xp.array(T1_values / TR)
+
+
+        # c) Perform interpolation/extrapolation
+        #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
+        row_key = interpn(points=points_B1,
+                          values=B1_scales_effective_values,
+                          xi=xi_B1,
+                          method=interpolation_type,
+                          bounds_error=False,
+                          fill_value=None)
+
+        # c) Perform interpolation/extrapolation
+        col_key = interpn(points=points_T1,
+                          values=T1_over_TR_values,
+                          xi=xi_T1_over_TR,
+                          method=interpolation_type,
+                          bounds_error=False,
+                          fill_value=None)
+
+        #print(B1_scale, xi_B1, row_key)
+        #print(xi_T1_over_TR, col_key)
+
+        # Reshape back flattened array to original shape
+        row_key = row_key.reshape(xi_B1.shape)
+        col_key = col_key.reshape(xi_T1_over_TR.shape)
+
+        ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
+        row_key = row_key.get() if device.lower() in ["cuda", "gpu"] else row_key
+        col_key = col_key.get() if device.lower() in ["cuda", "gpu"] else col_key
+
+
+        return xp.stack([row_key, col_key], axis=0)# row_key, col_key #B1_scale #self.simulated_data.loc[row_key, col_key]
+
+
+###        if device.lower() == "cpu":
+###            """
+###            # (A) CPU Case
+###            """
+###            # 1) Create objects of interp1 from scipy
+###            #     x = just 1D grid x for f(x)
+###            #     y = values to interpolate f(x)
+###            #     Also, enable extrapolation
+###            nearest_index = interp1d(x=np.arange(0, len(self.B1_scales_effective_values)),
+###                                     y=self.B1_scales_effective_values,
+###                                     kind=interpolation_type,
+###                                     fill_value="extrapolate")
+###            nearest_column = interp1d(x=np.arange(0, len(self.T1_values)),
+###                                      y=self.T1_values / self.TR,
+###                                      kind=interpolation_type,
+###                                      fill_value="extrapolate")
+###
+###            # 2) Get the nearest value
+###            row_key = nearest_index(B1_scale)
+###            col_key = nearest_column(T1_over_TR)
+###            # Use them to index into your lookup table (assumed to be a pandas DataFrame).
+###            return self.simulated_data.loc[row_key, col_key]
+###
+###        elif device.lower() == "cuda":
+###            """
+###            # (B) GPU/CUDA Case
+###            """
+###            ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
+###            B1_scales_effective_values_gpu = cp.asarray(self.B1_scales_effective_values)
+###            T1_values_gpu = cp.asarray(self.T1_values)
+###            TR_gpu = cp.asarray(self.TR)
+###
+###            ## Interpolation of B1
+###            # a) 1D grid required (e.g., just x axis of f(x))
+###            x_grid = cp.arange(len(B1_scales_effective_values_gpu))
+###            points_B1 = (x_grid,)  # Note: tuple for a 1D grid required in interpn
+###
+###            # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
+###            xi = cp.asarray(B1_scale).reshape(-1, 1)
+###
+###            # c) Perform interpolation/extrapolation
+###            #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
+###            row_key_gpu = interpn(points=points_B1,
+###                                  values=B1_scales_effective_values_gpu,
+###                                  xi=xi,
+###                                  method=interpolation_type,
+###                                  bounds_error=False,
+###                                  fill_value=None)
+###
+###            ## Interpolation of T1 / TR
+###            # a) 1D grid required (e.g., just x axis of f(x))
+###            x_grid_T1 = cp.arange(len(T1_values_gpu))
+###            points_T1 = (x_grid_T1,) # Note: tuple for a 1D grid required in interpn
+###
+###            # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
+###            T1_over_TR_values_gpu = T1_values_gpu / TR_gpu
+###            xi = cp.asarray(T1_over_TR).reshape(-1, 1)
+###
+###            # c) Perform interpolation/extrapolation
+###            col_key_gpu = interpn(points=points_T1,
+###                                  values=T1_over_TR_values_gpu,
+###                                  xi=xi,
+###                                  method=interpolation_type,
+###                                  bounds_error=False,
+###                                  fill_value=None)
+###
+###            ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
+###            row_key = row_key_gpu.get()
+###            col_key = col_key_gpu.get()
+###            return self.simulated_data.loc[row_key, col_key]
+###
+###        else:
+###            raise ValueError("Invalid device specified. Please choose 'cpu' or 'cuda'.")
 
     def get_entry(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
         """
@@ -1021,7 +1230,7 @@ if __name__ == '__main__':
     lookup_table_WET_test = LookupTableWET(T1_range=[300, 5000],
                                            T1_step_size=50,
                                            T2=250,
-                                           B1_scales_inhomogeneity=[0,2],
+                                           B1_scales_inhomogeneity=[0,3],
                                            B1_scales_gauss=[0.01, 1],
                                            B1_scales_inhomogeneity_step_size=0.05,
                                            B1_scales_gauss_step_size=0.05,
@@ -1045,61 +1254,118 @@ if __name__ == '__main__':
 
     shape_B1_map = loaded_B1_map.loaded_maps.shape
     scaled_B1_map = loaded_B1_map.loaded_maps / 39.0
+    Console.printf("info", f"Scaled B1 Map: min={np.min(scaled_B1_map)}, max={np.max(scaled_B1_map)}")
+
+    #print(lookup_table_WET_test.get_entry4(B1_scale=np.array([1.0, 2.2, 1.0]), T1_over_TR=np.array([0.8, 0.8, 0.8]), device="cpu"))
+
+    # TODO: get entry is in only get index to get entry!!!!!
+    attenuation_indices_map = lookup_table_WET_test.get_entry4(B1_scale=scaled_B1_map,
+                                                               T1_over_TR=np.full_like(scaled_B1_map, 0.8),
+                                                               device="cpu")
+
+    print(attenuation_indices_map.shape)
+
+    # TODO: Iterate trough the whole values and assemble map!
+    # TODO: for x, z, z
+    attenuation_map = np.full_like(scaled_B1_map, 0)
+
+    for x in tqdm(range(attenuation_indices_map.shape[1])):
+        for y in range(attenuation_indices_map.shape[2]):
+            for z in range(attenuation_indices_map.shape[3]):
+                nearest_B1_scale = attenuation_indices_map[0,x,y,z]
+                nearest_T1_over_TR = attenuation_indices_map[1,x,y,z]
+
+                attenuation_map[x, y, z] = lookup_table_WET_test.simulated_data.loc[nearest_B1_scale, nearest_T1_over_TR]
+
+    plt.imshow(attenuation_map[:,100,:])
+    plt.show()
 
 
-    # FIRST, SIMPLE SOLUTION WITH NO ACCELERATION:
-    #### #print(np.min(scaled_B1_map))
-    #### #print(np.max(scaled_B1_map))
-    #### #sys.exit()
-    #### total = np.prod(shape_B1_map)  # Total number of iterations
-    #### progress_bar = tqdm(total=float(total), desc="Processing voxels", ncols=100, bar_format='{l_bar}{bar:50}{r_bar}')
-    #### for x in range(shape_B1_map[0]):
-    ####     for y in range(shape_B1_map[1]):
-    ####         for z in range(shape_B1_map[2]):
-    ####             k = loaded_B1_map.loaded_maps[x,y,z]
-    ####             progress_bar.update(1)
-    ####             print(lookup_table_WET_test.get_entry(B1_scale=scaled_B1_map[x,y,z], T1_over_TR=2.1, interpolation_type="nearest"))
-    #### progress_bar.close()
 
-    #loaded_B1_map.interpolate_to_target_size((220,220,100),2)
 
-    #print(loaded_B1_map.loaded_maps.dtype)
+    # [row/col, x,y,z] --> get now values from LookUpTable!
 
-    ### #1 ACCELERATED VERSION:
-    ### from dask.distributed import Client
-    ### from dask import delayed
-    ### from dask.diagnostics import ProgressBar
-    ###
-    ### # Create a Dask client (this will also launch the dashboard)
-    ### client = Client(n_workers=4, threads_per_worker=2, processes=True)
-    ### print("Dashboard available at:", client.dashboard_link)
-    ###
-    ###
-    ### # Wrap the per-voxel processing in a delayed function.
-    ### @delayed
-    ### def process_voxel(x, y, z):
-    ###     return lookup_table_WET_test.get_entry(
-    ###         B1_scale=scaled_B1_map[x, y, z],
-    ###         T1_over_TR=2.1,
-    ###         interpolation_type="nearest"
-    ###     )
-    ###
-    ###
-    ### # Build delayed tasks for all voxels.
-    ### tasks = [
-    ###     process_voxel(x, y, z)
-    ###     for x in range(20) #shape_B1_map[0])
-    ###     for y in range(20) #shape_B1_map[1])
-    ###     for z in range(20) #shape_B1_map[2])
-    ### ]
-    ###
-    ### # Use Dask's ProgressBar and compute the tasks using the distributed client.
-    ###
-    ### futures = client.compute(tasks)
-    ### results = client.gather(futures)
-    ###
+    sys.exit()
 
-    device = "GPU"
+    # ACCELERATION
+
+    device = "dask"
+
+    if device == "dask":
+
+        cluster = tools.MyLocalCluster()
+        cluster.start_cpu(number_workers=20, threads_per_worker=2)
+        #cluster.start_cuda(device_numbers=[1], device_memory_limit="20GB", use_rmm_cupy_allocator=False)
+
+        #scaled_B1_map = scaled_B1_map[0:50,0:50,0:50]
+        print(f"(!) New shape (CHANGE BACK): {scaled_B1_map.shape}")
+
+        scaled_B1_map_dask = da.from_array(scaled_B1_map, chunks=(10,10,10))
+        #print(scaled_B1_map_dask[0].compute())
+        print("Chunks:", scaled_B1_map_dask.chunks)
+
+        B1_scales_effective_values, T1_values, TR = (lookup_table_WET_test.B1_scales_effective_values,
+                                                     lookup_table_WET_test.T1_values,
+                                                     lookup_table_WET_test.TR)
+
+###        attenuation_map = da.map_blocks(LookupTableWET.get_entry3,
+###                                        scaled_B1_map_dask,
+###                                        2.1,
+###
+###                                        B1_scales_effective_values,
+###                                        T1_values,
+###                                        TR,
+###
+###                                        "nearest",
+###                                        "cpu",
+###                                        dtype=scaled_B1_map_dask.dtype,
+###                                        chunks=(20, 20, 20))
+
+        attenuation_map = da.map_blocks(lookup_table_WET_test.get_entry4,
+                                        scaled_B1_map_dask,
+                                        np.full(1000, 2.1), # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                                        "nearest",
+                                        "cpu",
+                                        dtype=scaled_B1_map_dask.dtype)
+
+        ### scaled_B1_map_dask.map_blocks(lookup_table_WET_test.get_entry2,
+        ###                               T1_over_TR=2.1,
+        ###                               interpolation_type="nearest",
+        ###                               device="cpu",
+        ###                               dtype=scaled_B1_map_dask.dtype)
+
+
+        attenuation_map.compute()
+        #print(attenuation_map.shape)
+        #plt.imshow(attenuation_map[:,90,:])
+        #plt.show()
+
+        #volume_metabolite = da.map_blocks(Model._transform_T2,
+        #                                  xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
+        #                                  volume_with_mask,
+        #                                  time_vector,
+        #                                  TE,
+        #                                  metabolic_map_t2,
+        #                                  dtype=dtype)
+
+
+
+    if device == "X_GPU":
+    # FIRST, SIMPLE SOLUTION WITH ONLY GPU BUT NO DASK ACCELERATION:
+        #print(np.min(scaled_B1_map))
+        #print(np.max(scaled_B1_map))
+        #sys.exit()
+        scaled_B1_map_gpu = cp.asarray(scaled_B1_map)
+
+        total = np.prod(shape_B1_map)  # Total number of iterations
+        progress_bar = tqdm(total=float(total), desc="Processing voxels", ncols=100, bar_format='{l_bar}{bar:50}{r_bar}')
+        for x in range(shape_B1_map[0]):
+            for y in range(shape_B1_map[1]):
+                for z in range(shape_B1_map[2]):
+                    k = loaded_B1_map.loaded_maps[x,y,z]
+                    progress_bar.update(1)
+                    X = lookup_table_WET_test.get_entry2(B1_scale=scaled_B1_map[x,y,z], T1_over_TR=2.1, interpolation_type="nearest", device = "cuda")
+        progress_bar.close()
 
     if device == "GPU":
         from dask_cuda import LocalCUDACluster
@@ -1124,7 +1390,8 @@ if __name__ == '__main__':
         @delayed
         def process_chunk_gpu(x0, x1, y0, y1, z0, z1):
             # Slice the chunk from the GPU array.
-            chunk = scaled_B1_map_gpu[x0:x1, y0:y1, z0:z1]
+            chunk = scaled_B1_map_gpu[x0:x1, y0:y1, z0:z1] # TODO TODO TODO ==> use for creating "chunk" dask?
+
             # Perform the GPU-accelerated lookup.
             # (Make sure that lookup_table_WET_test.get_entry is implemented to work with CuPy arrays.)
             results_chunk = lookup_table_WET_test.get_entry2(
@@ -1139,7 +1406,7 @@ if __name__ == '__main__':
 
         # Parameters (replace with your actual shape, e.g., (180, 180, 180)).
         nx, ny, nz = shape_B1_map
-        chunk_size = 20  # Adjust based on your workload and GPU memory
+        chunk_size = 200  # Adjust based on your workload and GPU memory
 
         # Create tasks for each chunk.
         tasks = []
@@ -1154,6 +1421,8 @@ if __name__ == '__main__':
         # Submit tasks to the cluster and gather results.
         futures = client.compute(tasks)
         chunk_results = client.gather(futures)
+
+        print(type(chunk_results[0]))
 
         # Optionally, flatten the list of lists.
         results = [item for sublist in chunk_results for item in sublist]
@@ -1171,24 +1440,38 @@ if __name__ == '__main__':
 
         # Create a Dask client (adjust the number of workers/threads as needed)
         n_workers = os.cpu_count()
-        client = Client(n_workers=int(n_workers/2), threads_per_worker=2, processes=True) # 4,2; 16,1 also work great!
+        client = Client(n_workers=n_workers, threads_per_worker=1, processes=True) # 4,2; 16,1 also work great!
         print("Dashboard available at:", client.dashboard_link)
 
 
-        # Define a delayed function that processes a chunk of voxels.
+        ### # Define a delayed function that processes a chunk of voxels.
+        ### @delayed
+        ### def process_chunk(x0, x1, y0, y1, z0, z1):
+        ###     chunk_results = []
+        ###     for x in range(x0, x1):
+        ###         for y in range(y0, y1):
+        ###             for z in range(z0, z1):
+        ###                 res = lookup_table_WET_test.get_entry2(
+        ###                     B1_scale=scaled_B1_map[x, y, z],
+        ###                     T1_over_TR=2.1,
+        ###                     interpolation_type="nearest"
+        ###                 )
+        ###                 chunk_results.append(res)
+        ###     return chunk_results
         @delayed
-        def process_chunk(x0, x1, y0, y1, z0, z1):
-            chunk_results = []
-            for x in range(x0, x1):
-                for y in range(y0, y1):
-                    for z in range(z0, z1):
-                        res = lookup_table_WET_test.get_entry2(
-                            B1_scale=scaled_B1_map[x, y, z],
-                            T1_over_TR=2.1,
-                            interpolation_type="nearest"
-                        )
-                        chunk_results.append(res)
-            return chunk_results
+        def process_chunk_cpu(x0, x1, y0, y1, z0, z1):
+            # Slice the chunk from the GPU array.
+            chunk = scaled_B1_map[x0:x1, y0:y1, z0:z1] # TODO TODO TODO ==> use for creating "chunk" dask?
+            # Perform the GPU-accelerated lookup.
+            # (Make sure that lookup_table_WET_test.get_entry is implemented to work with CuPy arrays.)
+            results_chunk = lookup_table_WET_test.get_entry2(
+                B1_scale=chunk,
+                T1_over_TR=2.1,
+                interpolation_type="nearest",
+                device="cpu"
+            )
+            # Optionally, convert the result back to a NumPy array.
+            return results_chunk
 
 
         # Parameters (replace with your actual shape)
@@ -1204,7 +1487,7 @@ if __name__ == '__main__':
                     x1 = min(x0 + chunk_size, nx)
                     y1 = min(y0 + chunk_size, ny)
                     z1 = min(z0 + chunk_size, nz)
-                    tasks.append(process_chunk(x0, x1, y0, y1, z0, z1))
+                    tasks.append(process_chunk_cpu(x0, x1, y0, y1, z0, z1))
 
         # Submit the tasks to the Dask cluster
         futures = client.compute(tasks)
