@@ -657,7 +657,8 @@ class LookupTableWET:
         # D) Storage of the lookup table data. Get lookup table of b1_scales and T1/TR
         self.simulated_data = pd.DataFrame(-111, # just initial value for each entry, very low and maybe helpfully to detect not filled values
                                            index=self.B1_scales_effective_values,
-                                           columns=self.T1_values / self.TR)
+                                           columns=self.T1_values / self.TR,
+                                           dtype=float)
 
 
 
@@ -691,9 +692,20 @@ class LookupTableWET:
             f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
         )
 
+
         for T1 in tqdm(self.T1_values):
             for B1_scale in self.B1_scales_effective_values:
-                self.simulated_data.at[B1_scale, T1/self.TR] = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+
+                # 1) Compute attenuation value based on the given parameters
+                value = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+
+                # 2) Check if NaN occurred, which would lad to further issues and terminate in case. Otherwise, assign to dictionary.
+                if np.isnan(value):
+                    #self.simulated_data.at[B1_scale, T1 / self.TR] = -10000
+                    Console.printf("error", "NaN value occurred while creating dictionary. Check proposed ranges. Terminating program!")
+                    sys.exit()
+                else:
+                    self.simulated_data.at[B1_scale, T1 / self.TR] = value
 
         Console.printf("success", f"Created WET lookup table with {self.simulated_data.size} entries")
 
@@ -725,10 +737,10 @@ class LookupTableWET:
         plt.show()
 
 
-    def get_entry4(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
+    def _find_nearest_available_keys(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
         """
         TODO
-        Get only indices available in lookup table
+        Get only indices available in lookup table.
 
         """
 
@@ -760,14 +772,14 @@ class LookupTableWET:
         xi_B1 = B1_scale.reshape(-1)  # Convert from (1000, 1) to (1000,)
         xi_T1_over_TR = T1_over_TR.reshape(-1)  # Convert from (1000, 1) to (1000,)
 
-        print(f"B1_scales_effective_values shape: {B1_scales_effective_values.shape}")
-        print(f"T1_values shape: {T1_values.shape}")
-        #print(f"TR shape: {TR.shape}")
-        print(f"T1_over_TR_values shape: {T1_over_TR_values.shape}")
-        print(f"x_grid_B1_scales shape: {x_grid_B1_scales.shape}")
-        print(f"x_grid_T1 shape: {x_grid_T1.shape}")
-        print(f"xi_B1 shape: {xi_B1.shape}")
-        print(f"xi_T1_over_TR shape: {xi_T1_over_TR.shape}")
+        ### print(f"B1_scales_effective_values shape: {B1_scales_effective_values.shape}")
+        ### print(f"T1_values shape: {T1_values.shape}")
+        ### #print(f"TR shape: {TR.shape}")
+        ### print(f"T1_over_TR_values shape: {T1_over_TR_values.shape}")
+        ### print(f"x_grid_B1_scales shape: {x_grid_B1_scales.shape}")
+        ### print(f"x_grid_T1 shape: {x_grid_T1.shape}")
+        ### print(f"xi_B1 shape: {xi_B1.shape}")
+        ### print(f"xi_T1_over_TR shape: {xi_T1_over_TR.shape}")
 
 
         # Perform interpolation
@@ -776,13 +788,13 @@ class LookupTableWET:
                           xi_B1,
                           method="nearest",
                           bounds_error=False,
-                          fill_value=None)
+                          fill_value=None)#None)
         col_key = interpn((x_grid_T1,),
                           T1_over_TR_values,
                           xi_T1_over_TR,
                           method="nearest",
                           bounds_error=False,
-                          fill_value=None)
+                          fill_value=None)#None)
 
         # Reshape to original shape
         row_key = row_key.reshape(B1_scale.shape)
@@ -790,164 +802,164 @@ class LookupTableWET:
 
         return xp.stack([row_key, col_key], axis=0)
 
-    @staticmethod
-    def get_entry3(B1_scale, T1_over_TR, B1_scales_effective_values, T1_values, TR, interpolation_type: str = "nearest", device="cpu"):
-        print(B1_scale, T1_over_TR, interpolation_type, device)
-
-
-        if interpolation_type != "nearest":
-            Console.printf("error", "Only nearest neighbours supported at the moment. Exiting the program!")
-            sys.exit()
-
-
-        # TODO: replace interp1d ==> with interpn als in scipy and thus enable interpolation of multiple values at once!
-        if device.lower() == "cpu":
-            xp = np
-            interpn = interpn_cpu
-        elif device.lower() == "gpu" or device.lower() == "cuda":
-            xp = cp
-            interpn = interpn_gpu
-        else:
-            Console.printf("error", f"device need to be either gpu, cuda, or cpu. But '{device}' was given. Terminate program!")
-            sys.exit()
-
-        ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
-        B1_scales_effective_values = xp.asarray(B1_scales_effective_values)
-        T1_values = xp.asarray(T1_values)
-        TR = xp.asarray(TR)
-
-        ## Interpolation of B1 & T1 / TR
-        # a) 1D grid required (e.g., just x axis of f(x))
-        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
-        x_grid_T1 = xp.arange(len(T1_values))
-
-        points_B1 = (x_grid_B1_scales,)  # Note: tuple for a 1D grid required in interpn
-        points_T1 = (x_grid_T1,)  # Note: tuple for a 1D grid required in interpn
-
-        # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
-        xi_B1 = xp.asarray(B1_scale).reshape(-1, 1)             # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
-        xi_T1_over_TR = xp.asarray(T1_over_TR).reshape(-1, 1)   # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
-        # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
-        T1_over_TR_values = xp.array(T1_values / TR)
-
-
-        # c) Perform interpolation/extrapolation
-        #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
-        row_key = interpn(points=points_B1,
-                          values=B1_scales_effective_values,
-                          xi=xi_B1,
-                          method=interpolation_type,
-                          bounds_error=False,
-                          fill_value=None)
-
-        # c) Perform interpolation/extrapolation
-        col_key = interpn(points=points_T1,
-                          values=T1_over_TR_values,
-                          xi=xi_T1_over_TR,
-                          method=interpolation_type,
-                          bounds_error=False,
-                          fill_value=None)
-
-        print(B1_scale, xi_B1, row_key)
-        print(xi_T1_over_TR, col_key)
-        #input("----")
-
-        # Reshape back flattened array to original shape
-        row_key = row_key.reshape(xi_B1.shape)
-        col_key = col_key.reshape(xi_T1_over_TR.shape)
-
-        ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
-        row_key = row_key.get() if device.lower() in ["cuda", "gpu"] else row_key
-        col_key = col_key.get() if device.lower() in ["cuda", "gpu"] else col_key
+###    @staticmethod
+###    def get_entry3(B1_scale, T1_over_TR, B1_scales_effective_values, T1_values, TR, interpolation_type: str = "nearest", device="cpu"):
+###        print(B1_scale, T1_over_TR, interpolation_type, device)
 ###
 ###
-###        return xp.stack([row_key, col_key], axis=0)
-
-
-    def get_entry2(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
-        """
-        Get an entry from the lookup table using interpolation on effective values.
-
-        (!) Note: Only interpolation method 'nearest' is possible at the moment!
-
-        :param B1_scale: Value (or array) within the range of the effective B1 scales.
-        :param T1_over_TR: Value (or array) within the range of the effective T1/TR.
-        :param interpolation_type: Interpolation type (e.g., "nearest", "linear", etc.).
-        :param device: "cpu" or "cuda". Determines whether to use CPU (SciPy) or GPU (CuPy) interpolation.
-        :return: The lookup table entry corresponding to the interpolated effective values.
-        """
-        #print(B1_scale, T1_over_TR, interpolation_type, device)
-
-        if interpolation_type != "nearest":
-            Console.printf("error", "Only nearest neighbours supported at the moment. Exiting the program!")
-            sys.exit()
-
-
-        # TODO: replace interp1d ==> with interpn als in scipy and thus enable interpolation of multiple values at once!
-        if device.lower() == "cpu":
-            xp = np
-            interpn = interpn_cpu
-        elif device.lower() == "gpu" or device.lower() == "cuda":
-            xp = cp
-            interpn = interpn_gpu
-        else:
-            Console.printf("error", f"device need to be either gpu, cuda, or cpu. But '{device}' was given. Terminate program!")
-            sys.exit()
-
-        ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
-        B1_scales_effective_values = xp.asarray(self.B1_scales_effective_values)
-        T1_values = xp.asarray(self.T1_values)
-        TR = xp.asarray(self.TR)
-
-        ## Interpolation of B1 & T1 / TR
-        # a) 1D grid required (e.g., just x axis of f(x))
-        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
-        x_grid_T1 = xp.arange(len(T1_values))
-
-        points_B1 = (x_grid_B1_scales,)  # Note: tuple for a 1D grid required in interpn
-        points_T1 = (x_grid_T1,)  # Note: tuple for a 1D grid required in interpn
-
-        # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
-        xi_B1 = xp.ravel(xp.atleast_1d(B1_scale))[:, None]
-        xi_T1_over_TR = xp.ravel(xp.atleast_1d(T1_over_TR))[:, None]
-        ### xi_B1 = xp.asarray(B1_scale).reshape(-1, 1)             # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
-        ### xi_T1_over_TR = xp.asarray(T1_over_TR).reshape(-1, 1)   # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
-        # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
-        T1_over_TR_values = xp.array(T1_values / TR)
-
-
-        # c) Perform interpolation/extrapolation
-        #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
-        row_key = interpn(points=points_B1,
-                          values=B1_scales_effective_values,
-                          xi=xi_B1,
-                          method=interpolation_type,
-                          bounds_error=False,
-                          fill_value=None)
-
-        # c) Perform interpolation/extrapolation
-        col_key = interpn(points=points_T1,
-                          values=T1_over_TR_values,
-                          xi=xi_T1_over_TR,
-                          method=interpolation_type,
-                          bounds_error=False,
-                          fill_value=None)
-
-        #print(B1_scale, xi_B1, row_key)
-        #print(xi_T1_over_TR, col_key)
-
-        # Reshape back flattened array to original shape
-        row_key = row_key.reshape(xi_B1.shape)
-        col_key = col_key.reshape(xi_T1_over_TR.shape)
-
-        ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
-        row_key = row_key.get() if device.lower() in ["cuda", "gpu"] else row_key
-        col_key = col_key.get() if device.lower() in ["cuda", "gpu"] else col_key
-
-
-        return xp.stack([row_key, col_key], axis=0)# row_key, col_key #B1_scale #self.simulated_data.loc[row_key, col_key]
-
-
+###        if interpolation_type != "nearest":
+###            Console.printf("error", "Only nearest neighbours supported at the moment. Exiting the program!")
+###            sys.exit()
+###
+###
+###        # TODO: replace interp1d ==> with interpn als in scipy and thus enable interpolation of multiple values at once!
+###        if device.lower() == "cpu":
+###            xp = np
+###            interpn = interpn_cpu
+###        elif device.lower() == "gpu" or device.lower() == "cuda":
+###            xp = cp
+###            interpn = interpn_gpu
+###        else:
+###            Console.printf("error", f"device need to be either gpu, cuda, or cpu. But '{device}' was given. Terminate program!")
+###            sys.exit()
+###
+###        ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
+###        B1_scales_effective_values = xp.asarray(B1_scales_effective_values)
+###        T1_values = xp.asarray(T1_values)
+###        TR = xp.asarray(TR)
+###
+###        ## Interpolation of B1 & T1 / TR
+###        # a) 1D grid required (e.g., just x axis of f(x))
+###        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
+###        x_grid_T1 = xp.arange(len(T1_values))
+###
+###        points_B1 = (x_grid_B1_scales,)  # Note: tuple for a 1D grid required in interpn
+###        points_T1 = (x_grid_T1,)  # Note: tuple for a 1D grid required in interpn
+###
+###        # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
+###        xi_B1 = xp.asarray(B1_scale).reshape(-1, 1)             # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+###        xi_T1_over_TR = xp.asarray(T1_over_TR).reshape(-1, 1)   # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+###        # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
+###        T1_over_TR_values = xp.array(T1_values / TR)
+###
+###
+###        # c) Perform interpolation/extrapolation
+###        #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
+###        row_key = interpn(points=points_B1,
+###                          values=B1_scales_effective_values,
+###                          xi=xi_B1,
+###                          method=interpolation_type,
+###                          bounds_error=False,
+###                          fill_value=None)
+###
+###        # c) Perform interpolation/extrapolation
+###        col_key = interpn(points=points_T1,
+###                          values=T1_over_TR_values,
+###                          xi=xi_T1_over_TR,
+###                          method=interpolation_type,
+###                          bounds_error=False,
+###                          fill_value=None)
+###
+###        print(B1_scale, xi_B1, row_key)
+###        print(xi_T1_over_TR, col_key)
+###        #input("----")
+###
+###        # Reshape back flattened array to original shape
+###        row_key = row_key.reshape(xi_B1.shape)
+###        col_key = col_key.reshape(xi_T1_over_TR.shape)
+###
+###        ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
+###        row_key = row_key.get() if device.lower() in ["cuda", "gpu"] else row_key
+###        col_key = col_key.get() if device.lower() in ["cuda", "gpu"] else col_key
+######
+######
+######        return xp.stack([row_key, col_key], axis=0)
+###
+###
+###    def get_entry2(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
+###        """
+###        Get an entry from the lookup table using interpolation on effective values.
+###
+###        (!) Note: Only interpolation method 'nearest' is possible at the moment!
+###
+###        :param B1_scale: Value (or array) within the range of the effective B1 scales.
+###        :param T1_over_TR: Value (or array) within the range of the effective T1/TR.
+###        :param interpolation_type: Interpolation type (e.g., "nearest", "linear", etc.).
+###        :param device: "cpu" or "cuda". Determines whether to use CPU (SciPy) or GPU (CuPy) interpolation.
+###        :return: The lookup table entry corresponding to the interpolated effective values.
+###        """
+###        #print(B1_scale, T1_over_TR, interpolation_type, device)
+###
+###        if interpolation_type != "nearest":
+###            Console.printf("error", "Only nearest neighbours supported at the moment. Exiting the program!")
+###            sys.exit()
+###
+###
+###        # TODO: replace interp1d ==> with interpn als in scipy and thus enable interpolation of multiple values at once!
+###        if device.lower() == "cpu":
+###            xp = np
+###            interpn = interpn_cpu
+###        elif device.lower() == "gpu" or device.lower() == "cuda":
+###            xp = cp
+###            interpn = interpn_gpu
+###        else:
+###            Console.printf("error", f"device need to be either gpu, cuda, or cpu. But '{device}' was given. Terminate program!")
+###            sys.exit()
+###
+###        ## Converty all numpy arrays (CPU)  to cupy arrays (GPU)
+###        B1_scales_effective_values = xp.asarray(self.B1_scales_effective_values)
+###        T1_values = xp.asarray(self.T1_values)
+###        TR = xp.asarray(self.TR)
+###
+###        ## Interpolation of B1 & T1 / TR
+###        # a) 1D grid required (e.g., just x axis of f(x))
+###        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
+###        x_grid_T1 = xp.arange(len(T1_values))
+###
+###        points_B1 = (x_grid_B1_scales,)  # Note: tuple for a 1D grid required in interpn
+###        points_T1 = (x_grid_T1,)  # Note: tuple for a 1D grid required in interpn
+###
+###        # b) Prepare B1_scale data point to interpolate (in this case find nearest neighbour)
+###        xi_B1 = xp.ravel(xp.atleast_1d(B1_scale))[:, None]
+###        xi_T1_over_TR = xp.ravel(xp.atleast_1d(T1_over_TR))[:, None]
+###        ### xi_B1 = xp.asarray(B1_scale).reshape(-1, 1)             # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+###        ### xi_T1_over_TR = xp.asarray(T1_over_TR).reshape(-1, 1)   # (!) Flatten the array, required for interpn. Then reshape interpolation output back!
+###        # b) Calculate T1/TR on GPU and Prepare the data point to interpolate (xi) for T1/TR
+###        T1_over_TR_values = xp.array(T1_values / TR)
+###
+###
+###        # c) Perform interpolation/extrapolation
+###        #    Note: Set bounds_error=False and fill_value=None to allow extrapolation.
+###        row_key = interpn(points=points_B1,
+###                          values=B1_scales_effective_values,
+###                          xi=xi_B1,
+###                          method=interpolation_type,
+###                          bounds_error=False,
+###                          fill_value=None)
+###
+###        # c) Perform interpolation/extrapolation
+###        col_key = interpn(points=points_T1,
+###                          values=T1_over_TR_values,
+###                          xi=xi_T1_over_TR,
+###                          method=interpolation_type,
+###                          bounds_error=False,
+###                          fill_value=None)
+###
+###        #print(B1_scale, xi_B1, row_key)
+###        #print(xi_T1_over_TR, col_key)
+###
+###        # Reshape back flattened array to original shape
+###        row_key = row_key.reshape(xi_B1.shape)
+###        col_key = col_key.reshape(xi_T1_over_TR.shape)
+###
+###        ## Convert results back to numpy (thus bring back to CPU) and the get entry from dictionary
+###        row_key = row_key.get() if device.lower() in ["cuda", "gpu"] else row_key
+###        col_key = col_key.get() if device.lower() in ["cuda", "gpu"] else col_key
+###
+###
+###        return xp.stack([row_key, col_key], axis=0)# row_key, col_key #B1_scale #self.simulated_data.loc[row_key, col_key]
+###
+###
 ###        if device.lower() == "cpu":
 ###            """
 ###            # (A) CPU Case
@@ -1230,7 +1242,7 @@ if __name__ == '__main__':
     lookup_table_WET_test = LookupTableWET(T1_range=[300, 5000],
                                            T1_step_size=50,
                                            T2=250,
-                                           B1_scales_inhomogeneity=[0,3],
+                                           B1_scales_inhomogeneity=[0.00001,3], # TODO
                                            B1_scales_gauss=[0.01, 1],
                                            B1_scales_inhomogeneity_step_size=0.05,
                                            B1_scales_gauss_step_size=0.05,
@@ -1241,8 +1253,8 @@ if __name__ == '__main__':
                                            time_gaps_WET=[30, 30, 30])
 
     lookup_table_WET_test.create()
-    #lookup_table_WET_test.plot()
-    print(lookup_table_WET_test.get_entry(B1_scale=1.0, T1_over_TR=2.1))
+    lookup_table_WET_test.plot()
+    #print(lookup_table_WET_test.get_entry(B1_scale=1.0, T1_over_TR=2.1))
 
     import file
     configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
@@ -1254,16 +1266,136 @@ if __name__ == '__main__':
 
     shape_B1_map = loaded_B1_map.loaded_maps.shape
     scaled_B1_map = loaded_B1_map.loaded_maps / 39.0
+    scaled_B1_map[scaled_B1_map < 0] = 0.001
+
     Console.printf("info", f"Scaled B1 Map: min={np.min(scaled_B1_map)}, max={np.max(scaled_B1_map)}")
 
     #print(lookup_table_WET_test.get_entry4(B1_scale=np.array([1.0, 2.2, 1.0]), T1_over_TR=np.array([0.8, 0.8, 0.8]), device="cpu"))
 
     # TODO: get entry is in only get index to get entry!!!!!
-    attenuation_indices_map = lookup_table_WET_test.get_entry4(B1_scale=scaled_B1_map,
-                                                               T1_over_TR=np.full_like(scaled_B1_map, 0.8),
-                                                               device="cpu")
+    # TODO: scaled B1_map -> consider - values or to set it to 0 ????
+    # TODO: Then, also load gray and white matter!!!
+    attenuation_indices_map = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
+                                                                                 T1_over_TR=np.full_like(scaled_B1_map, 4.6),
+                                                                                 device="cpu")
 
-    print(attenuation_indices_map.shape)
+
+    print(np.sum(np.isnan(np.array(lookup_table_WET_test.simulated_data))))
+
+    input("????")
+
+    attenuation_map = np.full_like(scaled_B1_map, 0)
+
+    for x in tqdm(range(attenuation_indices_map.shape[1])):
+        for y in range(attenuation_indices_map.shape[2]):
+            for z in range(attenuation_indices_map.shape[3]):
+                nearest_B1_scale = attenuation_indices_map[0,x,y,z]
+                nearest_T1_over_TR = attenuation_indices_map[1,x,y,z]
+
+                attenuation_value = lookup_table_WET_test.simulated_data.loc[nearest_B1_scale, nearest_T1_over_TR]
+                if np.isnan(attenuation_value):
+                    print("Value is NaN")
+
+                attenuation_map[x, y, z] = attenuation_value
+
+
+    # Count nans and infs
+    num_nans = np.isnan(attenuation_map).sum()
+    num_pos_inf = np.isposinf(attenuation_map).sum()
+    num_neg_inf = np.isneginf(attenuation_map).sum()
+
+    # Print results
+    print("-----------------------------------------------")
+    print(f"Number of NaNs: {num_nans}")
+    print(f"Number of +Inf values: {num_pos_inf}")
+    print(f"Number of -Inf values: {num_neg_inf}")
+    print("-----------------------------------------------")
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Define the slice index (adjust as needed)
+    slice_index = 90
+    slice_index_2 = 50
+
+    # Compute log attenuation (avoid log(0) issues)
+    log_attenuation_map = np.log(np.clip(attenuation_map, a_min=1e-10, a_max=None))  # Avoid log(0) errors
+
+    # Create figure with 3 rows (scaled_B1_map, attenuation_map, log_attenuation_map) and 3 columns (views)
+    fig, axes = plt.subplots(nrows=3, ncols=3, figsize=(12, 12))
+
+    # Titles for the different views
+    view_titles = ["Axial ([:,:,100])", "Coronal (:,100,:)", "Sagittal (100,:,:)", ]
+    row_titles = ["Scaled B1 Map", "Attenuation Map", "Log Attenuation Map"]
+
+    loaded_B1_map_neg = loaded_B1_map.loaded_maps < 0
+
+    # count the number of negative values
+
+    print(len(loaded_B1_map_neg == 1))
+    input("=====")
+    # Data sources (now three datasets)
+    data_sources = [
+        loaded_B1_map_neg,  # Row 1: Scaled B1 Map
+        attenuation_map,  # Row 2: Attenuation Map
+        log_attenuation_map  # Row 3: Log-Attenuation Map
+    ]
+
+    # Slice indices
+    slices = [slice_index, slice_index_2, slice_index]
+
+    # Loop over rows (datasets) and columns (views)
+    for row in range(3):  # Now three rows
+        for col in range(3):
+            # Extract the current dataset
+            data = data_sources[row]
+
+            # Select the appropriate cross-section
+            if col == 0:
+                img_data = data[:, :, slices[row]]  # Axial
+            elif col == 1:
+                img_data = data[:, slices[row], :]  # Coronal
+            else:
+                img_data = data[slices[row], :, :]  # Sagittal
+
+            # Plot the image with its own independent scaling
+            im = axes[row, col].imshow(img_data, cmap='viridis', vmin=np.min(img_data), vmax=np.max(img_data))
+
+            # Add a floating colorbar for this specific plot
+            cax = axes[row, col].inset_axes([1.05, 0.1, 0.05, 0.8])  # Place colorbar outside the plot
+            fig.colorbar(im, cax=cax, orientation='vertical')
+
+            # Add title
+            axes[row, col].set_title(f"{row_titles[row]} - {view_titles[col]}")
+
+    # Adjust layout for better appearance
+    plt.tight_layout()
+    plt.show()
+
+    # --- Separate Figure: Histogram of Attenuation Map ---
+
+    # Flatten attenuation map and compute optimal bin count
+    flattened_values = attenuation_map.flatten()
+    #num_bins = int(np.sqrt(len(flattened_values)))  # n = sqrt(len(all values))
+
+    # Create a new figure for histogram
+    plt.figure(figsize=(8, 6))
+    plt.hist(flattened_values, color='blue', alpha=0.7, edgecolor='black')#, bins=num_bins)
+
+    # Add labels and title
+    plt.xlabel("Attenuation Value")
+    plt.ylabel("Frequency")
+    plt.title("Histogram of Flattened Attenuation Map")
+    plt.grid(True, linestyle="--", alpha=0.6)
+
+    # Show the histogram
+    plt.show()
+
+    sys.exit()
+
+
+
+
 
     # TODO: Iterate trough the whole values and assemble map!
     # TODO: for x, z, z
