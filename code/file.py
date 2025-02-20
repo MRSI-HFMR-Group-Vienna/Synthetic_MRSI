@@ -278,7 +278,7 @@ class Maps:
     def __init__(self, configurator: Configurator, map_type_name: str):
         self.configurator = configurator
         self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
-        self.loaded_maps: dict[str, np.memmap | h5py._hl.dataset.Dataset] | np.memmap = None
+        self.loaded_maps: dict[str, np.memmap | h5py._hl.dataset.Dataset] | np.memmap | np.ndarray = None
         self.file_type_allowed = ['.nii', '.nii.gz', '.h5', '.hdf5']
 
 
@@ -310,7 +310,7 @@ class Maps:
         self.configurator.load()
 
 
-    def load_file(self):
+    def load_file(self) -> Self:
         """
         Load a single map from file.
         Supports both H5 and NIfTI (nii) formats.
@@ -353,12 +353,15 @@ class Maps:
             self.loaded_maps = loaded_map
             Console.add_lines(
                 f"Loaded nii map: {os.path.basename(self.main_path)} | Shape: {loaded_map.shape} | "
-                f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}]"
+                f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] | "
+                f"Unique values: {len(np.unique(loaded_map))}"
             )
             Console.printf_collected_lines("success")
         else:
             Console.printf("error", f"Unsupported file type: {self.file_type}")
             sys.exit()
+
+        return self
 
     def load_files_from_folder(self, working_name_and_file_name: dict[str, str]) -> Self:
         """
@@ -424,7 +427,7 @@ class Maps:
             initial_shape = self.loaded_maps.shape
             zoom_factor = np.divide(target_size, self.loaded_maps.shape)
             self.loaded_maps = zoom(input=self.loaded_maps, zoom=zoom_factor, order=order)
-            Console.printf("success", f"Only one map exits: Interpolated map: \n {initial_shape} --> {self.loaded_maps.shape}")
+            Console.printf("success", f"Only one map exits: Interpolated map: {initial_shape} --> {self.loaded_maps.shape}")
         return self
 
 ###class Maps:

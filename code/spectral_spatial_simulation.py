@@ -1,5 +1,6 @@
 from __future__ import annotations      #TODO: due to circular import. Maybe solve different!
 from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
+
 if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
     from spatial_metabolic_distribution import MetabolicPropertyMap  #TODO: due to circular import. Maybe solve different!
 
@@ -1239,6 +1240,51 @@ class LookupTableWET:
 
 
 if __name__ == '__main__':
+
+    import file
+    configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
+                                     file_name="paths_25092024.json")
+    configurator.load()
+
+    loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1").load_file()
+    loaded_B1_map_shape = loaded_B1_map.loaded_maps.shape
+
+    import matplotlib.pyplot as plt
+
+    #loaded_GM_map = file.Maps(configurator=configurator,map_type_name="GM_segmentation").load_file()
+    #loaded_GM_map.loaded_maps = (loaded_GM_map.loaded_maps > 0.7).astype(int)
+    #data = loaded_GM_map.loaded_maps[:, :, 50]
+    #plt.hist(loaded_GM_map.loaded_maps.ravel(), bins=50, color='skyblue', edgecolor='black')
+    #plt.imshow(loaded_GM_map.loaded_maps[:, :, 50])
+    #plt.colorbar()
+    #plt.show()
+
+    loaded_GM_map = file.Maps(configurator=configurator, map_type_name="GM_segmentation").load_file()
+    loaded_WM_map = file.Maps(configurator=configurator, map_type_name="WM_segmentation").load_file()
+    loaded_CSF_map = file.Maps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
+
+    threshold_binary = 0.7
+    show_axial_slice = 70
+
+    loaded_GM_map.loaded_maps = (loaded_GM_map.loaded_maps > threshold_binary).astype(int)
+    loaded_WM_map.loaded_maps = (loaded_WM_map.loaded_maps > threshold_binary).astype(int)
+    loaded_CSF_map.loaded_maps = (loaded_CSF_map.loaded_maps > threshold_binary).astype(int)
+
+    loaded_GM_map = loaded_GM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
+    loaded_WM_map = loaded_WM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
+    loaded_CSF_map = loaded_CSF_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
+
+    fig, axs = plt.subplots(nrows=1, ncols=3)
+    axs[0].set_title("WM map (axial slice 50)")
+    axs[1].set_title("GM map (axial slice 50)")
+    axs[2].set_title("CSF map (axial slice 50)")
+
+    axs[0].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice])
+    axs[1].imshow(loaded_GM_map.loaded_maps[:, :, show_axial_slice])
+    axs[2].imshow(loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
+    plt.show()
+
+    TR=600
     lookup_table_WET_test = LookupTableWET(T1_range=[300, 5000],
                                            T1_step_size=50,
                                            T2=250,
@@ -1246,7 +1292,7 @@ if __name__ == '__main__':
                                            B1_scales_gauss=[0.01, 1],
                                            B1_scales_inhomogeneity_step_size=0.05,
                                            B1_scales_gauss_step_size=0.05,
-                                           TR=600,
+                                           TR=TR,
                                            TE=0, # TODO -> why 0???
                                            flip_angle_excitation_degree=47.0,
                                            flip_angles_WET_degree=[89.2, 83.4, 160.8],
@@ -1256,10 +1302,7 @@ if __name__ == '__main__':
     lookup_table_WET_test.plot()
     #print(lookup_table_WET_test.get_entry(B1_scale=1.0, T1_over_TR=2.1))
 
-    import file
-    configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
-                                     file_name="paths_25092024.json")
-    configurator.load()
+
 
     loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1")
     loaded_B1_map.load_file()
@@ -1275,6 +1318,94 @@ if __name__ == '__main__':
     # TODO: get entry is in only get index to get entry!!!!!
     # TODO: scaled B1_map -> consider - values or to set it to 0 ????
     # TODO: Then, also load gray and white matter!!!
+
+    # (#1) Source T1 GM & WM for 7T: https://pmc.ncbi.nlm.nih.gov/articles/PMC3375320/
+    T1_GM = (1550+1804+1940+1550+1950+2132+2007+2000) / 8 #ms      (#1)
+    T1_WM = (890+1043+1130+950+1200+1220+1357+1500) / 8 #ms        (#1)
+    T1_CSF = 4470 #ms (average T1 for CSF was given in the paper)  (#1)
+
+    T1_over_TR_GM_map = loaded_GM_map.loaded_maps * (T1_GM/TR)
+    T1_over_TR_WM_map = loaded_WM_map.loaded_maps * (T1_WM/TR)
+    T1_over_TR_CSF_map = loaded_CSF_map.loaded_maps * (T1_CSF/TR)
+
+    attenuation_indices_map_GM = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
+                                                                                    T1_over_TR=T1_over_TR_GM_map, #np.full_like(scaled_B1_map, 4.6),
+                                                                                    device="cpu")
+
+    attenuation_indices_map_WM = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
+                                                                                    T1_over_TR=T1_over_TR_WM_map, #np.full_like(scaled_B1_map, 4.6),
+                                                                                    device="cpu")
+
+    attenuation_indices_map_CSF = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
+                                                                                     T1_over_TR=T1_over_TR_CSF_map, #np.full_like(scaled_B1_map, 4.6),
+                                                                                     device="cpu")
+
+    attenuation_map = np.full_like(scaled_B1_map, 0)  # (3,x,y,z); 3 just for WM, GM, CSF map
+    attenuation_map = attenuation_map[np.newaxis, ...]
+    attenuation_map = np.repeat(attenuation_map, 3, axis=0)
+
+    for i, indices_map in enumerate([attenuation_indices_map_GM, attenuation_indices_map_WM, attenuation_indices_map_CSF]):
+        x_shape, y_shape, z_shape = indices_map.shape[1], indices_map.shape[2], indices_map.shape[3]
+
+        for x in tqdm(range(x_shape-1)):
+            for y in range(y_shape-1):
+                for z in range(z_shape-1):
+                    nearest_B1_scale = indices_map[0,x,y,z]
+                    nearest_T1_over_TR = indices_map[1,x,y,z]
+
+                    attenuation_value = lookup_table_WET_test.simulated_data.loc[nearest_B1_scale, nearest_T1_over_TR]
+                    if np.isnan(attenuation_value):
+                        print("Value is NaN")
+
+                    attenuation_map[i, x, y, z] = attenuation_value
+
+
+    """
+    Plot section!
+    """
+    tissue_labels = ['GM Attenuation', 'WM Attenuation', 'CSF Attenuation']
+
+    # Indices for the cross-sectional slices
+    x_index = 90  # for the x cross-section
+    y_index = 90  # for the y cross-section
+    z_index = 55  # for the z cross-section
+
+    # Create a 3x3 subplot grid
+    fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+
+    for i in range(3):
+        # Plot x cross-section: fix x index (slice along y and z)
+        ax = axes[i, 0]
+        img_x = attenuation_map[i, x_index, :, :]
+        im = ax.imshow(img_x, cmap='viridis', origin='lower')
+        ax.set_title(f'x = {x_index}')
+        # Label the first column with the tissue type
+        ax.set_ylabel(tissue_labels[i])
+        fig.colorbar(im, ax=ax)
+
+        # Plot y cross-section: fix y index (slice along x and z)
+        ax = axes[i, 1]
+        img_y = attenuation_map[i, :, y_index, :]
+        im = ax.imshow(img_y, cmap='viridis', origin='lower')
+        ax.set_title(f'y = {y_index}')
+        fig.colorbar(im, ax=ax)
+
+        # Plot z cross-section: fix z index (slice along x and y)
+        ax = axes[i, 2]
+        img_z = attenuation_map[i, :, :, z_index]
+        im = ax.imshow(img_z, cmap='viridis', origin='lower')
+        ax.set_title(f'z = {z_index}')
+        fig.colorbar(im, ax=ax)
+
+    plt.tight_layout()
+    plt.show()
+
+
+    print("FIN FIN FIN FIN")
+    sys.exit()
+
+
+
     attenuation_indices_map = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
                                                                                  T1_over_TR=np.full_like(scaled_B1_map, 4.6),
                                                                                  device="cpu")
