@@ -35,67 +35,38 @@ class NamedAxesArray:
 
     def __init__(self, input_array: np.ndarray | cp.ndarray, axis_values, device="cpu"):
         """
-        For enabling to select either numpy or cupy sinde they have similiar functionalities! The nested class "BaseArray" inherits therefore from the respective class.
+        Initialize with NumPy or CuPy depending on `device` argument.
         """
-        # self.use_gpu = use_gpu and self._is_cupy_available()
-        if not isinstance(input_array, np.ndarray) and not isinstance(input_array, cp.ndarray):
-            print(
-                f"Input array must be of type numpy.ndarray or cupy.ndarray. However, it was given {type(input_array)}. Terminating program.")
-            sys.exit()
+        if not isinstance(input_array, (np.ndarray, cp.ndarray)):
+            raise TypeError(f"Input array must be numpy.ndarray or cupy.ndarray, got {type(input_array)}")
 
-        possible_devices = ["cpu", "gpu"]
-        if device not in possible_devices:
-            print(
-                f"'device' must be one of this: {possible_devices}. However, it was set to: {device}. Terminating program.")
-            sys.exit()
+        if device not in ["cpu", "gpu"]:
+            raise ValueError(f"'device' must be 'cpu' or 'gpu', got {device}")
 
         self.device = device
         self.xp = self._get_backend()
         self.BaseArray = self._create_base_array_class(self.xp)
         self.array = self.BaseArray(input_array, axis_values, self.xp)
 
-    def _is_cupy_available(self):
-        """
-        Checks if CuPy is installed.
-        """
-        try:
-            import cupy
-            return True
-        except ImportError:
-            return False
-
     def _get_backend(self):
-        """
-        Returns numpy or cupy as the backend.
-        """
-        if self.device == "gpu":
-            import cupy as cp
-            return cp
-        else:
-            import numpy as np
-            return np
+        """Returns NumPy or CuPy as the backend."""
+        return cp if self.device == "gpu" else np
 
     def _create_base_array_class(self, xp):
         """
-        Dynamically defines the class "BaseArray" with numpy or cupy.
+        Dynamically defines BaseArray with NumPy or CuPy.
         """
-
         class BaseArray(xp.ndarray):
             """
-            Handles numpy/cupy array operations and interpolation.
+            Custom array class with named axes and interpolation.
             """
 
             def __new__(cls, input_array, axis_values, xp):
-
-                # input_array and xp
-                if isinstance(input_array, np.ndarray):
-                    obj = xp.asarray(input_array).view(cls)
-                else:
-                    obj = xp.asarray(input_array.get()).view(cls)
-
+                obj = xp.asarray(input_array).copy().view(cls)  # Ensure mutable array
                 obj.axis_values = {axis: xp.array(values) for axis, values in axis_values.items()}
                 obj.interpolation_method = "linear"
-                obj.xp = xp  # Store backend (NumPy or CuPy)
+                obj.xp = xp
+                obj.base_array = obj  # Store reference to ensure item assignment works
                 return obj
 
             def __array_finalize__(self, obj):
@@ -105,17 +76,25 @@ class NamedAxesArray:
                 self.axis_values = getattr(obj, 'axis_values', None)
                 self.interpolation_method = getattr(obj, 'interpolation_method', "linear")
                 self.xp = getattr(obj, 'xp', None)
+                self.base_array = getattr(obj, 'base_array', None)
+
+            def __array_wrap__(self, out_arr, context=None):
+                """Ensure that operations return BaseArray instead of plain NumPy array."""
+                return np.ndarray.__array_wrap__(self, out_arr, context)
+
+            def __setitem__(self, index, value):
+                """Support normal NumPy/CuPy-style item assignment."""
+                self.base_array.view(np.ndarray)[index] = value  # Modify the original array
 
             def get_value(self, **axis_values):
-                """Get interpolated values at specified axis positions."""
+                """Get interpolated value using axis labels."""
                 if set(axis_values.keys()) != set(self.axis_values.keys()):
-                    raise ValueError(
-                        f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
+                    raise ValueError(f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
 
                 points = [self.axis_values[axis] for axis in self.axis_values.keys()]
                 query_points = self.xp.array([axis_values[axis] for axis in self.axis_values.keys()]).T
 
-                # Import appropriate interpolation function
+                # Use the correct interpolation function based on backend
                 if self.xp.__name__ == "cupy":
                     from cupyx.scipy.interpolate import interpn
                 else:
@@ -124,6 +103,23 @@ class NamedAxesArray:
                 interpolated_values = interpn(points, self, query_points, method=self.interpolation_method)
                 return interpolated_values if interpolated_values.size > 1 else interpolated_values.item()
 
+            def set_value(self, value, **axis_values):
+                """
+                Set a value using axis labels.
+
+                Example:
+                .set_value(value=10, X=1, Y=1, Z=1)
+                """
+                if set(axis_values.keys()) != set(self.axis_values.keys()):
+                    raise ValueError(f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
+
+                # Convert axis labels to indices
+                indices = tuple(
+                    int(self.xp.where(self.axis_values[axis] == axis_values[axis])[0][0])
+                    for axis in self.axis_values.keys()
+                )
+                self.base_array[indices] = value  # Modify in place
+
             def set_interpolation_method(self, method="linear"):
                 """Change interpolation method dynamically."""
                 self.interpolation_method = method
@@ -131,8 +127,7 @@ class NamedAxesArray:
             def rename_axes(self, new_names_dict):
                 """Rename axes dynamically."""
                 if not all(axis in self.axis_values for axis in new_names_dict.keys()):
-                    raise ValueError(
-                        f"Some keys in {new_names_dict.keys()} do not exist in current axes: {list(self.axis_values.keys())}")
+                    raise ValueError(f"Invalid axis names: {list(new_names_dict.keys())}")
 
                 self.axis_values = {new_names_dict.get(axis, axis): values for axis, values in self.axis_values.items()}
 
@@ -142,13 +137,7 @@ class NamedAxesArray:
 
             def to_cupy(self):
                 """Convert to CuPy."""
-                import cupy as cp
-                return cp.array(self)
-                # print(self.xp.__name__)
-                # if self.xp.__name__ == "cupy":
-                #    return self
-                # else:
-                #    return cp.asarray(self)
+                return cp.asarray(self)
 
             def get_axes_and_values(self):
                 """Return a dictionary of axes and values."""
@@ -161,8 +150,7 @@ class NamedAxesArray:
 
             def __str__(self):
                 """Custom print output."""
-                axes_info = "\n".join(
-                    [f"  {axis}: {self.axis_values[axis].tolist()}" for axis in self.axis_values.keys()])
+                axes_info = "\n".join([f"  {axis}: {self.axis_values[axis].tolist()}" for axis in self.axis_values.keys()])
                 backend = "CuPy" if self.xp.__name__ == "cupy" else "NumPy"
                 return (
                     f"NamedAxesArray (shape={self.shape}, axes={len(self.axis_values)}, backend={backend}, interpolation={self.interpolation_method})\n"
@@ -178,7 +166,7 @@ class NamedAxesArray:
 
     def backend_type(self):
         """Returns 'CuPy' or 'NumPy'."""
-        return "cupy" if self.used_device == "gpu" else "numpy"
+        return "CuPy" if self.device == "gpu" else "NumPy"
 
     def __getattr__(self, name):
         """Delegate attribute access to the inner BaseArray."""
@@ -189,6 +177,18 @@ class NamedAxesArray:
 
     def __str__(self):
         return str(self.array)
+
+    def __getitem__(self, item):
+        """
+        Delegate item retrieval to the underlying BaseArray.
+        """
+        return self.array.__getitem__(item)
+
+    def __setitem__(self, key, value):
+        """
+        Delegate item assignment to the underlying BaseArray.
+        """
+        self.array.__setitem__(key, value)
 
 
 class CustomArray2(da.Array):

@@ -136,7 +136,7 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/code/spectral_spatial_simulation.py</url>
-          <line>1121</line>
+          <line>1050</line>
           <option name="timeStamp" value="15" />
         </line-breakpoint>
       </breakpoints>

@@ -657,14 +657,20 @@ class LookupTableWET:
                                                                     off_resonance=0)
 
         #D) TODO: Test:
-        self.simulated_data = xr.DataArray(
-            data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
-            coords={
-                "B1_scale_effective": self.B1_scales_effective_values,
-                "T1_over_TR": self.T1_values / self.TR
-            },
-            dims=["B1_scale_effective", "T1_over_TR"]
-        )
+        self.simulated_data = tools.NamedAxesArray(input_array=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
+                                                   axis_values={
+                                                       "B1_scale_effective": self.B1_scales_effective_values,
+                                                       "T1_over_TR": self.T1_values / self.TR
+                                                   },
+                                                   device="cpu")
+        ###self.simulated_data = xr.DataArray(
+        ###    data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
+        ###    coords={
+        ###        "B1_scale_effective": self.B1_scales_effective_values,
+        ###        "T1_over_TR": self.T1_values / self.TR
+        ###    },
+        ###    dims=["B1_scale_effective", "T1_over_TR"]
+        ###)
         #self.simulated_data = np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float)
         #self.row_labels = np.asarray(self.B1_scales_effective_values)  # For B1 scales (rows)
         #self.col_labels = np.asarray(self.T1_values) / self.TR  # For T1/TR (columns)
@@ -695,59 +701,10 @@ class LookupTableWET:
 
         return attenuation
 
-    def create(self):
-
-        start_time = time.time()
-
-        Console.printf(
-            "info",
-            f"Start creating the Lookup Table for WET (water suppression enhanced through T1 effects)"
-            f"\n => Axis 1: B1 scale | Resolution: {self._B1_scales_step_size:>6.3f} | Range: {self._B1_scales_lower_border:>6.3f}:{self._B1_scales_upper_border:>6.3f}"
-            f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
-        )
-
-        # Build 2D grids for B1 and T1. Note that for T1, our lookup table uses T1/TR as the coordinate,
-        # so we convert to T1 values when computing.
-        #B1 = self.B1_scales_effective_values
-        #T1 = self.T1_values  # These are the raw T1 values
-
-        # Create meshgrids with matching shapes.
-        B1_grid, T1_grid = np.meshgrid(self.B1_scales_effective_values, self.T1_values, indexing="ij")
-
-        # Define a helper function that wraps the scalar attenuation computation.
-        def compute_one_attenuation(T1_val, B1_val):
-            result = self._compute_one_attenuation_value(T1=T1_val, B1_scale=B1_val)
-            # Optionally, check for NaN here and raise an error.
-            if np.isnan(result):
-                raise ValueError("NaN value occurred in attenuation computation.")
-            return result
-
-        # Use xarray.apply_ufunc to apply the function over the grids.
-        # We set vectorize=True so that compute_att is applied elementwise.
-        attenuation_values = xr.apply_ufunc(
-            compute_one_attenuation,
-            xr.DataArray(T1_grid, dims=["B1", "T1"]),
-            xr.DataArray(B1_grid, dims=["B1", "T1"]),
-            vectorize=True,
-            dask="parallelized",  # Optional: allows parallelization if using dask.
-            output_dtypes=[float]
-        )
-
-        # Update the simulated_data xarray.
-        # Note that our xarray simulated_data uses coordinates:
-        #   "B1_scale_effective" (from B1) and "T1_over_TR" (which is T1/TR).
-        # We need to update simulated_data accordingly:
-        self.simulated_data.data = attenuation_values.data
-
-        # Optionally, if you wish to verify the total number of computed entries:
-        Console.printf("success", f"Created WET lookup table with {self.simulated_data.size} entries. Took: {time.time() - start_time:.2f} sec")
-
 ###    def create(self):
-###        """
-###        TODO
 ###
-###        :return:
-###        """
+###        start_time = time.time()
+###
 ###        Console.printf(
 ###            "info",
 ###            f"Start creating the Lookup Table for WET (water suppression enhanced through T1 effects)"
@@ -755,24 +712,43 @@ class LookupTableWET:
 ###            f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
 ###        )
 ###
-###        for T1 in tqdm(self.T1_values):
-###            for B1_scale in self.B1_scales_effective_values:
+###        # Build 2D grids for B1 and T1. Note that for T1, our lookup table uses T1/TR as the coordinate,
+###        # so we convert to T1 values when computing.
+###        #B1 = self.B1_scales_effective_values
+###        #T1 = self.T1_values  # These are the raw T1 values
 ###
-###                # Compute the attenuation value
-###                value = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+###        # Create meshgrids with matching shapes.
+###        B1_grid, T1_grid = np.meshgrid(self.B1_scales_effective_values, self.T1_values, indexing="ij")
 ###
-###                if np.isnan(value):
-###                    Console.printf("error",
-###                                   "NaN value occurred while creating dictionary. Check proposed ranges. Terminating program!")
-###                    sys.exit()
-###                else:
-###                    # Use .loc to assign the computed value based on coordinate labels.
-###                    self.simulated_data.loc[{"B1_scale_effective": B1_scale, "T1_over_TR": T1 / self.TR}] = value
+###        # Define a helper function that wraps the scalar attenuation computation.
+###        def compute_one_attenuation(T1_val, B1_val):
+###            result = self._compute_one_attenuation_value(T1=T1_val, B1_scale=B1_val)
+###            # Optionally, check for NaN here and raise an error.
+###            if np.isnan(result):
+###                raise ValueError("NaN value occurred in attenuation computation.")
+###            return result
 ###
-###        total_entries = self.simulated_data.size
-###        Console.printf("success", f"Created WET lookup table with {total_entries} entries")
+###        # Use xarray.apply_ufunc to apply the function over the grids.
+###        # We set vectorize=True so that compute_att is applied elementwise.
+###        attenuation_values = xr.apply_ufunc(
+###            compute_one_attenuation,
+###            xr.DataArray(T1_grid, dims=["B1", "T1"]),
+###            xr.DataArray(B1_grid, dims=["B1", "T1"]),
+###            vectorize=True,
+###            dask="parallelized",  # Optional: allows parallelization if using dask.
+###            output_dtypes=[float]
+###        )
+###
+###        # Update the simulated_data xarray.
+###        # Note that our xarray simulated_data uses coordinates:
+###        #   "B1_scale_effective" (from B1) and "T1_over_TR" (which is T1/TR).
+###        # We need to update simulated_data accordingly:
+###        self.simulated_data.data = attenuation_values.data
+###
+###        # Optionally, if you wish to verify the total number of computed entries:
+###        Console.printf("success", f"Created WET lookup table with {self.simulated_data.size} entries. Took: {time.time() - start_time:.2f} sec")
 
-    def create_OLD(self):
+    def create(self):
         """
         TODO
 
@@ -785,49 +761,25 @@ class LookupTableWET:
             f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
         )
 
-        # Loop with enumeration to get positional indices
-        for i, T1 in enumerate(self.T1_values):
-            for j, B1_scale in enumerate(self.B1_scales_effective_values):
+        for T1 in tqdm(self.T1_values):
+            for B1_scale in self.B1_scales_effective_values:
+
+                # Compute the attenuation value
                 value = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+
                 if np.isnan(value):
                     Console.printf("error",
                                    "NaN value occurred while creating dictionary. Check proposed ranges. Terminating program!")
                     sys.exit()
                 else:
-                    self.simulated_data[j, i] = value
-
+                    # Use .loc to assign the computed value based on coordinate labels.
+                    self.simulated_data.set_value(B1_scale_effective=B1_scale, # first axis
+                                                  T1_over_TR=T1/self.TR,       # second axis
+                                                  value=value)                 # and to axis coordinated according values
+                    #self.simulated_data.loc[{"B1_scale_effective": B1_scale, "T1_over_TR": T1 / self.TR}] = value
 
         total_entries = self.simulated_data.size
         Console.printf("success", f"Created WET lookup table with {total_entries} entries")
-
-    ###def create(self):
-    ###    """
-    ###    For creating the lookup table.
-    ###    :return: Nothing
-    ###    """
-    ###    Console.printf(
-    ###        "info",
-    ###        f"Start creating the Lookup Table for WET (water suppression enhanced through T1 effects)"
-    ###        f"\n => Axis 1: B1 scale | Resolution: {self._B1_scales_step_size:>6.3f} | Range: {self._B1_scales_lower_border:>6.3f}:{self._B1_scales_upper_border:>6.3f}"
-    ###        f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
-    ###    )
-    ###
-    ###
-    ###    for T1 in tqdm(self.T1_values):
-    ###        for B1_scale in self.B1_scales_effective_values:
-    ###
-    ###            # 1) Compute attenuation value based on the given parameters
-    ###            value = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
-    ###
-    ###            # 2) Check if NaN occurred, which would lad to further issues and terminate in case. Otherwise, assign to dictionary.
-    ###            if np.isnan(value):
-    ###                #self.simulated_data.at[B1_scale, T1 / self.TR] = -10000
-    ###                Console.printf("error", "NaN value occurred while creating dictionary. Check proposed ranges. Terminating program!")
-    ###                sys.exit()
-    ###            else:
-    ###                self.simulated_data.at[B1_scale, T1 / self.TR] = value
-    ###
-    ###    Console.printf("success", f"Created WET lookup table with {self.simulated_data.size} entries")
 
 
     def plot(self):
@@ -911,29 +863,6 @@ class LookupTableWET:
         col_key = col_key.reshape(T1_over_TR.shape)
 
         return xp.stack([row_key, col_key], axis=0)
-
-
-    def _find_nearest_available_keys_OLD(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
-        """
-        Get nearest entry from lookup table.
-
-        :param B1_scale: Need to be within the range of the B1 scale effective.
-        :param T1_over_TR: Need to be within the range of the T1/TR range. T1 range and TR is input of the class.
-        :param interpolation: only "nearest" is available at the moment!
-        :return: nearest entry from lookup table.
-        """
-
-        if device == "cpu":
-            # Create objects for interpolation
-            nearest_index = interp1d(self.B1_scales_effective_values, self.B1_scales_effective_values, kind=interpolation_type, fill_value="extrapolate")
-            nearest_column = interp1d(self.T1_values/self.TR, self.T1_values/self.TR, kind=interpolation_type, fill_value="extrapolate")
-        elif device == "cuda":
-            # Convert your effective arrays to CuPy arrays:
-            B1_gpu = cp.asarray(self.B1_scales_effective_values)
-            T1_gpu = cp.asarray(self.T1_values / self.TR)
-
-        # interpolate based on nearest neighbour and get the value
-        return self.simulated_data.loc[nearest_index(B1_scale), nearest_column(T1_over_TR)]
 
 
     class _BlochSimulation:
@@ -1166,7 +1095,7 @@ if __name__ == '__main__':
     lookup_table_WET_test = LookupTableWET(T1_range=[300, 5000],
                                            T1_step_size=50,
                                            T2=250,
-                                           B1_scales_inhomogeneity=[0.00001,3], # TODO
+                                           B1_scales_inhomogeneity=[1e-10,3], # TODO
                                            B1_scales_gauss=[0.01, 1],
                                            B1_scales_inhomogeneity_step_size=0.05,
                                            B1_scales_gauss_step_size=0.05,
@@ -1179,8 +1108,6 @@ if __name__ == '__main__':
     lookup_table_WET_test.create()
     lookup_table_WET_test.plot()
     #print(lookup_table_WET_test.get_entry(B1_scale=1.0, T1_over_TR=2.1))
-
-
 
     loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1")
     loaded_B1_map.load_file()
@@ -1211,46 +1138,66 @@ if __name__ == '__main__':
     T1_over_TR_WM_map = loaded_WM_map.loaded_maps * (T1_WM/TR)
     T1_over_TR_CSF_map = loaded_CSF_map.loaded_maps * (T1_CSF/TR)
 
-    desired_B1 = np.linspace(0, 1.5, 100)
-    T1_over_TR = np.linspace(0, 1.5, 100)
+    #print(np.min(scaled_B1_map.flatten()), np.max(scaled_B1_map.flatten()))
+    #print(np.full_like(scaled_B1_map, 1).flatten()))
+    lookup_table_WET_test.simulated_data.set_interpolation_method(method="nearest")
+    result = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=np.full_like(scaled_B1_map, 1))
+    result = result.to_numpy()
 
-    Console.printf("info", "START NN TEST, FK YEAH!")
-    for B1 in tqdm(desired_B1):
-        for T1_TR in T1_over_TR:
-            lookup_table_WET_test.simulated_data.sel(B1_scale_effective=B1, T1_over_TR=T1_TR, method="nearest")
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.subplot(1,3,1)
+    plt.imshow(result[:, :, 90])
+    plt.subplot(1, 3, 2)
+    plt.imshow(result[:, 90, :])
+    plt.subplot(1, 3, 3)
+    plt.imshow(result[50, :, :])
+    plt.show()
 
-    Console.start_timer()
-    # Assume desired_B1 and T1_over_TR are 1D arrays.
-    result = lookup_table_WET_test.simulated_data.sel(
-        B1_scale_effective=desired_B1,
-        T1_over_TR=T1_over_TR,
-        method="nearest"
-    )
-    Console.stop_timer()
+    print(result.shape)
+    print("THE END!")
+    sys.exit()
 
-    print(type(result))
-    print(len(result))
-    print(lookup_table_WET_test.simulated_data)
-    print(lookup_table_WET_test.simulated_data.shape)
+###    desired_B1 = np.linspace(0, 1.5, 100)
+###    T1_over_TR = np.linspace(0, 1.5, 100)
 
-    #scaled_B1_map
-    #T1_over_TR_GM_map
-    volume_shape = scaled_B1_map.shape
+###    Console.printf("info", "START NN TEST, FK YEAH!")
+###    for B1 in tqdm(desired_B1):
+###        for T1_TR in T1_over_TR:
+###            lookup_table_WET_test.simulated_data.sel(B1_scale_effective=B1, T1_over_TR=T1_TR, method="nearest")
+###
+###    Console.start_timer()
+###    # Assume desired_B1 and T1_over_TR are 1D arrays.
+###    result = lookup_table_WET_test.simulated_data.sel(
+###        B1_scale_effective=desired_B1,
+###        T1_over_TR=T1_over_TR,
+###        method="nearest"
+###    )
+###    Console.stop_timer()
+###
+###    print(type(result))
+###    print(len(result))
+###    print(lookup_table_WET_test.simulated_data)
+###    print(lookup_table_WET_test.simulated_data.shape)
+###
+###    #scaled_B1_map
+###    #T1_over_TR_GM_map
+###    volume_shape = scaled_B1_map.shape
 
 
-   def lookup(b1_value):
-       # Returns a scalar value for a given B1_scale_effective
-       return lookup_table_WET_test.simulated_data.sel(
-           B1_scale_effective=b1_value, T1_over_TR=1, method="nearest"
-       ).item()
-
-
-   result = xr.apply_ufunc(
-       lookup,
-       scaled_B1_map,
-       vectorize=True  # this makes it operate element-wise
-   )
-
+#   def lookup(b1_value):
+#       # Returns a scalar value for a given B1_scale_effective
+#       return lookup_table_WET_test.simulated_data.sel(
+#           B1_scale_effective=b1_value, T1_over_TR=1, method="nearest"
+#       ).item()
+#
+#
+#   result = xr.apply_ufunc(
+#       lookup,
+#       scaled_B1_map,
+#       vectorize=True  # this makes it operate element-wise
+#   )
+#
 #    for a in tqdm(range(volume_shape[0])):
 #        for b in range(volume_shape[1]):
 #            for c in range(volume_shape[2]):
