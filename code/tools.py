@@ -22,6 +22,175 @@ import math
 import pint
 
 
+class NamedAxesArray:
+    """
+    An array that build on numpy and cupy and inherits its functionalities.
+    The main extensions are:
+        * Use labelled Axes: E.g., Axis1, Axis2 ... AxisN or X, Y, Z. Note: It is not restricted to 3D.
+        * Be able to interpolate between this values: E.g., for 3D array [1.5, 1.3, 2] = value. The "value" does not exit sice [1.5, 1.3, 2] does not exits. However, with interpolation it is possible to get the desired value.
+
+
+    TODO: Check the class again in deep!!!
+    """
+
+    def __init__(self, input_array: np.ndarray | cp.ndarray, axis_values, device="cpu"):
+        """
+        For enabling to select either numpy or cupy sinde they have similiar functionalities! The nested class "BaseArray" inherits therefore from the respective class.
+        """
+        # self.use_gpu = use_gpu and self._is_cupy_available()
+        if not isinstance(input_array, np.ndarray) and not isinstance(input_array, cp.ndarray):
+            print(
+                f"Input array must be of type numpy.ndarray or cupy.ndarray. However, it was given {type(input_array)}. Terminating program.")
+            sys.exit()
+
+        possible_devices = ["cpu", "gpu"]
+        if device not in possible_devices:
+            print(
+                f"'device' must be one of this: {possible_devices}. However, it was set to: {device}. Terminating program.")
+            sys.exit()
+
+        self.device = device
+        self.xp = self._get_backend()
+        self.BaseArray = self._create_base_array_class(self.xp)
+        self.array = self.BaseArray(input_array, axis_values, self.xp)
+
+    def _is_cupy_available(self):
+        """
+        Checks if CuPy is installed.
+        """
+        try:
+            import cupy
+            return True
+        except ImportError:
+            return False
+
+    def _get_backend(self):
+        """
+        Returns numpy or cupy as the backend.
+        """
+        if self.device == "gpu":
+            import cupy as cp
+            return cp
+        else:
+            import numpy as np
+            return np
+
+    def _create_base_array_class(self, xp):
+        """
+        Dynamically defines the class "BaseArray" with numpy or cupy.
+        """
+
+        class BaseArray(xp.ndarray):
+            """
+            Handles numpy/cupy array operations and interpolation.
+            """
+
+            def __new__(cls, input_array, axis_values, xp):
+
+                # input_array and xp
+                if isinstance(input_array, np.ndarray):
+                    obj = xp.asarray(input_array).view(cls)
+                else:
+                    obj = xp.asarray(input_array.get()).view(cls)
+
+                obj.axis_values = {axis: xp.array(values) for axis, values in axis_values.items()}
+                obj.interpolation_method = "linear"
+                obj.xp = xp  # Store backend (NumPy or CuPy)
+                return obj
+
+            def __array_finalize__(self, obj):
+                """Ensure attributes persist when slicing."""
+                if obj is None:
+                    return
+                self.axis_values = getattr(obj, 'axis_values', None)
+                self.interpolation_method = getattr(obj, 'interpolation_method', "linear")
+                self.xp = getattr(obj, 'xp', None)
+
+            def get_value(self, **axis_values):
+                """Get interpolated values at specified axis positions."""
+                if set(axis_values.keys()) != set(self.axis_values.keys()):
+                    raise ValueError(
+                        f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
+
+                points = [self.axis_values[axis] for axis in self.axis_values.keys()]
+                query_points = self.xp.array([axis_values[axis] for axis in self.axis_values.keys()]).T
+
+                # Import appropriate interpolation function
+                if self.xp.__name__ == "cupy":
+                    from cupyx.scipy.interpolate import interpn
+                else:
+                    from scipy.interpolate import interpn
+
+                interpolated_values = interpn(points, self, query_points, method=self.interpolation_method)
+                return interpolated_values if interpolated_values.size > 1 else interpolated_values.item()
+
+            def set_interpolation_method(self, method="linear"):
+                """Change interpolation method dynamically."""
+                self.interpolation_method = method
+
+            def rename_axes(self, new_names_dict):
+                """Rename axes dynamically."""
+                if not all(axis in self.axis_values for axis in new_names_dict.keys()):
+                    raise ValueError(
+                        f"Some keys in {new_names_dict.keys()} do not exist in current axes: {list(self.axis_values.keys())}")
+
+                self.axis_values = {new_names_dict.get(axis, axis): values for axis, values in self.axis_values.items()}
+
+            def to_numpy(self):
+                """Convert to NumPy."""
+                return self.xp.asnumpy(self) if self.xp.__name__ == "cupy" else self.xp.asarray(self)
+
+            def to_cupy(self):
+                """Convert to CuPy."""
+                import cupy as cp
+                return cp.array(self)
+                # print(self.xp.__name__)
+                # if self.xp.__name__ == "cupy":
+                #    return self
+                # else:
+                #    return cp.asarray(self)
+
+            def get_axes_and_values(self):
+                """Return a dictionary of axes and values."""
+                return {axis: self.axis_values[axis].tolist() for axis in self.axis_values.keys()}
+
+            def __repr__(self):
+                """String representation."""
+                backend = "CuPy" if self.xp.__name__ == "cupy" else "NumPy"
+                return f"NamedAxesArray(shape={self.shape}, axes={list(self.axis_values.keys())}, backend={backend}, interpolation={self.interpolation_method})"
+
+            def __str__(self):
+                """Custom print output."""
+                axes_info = "\n".join(
+                    [f"  {axis}: {self.axis_values[axis].tolist()}" for axis in self.axis_values.keys()])
+                backend = "CuPy" if self.xp.__name__ == "cupy" else "NumPy"
+                return (
+                    f"NamedAxesArray (shape={self.shape}, axes={len(self.axis_values)}, backend={backend}, interpolation={self.interpolation_method})\n"
+                    f"Axes:\n{axes_info}\n"
+                    f"Values:\n{super().__str__()}"
+                )
+
+        return BaseArray  # Return dynamically created class
+
+    def used_device(self):
+        """Returns the used device as string (cpu or gpu)."""
+        return self.device
+
+    def backend_type(self):
+        """Returns 'CuPy' or 'NumPy'."""
+        return "cupy" if self.used_device == "gpu" else "numpy"
+
+    def __getattr__(self, name):
+        """Delegate attribute access to the inner BaseArray."""
+        return getattr(self.array, name)
+
+    def __repr__(self):
+        return repr(self.array)
+
+    def __str__(self):
+        return str(self.array)
+
+
 class CustomArray2(da.Array):
     def __new__(cls,
                 dask_array: da.Array,
