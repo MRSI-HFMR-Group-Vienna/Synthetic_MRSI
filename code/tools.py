@@ -301,76 +301,75 @@ class NamedAxesArray:
 
             def get_value(self, **axis_values):
                 """
-                Get interpolated value using axis labels for any number of dimensions.
+                Get interpolated value using axis labels with conditional extrapolation.
 
-                Step-by-step explanation:
-
-                1. Input validation:
-                   - Ensure that the keys provided in axis_values match the expected axes.
-
-                2. Build the grid (points):
-                   - Each axis in self.axis_values provides the coordinate positions along that axis.
-                   - For an ND array, each axis array has a shape corresponding to that dimension.
-                   - The list 'points' is then used by interpn to define the grid.
-
-                3. Construct the query points:
-                   - Each input in axis_values[axis] is expected to be an array with the same shape as the grid,
-                     e.g. (d0, d1, ..., d_{N-1}).
-                   - Stacking them with:
-                         xp.array([axis_values[axis] for axis in self.axis_values.keys()])
-                     produces an array of shape:
-                         (N, d0, d1, ..., d_{N-1})
-                     where N is the number of axes.
-                   - Taking .T (i.e. np.transpose without arguments) reverses the axes:
-                         new shape = (d_{N-1}, d_{N-2}, ..., d0, N)
-                     This last dimension (of size N) now holds the coordinates for each axis, which is the format expected by interpn.
-
-                4. Interpolation:
-                   - Calling interpn with these query points returns an array whose shape corresponds to the query grid,
-                     i.e. (d_{N-1}, d_{N-2}, ..., d0).
-
-                5. Restoring the original grid order:
-                   - Our original grid order is (d0, d1, ..., d_{N-1}), but interpn’s output is reversed.
-                   - To restore the original order, we transpose the output by reversing the order of its axes.
-                     For an output array of ndim N, this can be done with:
-                         result.transpose(*range(result.ndim)[::-1])
-
-                6. Return the result:
-                   - If the interpolated result has more than one element, return the full array;
-                     otherwise, return a scalar.
+                Steps:
+                1. Validate that the provided axis labels match the expected axes.
+                2. Build the grid definition (points) from self.axis_values.
+                3. Build query_points so that its shape is (..., ndim), with the last axis
+                   holding the coordinate for each dimension.
+                4. Check for each axis if any query coordinate is outside the grid bounds.
+                   - If a coordinate is less than the minimum or greater than the maximum,
+                     we flag that extrapolation is required and print a warning.
+                5. Depending on whether extrapolation is needed, call interpn with or without
+                   the parameters to enable extrapolation.
+                6. Return a scalar if a single value is interpolated, or the full array otherwise.
                 """
                 # 1. Validate that the provided axes match the defined axes.
                 if set(axis_values.keys()) != set(self.axis_values.keys()):
                     raise ValueError(
                         f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
 
-                # 2. Retrieve coordinate arrays for each axis.
+                # 2. Retrieve the grid coordinate arrays (in the order of the keys).
                 points = [self.axis_values[axis] for axis in self.axis_values.keys()]
 
-                # 3. Build the query_points array:
-                #    - Each axis_values[axis] is assumed to have shape (d0, d1, ..., d_{N-1})
-                #    - Stacking results in an array of shape (N, d0, d1, ..., d_{N-1})
-                #    - .T reverses the axes to (d_{N-1}, d_{N-2}, ..., d0, N), which is what interpn expects.
-                query_points = self.xp.array([axis_values[axis] for axis in self.axis_values.keys()]).T
+                # 3. Build query_points:
+                #    - Stack the user-provided coordinate arrays. Each should have shape (d0, d1, ..., d_{N-1}).
+                #    - moveaxis moves the 0th axis (which holds the stacked coordinates) to the end,
+                #      so the final shape is (d0, d1, ..., d_{N-1}, N).
+                query_points = self.xp.moveaxis(
+                    self.xp.array([axis_values[axis] for axis in self.axis_values.keys()]),
+                    0, -1
+                )
 
-                # 4. Select the appropriate interpolation function based on the backend.
+                # 4. Check if any query coordinate is outside the grid bounds for each axis.
+                extrapolate = False
+                for i, (axis_name, coord_array) in enumerate(self.axis_values.items()):
+                    min_val = float(coord_array.min())
+                    max_val = float(coord_array.max())
+                    # query_points[..., i] extracts the coordinates for the current axis.
+                    if self.xp.any(query_points[..., i] < min_val) or self.xp.any(query_points[..., i] > max_val):
+                        print(
+                            f"Warning: Extrapolation required for axis '{axis_name}' (range: {min_val} to {max_val}).")
+                        extrapolate = True
+
+                # 5. Choose the appropriate interpolation function based on the backend.
                 if self.xp.__name__ == "cupy":
                     from cupyx.scipy.interpolate import interpn
                 else:
                     from scipy.interpolate import interpn
 
-                # Perform interpolation.
-                # With query_points shaped (d_{N-1}, d_{N-2}, ..., d0, N), the output will have shape (d_{N-1}, d_{N-2}, ..., d0).
-                interpolated_values = interpn(points, self, query_points, method=self.interpolation_method, bounds_error=False, fill_value=None)
+                # 6. Call interpn with extrapolation parameters if required.
+                if extrapolate:
+                    # bounds_error=False tells interpn not to raise an error for out-of-bound points,
+                    # and fill_value=None instructs it to extrapolate.
+                    interpolated_values = interpn(
+                        points,
+                        self,
+                        query_points,
+                        method=self.interpolation_method,
+                        bounds_error=False,
+                        fill_value=None
+                    )
+                else:
+                    interpolated_values = interpn(
+                        points,
+                        self,
+                        query_points,
+                        method=self.interpolation_method
+                    )
 
-                # 5. Restore the original grid order:
-                #    - The current shape is (d_{N-1}, d_{N-2}, ..., d0).
-                #    - We reverse the axes to get (d0, d1, ..., d_{N-1}).
-                #    - For arbitrary dimensions, we generate the reversed order automatically.
-                axes_order = tuple(range(interpolated_values.ndim))[::-1]
-                interpolated_values = interpolated_values.transpose(*axes_order)
-
-                # 6. Return the result (scalar if size==1, or array otherwise).
+                # 7. Return a scalar if only one value is produced, or the array otherwise.
                 return interpolated_values if interpolated_values.size > 1 else interpolated_values.item()
 
             def set_value(self, value, **axis_values):

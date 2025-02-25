@@ -1071,7 +1071,7 @@ if __name__ == '__main__':
     plt.figure()
     plt.imshow(scaled_B1_map[:,:,50])
     plt.colorbar()
-    #plt.show()
+    plt.show()
     #sys.exit()
 
     Console.printf("info", f"Scaled B1 Map: min={np.min(scaled_B1_map)}, max={np.max(scaled_B1_map)}")
