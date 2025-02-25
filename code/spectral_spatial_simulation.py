@@ -701,52 +701,6 @@ class LookupTableWET:
 
         return attenuation
 
-###    def create(self):
-###
-###        start_time = time.time()
-###
-###        Console.printf(
-###            "info",
-###            f"Start creating the Lookup Table for WET (water suppression enhanced through T1 effects)"
-###            f"\n => Axis 1: B1 scale | Resolution: {self._B1_scales_step_size:>6.3f} | Range: {self._B1_scales_lower_border:>6.3f}:{self._B1_scales_upper_border:>6.3f}"
-###            f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
-###        )
-###
-###        # Build 2D grids for B1 and T1. Note that for T1, our lookup table uses T1/TR as the coordinate,
-###        # so we convert to T1 values when computing.
-###        #B1 = self.B1_scales_effective_values
-###        #T1 = self.T1_values  # These are the raw T1 values
-###
-###        # Create meshgrids with matching shapes.
-###        B1_grid, T1_grid = np.meshgrid(self.B1_scales_effective_values, self.T1_values, indexing="ij")
-###
-###        # Define a helper function that wraps the scalar attenuation computation.
-###        def compute_one_attenuation(T1_val, B1_val):
-###            result = self._compute_one_attenuation_value(T1=T1_val, B1_scale=B1_val)
-###            # Optionally, check for NaN here and raise an error.
-###            if np.isnan(result):
-###                raise ValueError("NaN value occurred in attenuation computation.")
-###            return result
-###
-###        # Use xarray.apply_ufunc to apply the function over the grids.
-###        # We set vectorize=True so that compute_att is applied elementwise.
-###        attenuation_values = xr.apply_ufunc(
-###            compute_one_attenuation,
-###            xr.DataArray(T1_grid, dims=["B1", "T1"]),
-###            xr.DataArray(B1_grid, dims=["B1", "T1"]),
-###            vectorize=True,
-###            dask="parallelized",  # Optional: allows parallelization if using dask.
-###            output_dtypes=[float]
-###        )
-###
-###        # Update the simulated_data xarray.
-###        # Note that our xarray simulated_data uses coordinates:
-###        #   "B1_scale_effective" (from B1) and "T1_over_TR" (which is T1/TR).
-###        # We need to update simulated_data accordingly:
-###        self.simulated_data.data = attenuation_values.data
-###
-###        # Optionally, if you wish to verify the total number of computed entries:
-###        Console.printf("success", f"Created WET lookup table with {self.simulated_data.size} entries. Took: {time.time() - start_time:.2f} sec")
 
     def create(self):
         """
@@ -1056,40 +1010,38 @@ if __name__ == '__main__':
     loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1").load_file()
     loaded_B1_map_shape = loaded_B1_map.loaded_maps.shape
 
-    import matplotlib.pyplot as plt
-
-    #loaded_GM_map = file.Maps(configurator=configurator,map_type_name="GM_segmentation").load_file()
-    #loaded_GM_map.loaded_maps = (loaded_GM_map.loaded_maps > 0.7).astype(int)
-    #data = loaded_GM_map.loaded_maps[:, :, 50]
-    #plt.hist(loaded_GM_map.loaded_maps.ravel(), bins=50, color='skyblue', edgecolor='black')
-    #plt.imshow(loaded_GM_map.loaded_maps[:, :, 50])
-    #plt.colorbar()
-    #plt.show()
 
     loaded_GM_map = file.Maps(configurator=configurator, map_type_name="GM_segmentation").load_file()
     loaded_WM_map = file.Maps(configurator=configurator, map_type_name="WM_segmentation").load_file()
     loaded_CSF_map = file.Maps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
 
-    threshold_binary = 0.7
+    #threshold_binary = 0.7
     show_axial_slice = 70
-
-    loaded_GM_map.loaded_maps = (loaded_GM_map.loaded_maps > threshold_binary).astype(int)
-    loaded_WM_map.loaded_maps = (loaded_WM_map.loaded_maps > threshold_binary).astype(int)
-    loaded_CSF_map.loaded_maps = (loaded_CSF_map.loaded_maps > threshold_binary).astype(int)
+    #loaded_GM_map.loaded_maps = (loaded_GM_map.loaded_maps > threshold_binary).astype(int)
+    #loaded_WM_map.loaded_maps = (loaded_WM_map.loaded_maps > threshold_binary).astype(int)
+    #loaded_CSF_map.loaded_maps = (loaded_CSF_map.loaded_maps > threshold_binary).astype(int)
 
     loaded_GM_map = loaded_GM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
     loaded_WM_map = loaded_WM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
     loaded_CSF_map = loaded_CSF_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
 
-    fig, axs = plt.subplots(nrows=1, ncols=3)
-    axs[0].set_title("WM map (axial slice 50)")
-    axs[1].set_title("GM map (axial slice 50)")
-    axs[2].set_title("CSF map (axial slice 50)")
+    plt.figure()
+    fig, axs = plt.subplots(nrows=1, ncols=4)
+    axs[0].set_title(f"WM map (axial slice {show_axial_slice})")
+    axs[1].set_title(f"GM map (axial slice {show_axial_slice})")
+    axs[2].set_title(f"CSF map (axial slice {show_axial_slice})")
+    axs[3].set_title(f"WM+GM+CSF map (axial slice {show_axial_slice})")
 
-    axs[0].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice])
-    axs[1].imshow(loaded_GM_map.loaded_maps[:, :, show_axial_slice])
-    axs[2].imshow(loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
-    plt.show()
+    img0 = axs[0].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice])
+    img1 = axs[1].imshow(loaded_GM_map.loaded_maps[:, :, show_axial_slice])
+    img2 = axs[2].imshow(loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
+    img3 = axs[3].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice] + loaded_GM_map.loaded_maps[:, :, show_axial_slice] + loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
+
+    fig.colorbar(img0, ax=axs[0])
+    fig.colorbar(img1, ax=axs[1])
+    fig.colorbar(img2, ax=axs[2])
+    fig.colorbar(img3, ax=axs[3])
+    #plt.show()
 
     TR=600
     lookup_table_WET_test = LookupTableWET(T1_range=[300, 5000],
@@ -1116,9 +1068,10 @@ if __name__ == '__main__':
     scaled_B1_map = loaded_B1_map.loaded_maps / 39.0
     scaled_B1_map[scaled_B1_map < 0] = 0.001
 
+    plt.figure()
     plt.imshow(scaled_B1_map[:,:,50])
     plt.colorbar()
-    plt.show()
+    #plt.show()
     #sys.exit()
 
     Console.printf("info", f"Scaled B1 Map: min={np.min(scaled_B1_map)}, max={np.max(scaled_B1_map)}")
@@ -1138,541 +1091,70 @@ if __name__ == '__main__':
     T1_over_TR_WM_map = loaded_WM_map.loaded_maps * (T1_WM/TR)
     T1_over_TR_CSF_map = loaded_CSF_map.loaded_maps * (T1_CSF/TR)
 
+    print(f"GM min: {np.min(T1_over_TR_GM_map)}; max: {np.max(T1_over_TR_GM_map)}")
+    print(f"WM min: {np.min(T1_over_TR_WM_map)}; max: {np.max(T1_over_TR_WM_map)}")
+    print(f"CSF min: {np.min(T1_over_TR_CSF_map)}; max: {np.max(T1_over_TR_CSF_map)}")
+    #sys.exit()
+
     #print(np.min(scaled_B1_map.flatten()), np.max(scaled_B1_map.flatten()))
     #print(np.full_like(scaled_B1_map, 1).flatten()))
-    lookup_table_WET_test.simulated_data.set_interpolation_method(method="nearest")
-    result = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=np.full_like(scaled_B1_map, 1))
-    result = result.to_numpy()
+    lookup_table_WET_test.simulated_data.set_interpolation_method(method="linear")
 
-    import matplotlib.pyplot as plt
-    plt.figure()
-    plt.subplot(1,3,1)
-    plt.imshow(result[:, :, 90])
-    plt.subplot(1, 3, 2)
-    plt.imshow(result[:, 90, :])
-    plt.subplot(1, 3, 3)
-    plt.imshow(result[50, :, :])
+    result_GM = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_GM_map)
+    result_WM = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_WM_map)
+    result_CSF = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_CSF_map)
+
+
+    plt.figure(1)
+    plt.title("GM Attenuation Map")
+    plt.subplot(2, 3, 1)
+    plt.imshow(result_GM[:, :, 50])
+    plt.subplot(2, 3, 2)
+    plt.imshow(np.rot90(result_GM[:, 90, :]))
+    plt.subplot(2, 3, 3)
+    plt.imshow(np.rot90(result_GM[90, :, :]))
+    plt.colorbar()
+    plt.subplot(2, 3, 4)
+    plt.imshow(np.log2(result_GM[:, :, 50]+0.1))
+    plt.subplot(2, 3, 5)
+    plt.imshow(np.log2(np.rot90(np.abs(result_GM[:, 90, :]+0.1))))
+    plt.subplot(2, 3, 6)
+    plt.imshow(np.log2(np.rot90(result_GM[90, :, :]+0.1)))
+    plt.colorbar()
+
+
+    plt.figure(2)
+    plt.title("WM Attenuation Map")
+    plt.subplot(2, 3, 1)
+    plt.imshow(result_WM[:, :, 50])
+    plt.subplot(2, 3, 2)
+    plt.imshow(np.rot90(result_WM[:, 90, :]))
+    plt.subplot(2, 3, 3)
+    plt.imshow(np.rot90(result_WM[90, :, :]))
+    plt.colorbar()
+    plt.subplot(2, 3, 4)
+    plt.imshow(np.log2(result_WM[:, :, 50]+0.1))
+    plt.subplot(2, 3, 5)
+    plt.imshow(np.log2(np.rot90(np.abs(result_WM[:, 90, :]+0.1))))
+    plt.subplot(2, 3, 6)
+    plt.imshow(np.log2(np.rot90(result_WM[90, :, :]+0.1)))
+    plt.colorbar()
+
+
+    plt.figure(3)
+    plt.title("CSF Attenuation Map")
+    plt.subplot(2, 3, 1)
+    plt.imshow(result_CSF[:, :, 50])
+    plt.subplot(2, 3, 2)
+    plt.imshow(np.rot90(result_CSF[:, 90, :]))
+    plt.subplot(2, 3, 3)
+    plt.imshow(np.rot90(result_CSF[90, :, :]))
+    plt.colorbar()
+    plt.subplot(2, 3, 4)
+    plt.imshow(np.log2(result_CSF[:, :, 50]+0.1))
+    plt.subplot(2, 3, 5)
+    plt.imshow(np.log2(np.rot90(np.abs(result_CSF[:, 90, :]+0.1))))
+    plt.subplot(2, 3, 6)
+    plt.imshow(np.log2(np.rot90(result_CSF[90, :, :]+0.1)))
+    plt.colorbar()
     plt.show()
-
-    print(result.shape)
-    print("THE END!")
-    sys.exit()
-
-###    desired_B1 = np.linspace(0, 1.5, 100)
-###    T1_over_TR = np.linspace(0, 1.5, 100)
-
-###    Console.printf("info", "START NN TEST, FK YEAH!")
-###    for B1 in tqdm(desired_B1):
-###        for T1_TR in T1_over_TR:
-###            lookup_table_WET_test.simulated_data.sel(B1_scale_effective=B1, T1_over_TR=T1_TR, method="nearest")
-###
-###    Console.start_timer()
-###    # Assume desired_B1 and T1_over_TR are 1D arrays.
-###    result = lookup_table_WET_test.simulated_data.sel(
-###        B1_scale_effective=desired_B1,
-###        T1_over_TR=T1_over_TR,
-###        method="nearest"
-###    )
-###    Console.stop_timer()
-###
-###    print(type(result))
-###    print(len(result))
-###    print(lookup_table_WET_test.simulated_data)
-###    print(lookup_table_WET_test.simulated_data.shape)
-###
-###    #scaled_B1_map
-###    #T1_over_TR_GM_map
-###    volume_shape = scaled_B1_map.shape
-
-
-#   def lookup(b1_value):
-#       # Returns a scalar value for a given B1_scale_effective
-#       return lookup_table_WET_test.simulated_data.sel(
-#           B1_scale_effective=b1_value, T1_over_TR=1, method="nearest"
-#       ).item()
-#
-#
-#   result = xr.apply_ufunc(
-#       lookup,
-#       scaled_B1_map,
-#       vectorize=True  # this makes it operate element-wise
-#   )
-#
-#    for a in tqdm(range(volume_shape[0])):
-#        for b in range(volume_shape[1]):
-#            for c in range(volume_shape[2]):
-#                lookup_table_WET_test.simulated_data.sel(B1_scale_effective=scaled_B1_map[a,b,c], T1_over_TR=1, method="nearest")
-
-
-###    Console.start_timer()
-###    def nearest_lookup(b1, t1):
-###        # This function performs a nearest neighbor lookup for a single pair (b1, t1)
-###        # The .values.item() extracts the scalar value from the resulting DataArray.
-###        return lookup_table_WET_test.simulated_data.sel(
-###            B1_scale_effective=b1,
-###            T1_over_TR=t1,
-###            method="nearest"
-###        ).values.item()
-###
-###    scaled_B1_map = xr.DataArray(scaled_B1_map, dims=["x", "y", "z"])
-###    T1_over_TR_GM_map = xr.DataArray(T1_over_TR_GM_map, dims=["x", "y", "z"])
-###
-###
-###    # Use xr.apply_ufunc to vectorize the lookup.
-###    # The vectorize=True flag applies the function elementwise over the input arrays.
-###    result = xr.apply_ufunc(
-###        nearest_lookup,
-###        scaled_B1_map,  # 3D array of B1 values
-###        T1_over_TR_GM_map,  # 3D array of T1/TR values
-###        vectorize=True,
-###        dask="parallelized",  # Optional, if using dask arrays
-###        output_dtypes=[lookup_table_WET_test.simulated_data.dtype]
-###    )
-###    Console.stop_timer()
-###
-###    sys.exit()
-
-
-
-
-    attenuation_indices_map_GM = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
-                                                                                    T1_over_TR=np.full_like(scaled_B1_map, 1), # T1_over_TR_GM_map,
-                                                                                    device="cpu")
-
-    attenuation_indices_map_WM = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
-                                                                                    T1_over_TR=np.full_like(scaled_B1_map, 1), #T1_over_TR_WM_map,
-                                                                                    device="cpu")
-
-    attenuation_indices_map_CSF = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
-                                                                                     T1_over_TR=np.full_like(scaled_B1_map, 1), #T1_over_TR_CSF_map
-                                                                                     device="cpu")
-
-    attenuation_map = np.full_like(scaled_B1_map, 0)  # (3,x,y,z); 3 just for WM, GM, CSF map
-    attenuation_map = attenuation_map[np.newaxis, ...]
-    attenuation_map = np.repeat(attenuation_map, 3, axis=0)
-
-    for i, indices_map in enumerate([attenuation_indices_map_GM, attenuation_indices_map_WM, attenuation_indices_map_CSF]):
-        x_shape, y_shape, z_shape = indices_map.shape[1], indices_map.shape[2], indices_map.shape[3]
-
-        for x in tqdm(range(x_shape-1)):
-            for y in range(y_shape-1):
-                for z in range(z_shape-1):
-                    nearest_B1_scale = indices_map[0,x,y,z]
-                    nearest_T1_over_TR = indices_map[1,x,y,z]
-
-                    attenuation_value = lookup_table_WET_test.simulated_data.loc[int(nearest_B1_scale), int(nearest_T1_over_TR)]
-                    if np.isnan(attenuation_value):
-                        print("Value is NaN")
-
-                    attenuation_map[i, x, y, z] = attenuation_value
-
-
-    """
-    Plot section!
-    """
-    tissue_labels = ['GM Attenuation', 'WM Attenuation', 'CSF Attenuation']
-
-    # Indices for the cross-sectional slices
-    x_index = 90  # for the x cross-section
-    y_index = 90  # for the y cross-section
-    z_index = 55  # for the z cross-section
-
-    # Create a 3x3 subplot grid
-    fig, axes = plt.subplots(3, 3, figsize=(12, 12))
-
-    for i in range(3):
-        # Plot x cross-section: fix x index (slice along y and z)
-        ax = axes[i, 0]
-        img_x = attenuation_map[i, x_index, :, :]
-        im = ax.imshow(img_x)#, cmap='viridis', origin='lower')
-        ax.set_title(f'x = {x_index}')
-        # Label the first column with the tissue type
-        ax.set_ylabel(tissue_labels[i])
-        fig.colorbar(im, ax=ax)
-
-        # Plot y cross-section: fix y index (slice along x and z)
-        ax = axes[i, 1]
-        img_y = attenuation_map[i, :, y_index, :]
-        im = ax.imshow(img_y)#, cmap='viridis', origin='lower')
-        ax.set_title(f'y = {y_index}')
-        fig.colorbar(im, ax=ax)
-
-        # Plot z cross-section: fix z index (slice along x and y)
-        ax = axes[i, 2]
-        img_z = attenuation_map[i, :, :, z_index]
-        im = ax.imshow(img_z)#, cmap='viridis', origin='lower')
-        ax.set_title(f'z = {z_index}')
-        fig.colorbar(im, ax=ax)
-
-    plt.tight_layout()
-    plt.show()
-
-    # Plot histogram for the entire attenuation_map (flattened)
-    fig_hist, ax_hist = plt.subplots(figsize=(10, 6))
-    ax_hist.hist(attenuation_map.flatten(), bins=50, color='blue')
-    ax_hist.set_title('Histogram for Whole Attenuation Map')
-    ax_hist.set_xlabel('Attenuation Value')
-    ax_hist.set_ylabel('Frequency')
-    plt.show()
-
-
-    print("FIN FIN FIN FIN")
-    sys.exit()
-
-
-
-    attenuation_indices_map = lookup_table_WET_test._find_nearest_available_keys(B1_scale=scaled_B1_map,
-                                                                                 T1_over_TR=np.full_like(scaled_B1_map, 4.6),
-                                                                                 device="cpu")
-
-
-    print(np.sum(np.isnan(np.array(lookup_table_WET_test.simulated_data))))
-
-    input("????")
-
-    attenuation_map = np.full_like(scaled_B1_map, 0)
-
-    for x in tqdm(range(attenuation_indices_map.shape[1])):
-        for y in range(attenuation_indices_map.shape[2]):
-            for z in range(attenuation_indices_map.shape[3]):
-                nearest_B1_scale = attenuation_indices_map[0,x,y,z]
-                nearest_T1_over_TR = attenuation_indices_map[1,x,y,z]
-
-                attenuation_value = lookup_table_WET_test.simulated_data.loc[nearest_B1_scale, nearest_T1_over_TR]
-                if np.isnan(attenuation_value):
-                    print("Value is NaN")
-
-                attenuation_map[x, y, z] = attenuation_value
-
-
-    # Count nans and infs
-    num_nans = np.isnan(attenuation_map).sum()
-    num_pos_inf = np.isposinf(attenuation_map).sum()
-    num_neg_inf = np.isneginf(attenuation_map).sum()
-
-    # Print results
-    print("-----------------------------------------------")
-    print(f"Number of NaNs: {num_nans}")
-    print(f"Number of +Inf values: {num_pos_inf}")
-    print(f"Number of -Inf values: {num_neg_inf}")
-    print("-----------------------------------------------")
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    # Define the slice index (adjust as needed)
-    slice_index = 90
-    slice_index_2 = 50
-
-    # Compute log attenuation (avoid log(0) issues)
-    log_attenuation_map = np.log(np.clip(attenuation_map, a_min=1e-10, a_max=None))  # Avoid log(0) errors
-
-    # Create figure with 3 rows (scaled_B1_map, attenuation_map, log_attenuation_map) and 3 columns (views)
-    fig, axes = plt.subplots(nrows=3, ncols=3, figsize=(12, 12))
-
-    # Titles for the different views
-    view_titles = ["Axial ([:,:,100])", "Coronal (:,100,:)", "Sagittal (100,:,:)", ]
-    row_titles = ["Scaled B1 Map", "Attenuation Map", "Log Attenuation Map"]
-
-    loaded_B1_map_neg = loaded_B1_map.loaded_maps < 0
-
-    # count the number of negative values
-
-    print(len(loaded_B1_map_neg == 1))
-    input("=====")
-    # Data sources (now three datasets)
-    data_sources = [
-        loaded_B1_map_neg,  # Row 1: Scaled B1 Map
-        attenuation_map,  # Row 2: Attenuation Map
-        log_attenuation_map  # Row 3: Log-Attenuation Map
-    ]
-
-    # Slice indices
-    slices = [slice_index, slice_index_2, slice_index]
-
-    # Loop over rows (datasets) and columns (views)
-    for row in range(3):  # Now three rows
-        for col in range(3):
-            # Extract the current dataset
-            data = data_sources[row]
-
-            # Select the appropriate cross-section
-            if col == 0:
-                img_data = data[:, :, slices[row]]  # Axial
-            elif col == 1:
-                img_data = data[:, slices[row], :]  # Coronal
-            else:
-                img_data = data[slices[row], :, :]  # Sagittal
-
-            # Plot the image with its own independent scaling
-            im = axes[row, col].imshow(img_data, cmap='viridis', vmin=np.min(img_data), vmax=np.max(img_data))
-
-            # Add a floating colorbar for this specific plot
-            cax = axes[row, col].inset_axes([1.05, 0.1, 0.05, 0.8])  # Place colorbar outside the plot
-            fig.colorbar(im, cax=cax, orientation='vertical')
-
-            # Add title
-            axes[row, col].set_title(f"{row_titles[row]} - {view_titles[col]}")
-
-    # Adjust layout for better appearance
-    plt.tight_layout()
-    plt.show()
-
-    # --- Separate Figure: Histogram of Attenuation Map ---
-
-    # Flatten attenuation map and compute optimal bin count
-    flattened_values = attenuation_map.flatten()
-    #num_bins = int(np.sqrt(len(flattened_values)))  # n = sqrt(len(all values))
-
-    # Create a new figure for histogram
-    plt.figure(figsize=(8, 6))
-    plt.hist(flattened_values, color='blue', alpha=0.7, edgecolor='black')#, bins=num_bins)
-
-    # Add labels and title
-    plt.xlabel("Attenuation Value")
-    plt.ylabel("Frequency")
-    plt.title("Histogram of Flattened Attenuation Map")
-    plt.grid(True, linestyle="--", alpha=0.6)
-
-    # Show the histogram
-    plt.show()
-
-    sys.exit()
-
-
-
-
-
-    # TODO: Iterate trough the whole values and assemble map!
-    # TODO: for x, z, z
-    attenuation_map = np.full_like(scaled_B1_map, 0)
-
-    for x in tqdm(range(attenuation_indices_map.shape[1])):
-        for y in range(attenuation_indices_map.shape[2]):
-            for z in range(attenuation_indices_map.shape[3]):
-                nearest_B1_scale = attenuation_indices_map[0,x,y,z]
-                nearest_T1_over_TR = attenuation_indices_map[1,x,y,z]
-
-                attenuation_map[x, y, z] = lookup_table_WET_test.simulated_data.loc[nearest_B1_scale, nearest_T1_over_TR]
-
-    plt.imshow(attenuation_map[:,100,:])
-    plt.show()
-
-
-
-
-    # [row/col, x,y,z] --> get now values from LookUpTable!
-
-    sys.exit()
-
-    # ACCELERATION
-
-    device = "dask"
-
-    if device == "dask":
-
-        cluster = tools.MyLocalCluster()
-        cluster.start_cpu(number_workers=20, threads_per_worker=2)
-        #cluster.start_cuda(device_numbers=[1], device_memory_limit="20GB", use_rmm_cupy_allocator=False)
-
-        #scaled_B1_map = scaled_B1_map[0:50,0:50,0:50]
-        print(f"(!) New shape (CHANGE BACK): {scaled_B1_map.shape}")
-
-        scaled_B1_map_dask = da.from_array(scaled_B1_map, chunks=(10,10,10))
-        #print(scaled_B1_map_dask[0].compute())
-        print("Chunks:", scaled_B1_map_dask.chunks)
-
-        B1_scales_effective_values, T1_values, TR = (lookup_table_WET_test.B1_scales_effective_values,
-                                                     lookup_table_WET_test.T1_values,
-                                                     lookup_table_WET_test.TR)
-
-###        attenuation_map = da.map_blocks(LookupTableWET.get_entry3,
-###                                        scaled_B1_map_dask,
-###                                        2.1,
-###
-###                                        B1_scales_effective_values,
-###                                        T1_values,
-###                                        TR,
-###
-###                                        "nearest",
-###                                        "cpu",
-###                                        dtype=scaled_B1_map_dask.dtype,
-###                                        chunks=(20, 20, 20))
-
-        attenuation_map = da.map_blocks(lookup_table_WET_test.get_entry4,
-                                        scaled_B1_map_dask,
-                                        np.full(1000, 2.1), # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                                        "nearest",
-                                        "cpu",
-                                        dtype=scaled_B1_map_dask.dtype)
-
-        ### scaled_B1_map_dask.map_blocks(lookup_table_WET_test.get_entry2,
-        ###                               T1_over_TR=2.1,
-        ###                               interpolation_type="nearest",
-        ###                               device="cpu",
-        ###                               dtype=scaled_B1_map_dask.dtype)
-
-
-        attenuation_map.compute()
-        #print(attenuation_map.shape)
-        #plt.imshow(attenuation_map[:,90,:])
-        #plt.show()
-
-        #volume_metabolite = da.map_blocks(Model._transform_T2,
-        #                                  xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
-        #                                  volume_with_mask,
-        #                                  time_vector,
-        #                                  TE,
-        #                                  metabolic_map_t2,
-        #                                  dtype=dtype)
-
-
-
-    if device == "X_GPU":
-    # FIRST, SIMPLE SOLUTION WITH ONLY GPU BUT NO DASK ACCELERATION:
-        #print(np.min(scaled_B1_map))
-        #print(np.max(scaled_B1_map))
-        #sys.exit()
-        scaled_B1_map_gpu = cp.asarray(scaled_B1_map)
-
-        total = np.prod(shape_B1_map)  # Total number of iterations
-        progress_bar = tqdm(total=float(total), desc="Processing voxels", ncols=100, bar_format='{l_bar}{bar:50}{r_bar}')
-        for x in range(shape_B1_map[0]):
-            for y in range(shape_B1_map[1]):
-                for z in range(shape_B1_map[2]):
-                    k = loaded_B1_map.loaded_maps[x,y,z]
-                    progress_bar.update(1)
-                    X = lookup_table_WET_test.get_entry2(B1_scale=scaled_B1_map[x,y,z], T1_over_TR=2.1, interpolation_type="nearest", device = "cuda")
-        progress_bar.close()
-
-    if device == "GPU":
-        from dask_cuda import LocalCUDACluster
-        from dask.distributed import Client
-        from dask import delayed
-        import cupy as cp
-        import os
-
-        # Start timing
-        Console.start_timer()
-
-        # Create a GPU cluster using available GPUs.
-        cluster = LocalCUDACluster()
-        client = Client(cluster)
-        print("Dashboard available at:", client.dashboard_link)
-
-        # Transfer your data (e.g., scaled_B1_map) from NumPy to GPU (CuPy).
-        scaled_B1_map_gpu = cp.asarray(scaled_B1_map)
-
-
-        # Define a delayed function that processes a chunk on the GPU.
-        @delayed
-        def process_chunk_gpu(x0, x1, y0, y1, z0, z1):
-            # Slice the chunk from the GPU array.
-            chunk = scaled_B1_map_gpu[x0:x1, y0:y1, z0:z1] # TODO TODO TODO ==> use for creating "chunk" dask?
-
-            # Perform the GPU-accelerated lookup.
-            # (Make sure that lookup_table_WET_test.get_entry is implemented to work with CuPy arrays.)
-            results_chunk = lookup_table_WET_test.get_entry2(
-                B1_scale=chunk,
-                T1_over_TR=2.1,
-                interpolation_type="nearest",
-                device="cuda"
-            )
-            # Optionally, convert the result back to a NumPy array.
-            return cp.asnumpy(results_chunk)
-
-
-        # Parameters (replace with your actual shape, e.g., (180, 180, 180)).
-        nx, ny, nz = shape_B1_map
-        chunk_size = 200  # Adjust based on your workload and GPU memory
-
-        # Create tasks for each chunk.
-        tasks = []
-        for x0 in range(0, nx, chunk_size):
-            for y0 in range(0, ny, chunk_size):
-                for z0 in range(0, nz, chunk_size):
-                    x1 = min(x0 + chunk_size, nx)
-                    y1 = min(y0 + chunk_size, ny)
-                    z1 = min(z0 + chunk_size, nz)
-                    tasks.append(process_chunk_gpu(x0, x1, y0, y1, z0, z1))
-
-        # Submit tasks to the cluster and gather results.
-        futures = client.compute(tasks)
-        chunk_results = client.gather(futures)
-
-        print(type(chunk_results[0]))
-
-        # Optionally, flatten the list of lists.
-        results = [item for sublist in chunk_results for item in sublist]
-
-        # Stop timing
-        Console.stop_timer()
-
-
-    elif device == "CPU":
-        Console.start_timer()
-
-        #2 ACCELERATED VERSION:
-        from dask.distributed import Client
-        from dask import delayed
-
-        # Create a Dask client (adjust the number of workers/threads as needed)
-        n_workers = os.cpu_count()
-        client = Client(n_workers=n_workers, threads_per_worker=1, processes=True) # 4,2; 16,1 also work great!
-        print("Dashboard available at:", client.dashboard_link)
-
-
-        ### # Define a delayed function that processes a chunk of voxels.
-        ### @delayed
-        ### def process_chunk(x0, x1, y0, y1, z0, z1):
-        ###     chunk_results = []
-        ###     for x in range(x0, x1):
-        ###         for y in range(y0, y1):
-        ###             for z in range(z0, z1):
-        ###                 res = lookup_table_WET_test.get_entry2(
-        ###                     B1_scale=scaled_B1_map[x, y, z],
-        ###                     T1_over_TR=2.1,
-        ###                     interpolation_type="nearest"
-        ###                 )
-        ###                 chunk_results.append(res)
-        ###     return chunk_results
-        @delayed
-        def process_chunk_cpu(x0, x1, y0, y1, z0, z1):
-            # Slice the chunk from the GPU array.
-            chunk = scaled_B1_map[x0:x1, y0:y1, z0:z1] # TODO TODO TODO ==> use for creating "chunk" dask?
-            # Perform the GPU-accelerated lookup.
-            # (Make sure that lookup_table_WET_test.get_entry is implemented to work with CuPy arrays.)
-            results_chunk = lookup_table_WET_test.get_entry2(
-                B1_scale=chunk,
-                T1_over_TR=2.1,
-                interpolation_type="nearest",
-                device="cpu"
-            )
-            # Optionally, convert the result back to a NumPy array.
-            return results_chunk
-
-
-        # Parameters (replace with your actual shape)
-        nx, ny, nz = shape_B1_map  # e.g., (180, 180, 180)
-        chunk_size = 20  # Adjust the chunk size based on your workload
-
-        # Create a list of tasks, one for each chunk.
-        tasks = []
-        for x0 in range(0, nx, chunk_size):
-            for y0 in range(0, ny, chunk_size):
-                for z0 in range(0, nz, chunk_size):
-                    # Define the end indices (making sure we don't exceed the array bounds)
-                    x1 = min(x0 + chunk_size, nx)
-                    y1 = min(y0 + chunk_size, ny)
-                    z1 = min(z0 + chunk_size, nz)
-                    tasks.append(process_chunk_cpu(x0, x1, y0, y1, z0, z1))
-
-        # Submit the tasks to the Dask cluster
-        futures = client.compute(tasks)
-        # Gather the results (each chunk returns a list of voxel results)
-        chunk_results = client.gather(futures)
-
-        # Flatten the list of lists if needed
-        results = [item for sublist in chunk_results for item in sublist]
-
-        Console.stop_timer()

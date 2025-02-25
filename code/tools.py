@@ -21,6 +21,216 @@ import dask.array as da
 import math
 import pint
 
+import numpy as np
+import cupy as cp
+
+class NamedAxesArray_NEW:
+    """
+    TODO: Might have an issue
+    An array that builds on NumPy and CuPy and inherits its functionalities.
+    The main extensions are:
+        * Use labelled Axes: E.g., Axis1, Axis2 ... AxisN or X, Y, Z. Not restricted to 3D.
+        * Ability to interpolate between values using get_value().
+          Example: For a 3D array, you can query get_value(X=1.5, Y=1.3, Z=2.1).
+        * No extrapolation; values outside the axis range cause an error.
+
+    """
+
+    def __init__(self, input_array: np.ndarray | cp.ndarray, axis_values, device="cpu"):
+        """
+        Initialize with NumPy or CuPy depending on `device` argument.
+        """
+        if not isinstance(input_array, (np.ndarray, cp.ndarray)):
+            raise TypeError(f"Input array must be numpy.ndarray or cupy.ndarray, got {type(input_array)}")
+
+        if device not in ["cpu", "gpu"]:
+            raise ValueError(f"'device' must be 'cpu' or 'gpu', got {device}")
+
+        self.device = device
+        self.xp = self._get_backend()
+        self.BaseArray = self._create_base_array_class(self.xp)
+        self.array = self.BaseArray(input_array, axis_values, self.xp)
+
+    def _get_backend(self):
+        """Returns NumPy or CuPy as the backend."""
+        return cp if self.device == "gpu" else np
+
+    def _create_base_array_class(self, xp):
+        """
+        Dynamically defines BaseArray with NumPy or CuPy.
+        """
+        class BaseArray(xp.ndarray):
+            """
+            Custom array class with named axes and interpolation.
+            """
+
+            def __new__(cls, input_array, axis_values, xp):
+                # Create a raw mutable array (plain xp array)
+                raw = xp.asarray(input_array).copy()
+
+                # Create the subclass view
+                obj = raw.view(cls)
+
+                # Store the axis metadata and interpolation settings
+                obj.axis_values = {axis: xp.array(values) for axis, values in axis_values.items()}
+                obj.interpolation_method = "linear"
+                obj.xp = xp
+
+                # Instead of self-referencing, store 'raw' in base_array
+                # so we do not create an infinite reference cycle.
+                obj.base_array = raw
+
+                return obj
+
+            def __array_finalize__(self, obj):
+                """Ensure attributes persist when slicing."""
+                if obj is None:
+                    return
+                self.axis_values = getattr(obj, 'axis_values', None)
+                self.interpolation_method = getattr(obj, 'interpolation_method', "linear")
+                self.xp = getattr(obj, 'xp', None)
+                # Retain reference to the original raw array if present
+                self.base_array = getattr(obj, 'base_array', None)
+
+            def __array_wrap__(self, out_arr, context=None):
+                """Ensure that operations return BaseArray instead of plain NumPy/CuPy array."""
+                return np.ndarray.__array_wrap__(self, out_arr, context)
+
+            def __setitem__(self, index, value):
+                """Support normal NumPy/CuPy-style item assignment."""
+                # Write directly into the underlying raw array
+                self.base_array[index] = value
+
+            def get_value(self, **axis_values):
+                """Get interpolated value using axis labels."""
+                if set(axis_values.keys()) != set(self.axis_values.keys()):
+                    raise ValueError(f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
+
+                # Build 'points' = list of 1D coordinate arrays along each axis
+                points = [self.axis_values[axis] for axis in self.axis_values.keys()]
+                # Build 'query_points' = M x N array of coordinate sets
+                # Here, N = number of axes, M = number of query points
+                query_points = self.xp.array([axis_values[axis] for axis in self.axis_values.keys()]).T
+
+                # Use the correct interpolation function based on backend
+                if self.xp.__name__ == "cupy":
+                    from cupyx.scipy.interpolate import interpn
+                else:
+                    from scipy.interpolate import interpn
+
+                interpolated_values = interpn(
+                    points,
+                    self,  # 'self' is our nD data
+                    query_points,
+                    method=self.interpolation_method
+                )
+
+                if interpolated_values.size > 1:
+                    return interpolated_values
+                else:
+                    return interpolated_values.item()
+
+            def set_value(self, value, **axis_values):
+                """
+                Set a value using axis labels.
+
+                Example:
+                  .set_value(value=10, X=1, Y=1, Z=1)
+                """
+                if set(axis_values.keys()) != set(self.axis_values.keys()):
+                    raise ValueError(f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
+
+                # Convert axis labels to zero-based indices
+                indices = tuple(
+                    int(self.xp.where(self.axis_values[axis] == axis_values[axis])[0][0])
+                    for axis in self.axis_values.keys()
+                )
+                # Write to the underlying raw array
+                self.base_array[indices] = value
+
+            def set_interpolation_method(self, method="linear"):
+                """Change interpolation method dynamically."""
+                self.interpolation_method = method
+
+            def rename_axes(self, new_names_dict):
+                """
+                Rename axes dynamically.
+                Example: rename_axes({"X": "Frequency", "Y": "Amplitude"})
+                """
+                if not all(axis in self.axis_values for axis in new_names_dict.keys()):
+                    raise ValueError(f"Invalid axis names: {list(new_names_dict.keys())}")
+
+                self.axis_values = {
+                    new_names_dict.get(axis, axis): values
+                    for axis, values in self.axis_values.items()
+                }
+
+            def to_numpy(self):
+                """Convert to a NumPy array on CPU."""
+                if self.xp.__name__ == "cupy":
+                    return cp.asnumpy(self.base_array)
+                else:
+                    # Already NumPy, just return a copy or the underlying array
+                    return self.base_array
+
+            def to_cupy(self):
+                """Convert to a CuPy array on GPU."""
+                return cp.asarray(self.base_array)
+
+            def get_axes_and_values(self):
+                """Return a dictionary of axes and values."""
+                return {axis: self.axis_values[axis].tolist() for axis in self.axis_values.keys()}
+
+            def __repr__(self):
+                """String representation."""
+                backend = "CuPy" if self.xp.__name__ == "cupy" else "NumPy"
+                return (
+                    f"NamedAxesArray(shape={self.shape}, "
+                    f"axes={list(self.axis_values.keys())}, "
+                    f"backend={backend}, interpolation={self.interpolation_method})"
+                )
+
+            def __str__(self):
+                """Custom print output."""
+                axes_info = "\n".join(
+                    [f"  {axis}: {self.axis_values[axis].tolist()}" for axis in self.axis_values.keys()]
+                )
+                backend = "CuPy" if self.xp.__name__ == "cupy" else "NumPy"
+                return (
+                    f"NamedAxesArray (shape={self.shape}, axes={len(self.axis_values)}, "
+                    f"backend={backend}, interpolation={self.interpolation_method})\n"
+                    f"Axes:\n{axes_info}\n"
+                    f"Values:\n{super().__str__()}"
+                )
+
+        return BaseArray  # Return dynamically created class
+
+    def used_device(self):
+        """Returns the used device as string ('cpu' or 'gpu')."""
+        return self.device
+
+    def backend_type(self):
+        """Returns 'CuPy' or 'NumPy' depending on which library is used."""
+        return "CuPy" if self.device == "gpu" else "NumPy"
+
+    def __getattr__(self, name):
+        """Delegate attribute access to the inner BaseArray."""
+        return getattr(self.array, name)
+
+    def __repr__(self):
+        return repr(self.array)
+
+    def __str__(self):
+        return str(self.array)
+
+    def __getitem__(self, item):
+        """Delegate item retrieval to the underlying BaseArray."""
+        return self.array.__getitem__(item)
+
+    def __setitem__(self, key, value):
+        """Delegate item assignment to the underlying BaseArray."""
+        self.array.__setitem__(key, value)
+
 
 class NamedAxesArray:
     """
@@ -29,6 +239,9 @@ class NamedAxesArray:
         * Use labelled Axes: E.g., Axis1, Axis2 ... AxisN or X, Y, Z. Note: It is not restricted to 3D.
         * Be able to interpolate between this values: E.g., for 3D array [1.5, 1.3, 2] = value. The "value" does not exit sice [1.5, 1.3, 2] does not exits. However, with interpolation it is possible to get the desired value.
 
+    NOTE: Extrapolation does not work / is not activated -> thus values outside the given range of the input array yield an error when using the method get_value()
+
+    TODO: GPU does not fully work?
 
     TODO: Check the class again in deep!!!
     """
@@ -87,20 +300,77 @@ class NamedAxesArray:
                 self.base_array.view(np.ndarray)[index] = value  # Modify the original array
 
             def get_value(self, **axis_values):
-                """Get interpolated value using axis labels."""
-                if set(axis_values.keys()) != set(self.axis_values.keys()):
-                    raise ValueError(f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
+                """
+                Get interpolated value using axis labels for any number of dimensions.
 
+                Step-by-step explanation:
+
+                1. Input validation:
+                   - Ensure that the keys provided in axis_values match the expected axes.
+
+                2. Build the grid (points):
+                   - Each axis in self.axis_values provides the coordinate positions along that axis.
+                   - For an ND array, each axis array has a shape corresponding to that dimension.
+                   - The list 'points' is then used by interpn to define the grid.
+
+                3. Construct the query points:
+                   - Each input in axis_values[axis] is expected to be an array with the same shape as the grid,
+                     e.g. (d0, d1, ..., d_{N-1}).
+                   - Stacking them with:
+                         xp.array([axis_values[axis] for axis in self.axis_values.keys()])
+                     produces an array of shape:
+                         (N, d0, d1, ..., d_{N-1})
+                     where N is the number of axes.
+                   - Taking .T (i.e. np.transpose without arguments) reverses the axes:
+                         new shape = (d_{N-1}, d_{N-2}, ..., d0, N)
+                     This last dimension (of size N) now holds the coordinates for each axis, which is the format expected by interpn.
+
+                4. Interpolation:
+                   - Calling interpn with these query points returns an array whose shape corresponds to the query grid,
+                     i.e. (d_{N-1}, d_{N-2}, ..., d0).
+
+                5. Restoring the original grid order:
+                   - Our original grid order is (d0, d1, ..., d_{N-1}), but interpn’s output is reversed.
+                   - To restore the original order, we transpose the output by reversing the order of its axes.
+                     For an output array of ndim N, this can be done with:
+                         result.transpose(*range(result.ndim)[::-1])
+
+                6. Return the result:
+                   - If the interpolated result has more than one element, return the full array;
+                     otherwise, return a scalar.
+                """
+                # 1. Validate that the provided axes match the defined axes.
+                if set(axis_values.keys()) != set(self.axis_values.keys()):
+                    raise ValueError(
+                        f"Expected axes: {list(self.axis_values.keys())}, but got {list(axis_values.keys())}")
+
+                # 2. Retrieve coordinate arrays for each axis.
                 points = [self.axis_values[axis] for axis in self.axis_values.keys()]
+
+                # 3. Build the query_points array:
+                #    - Each axis_values[axis] is assumed to have shape (d0, d1, ..., d_{N-1})
+                #    - Stacking results in an array of shape (N, d0, d1, ..., d_{N-1})
+                #    - .T reverses the axes to (d_{N-1}, d_{N-2}, ..., d0, N), which is what interpn expects.
                 query_points = self.xp.array([axis_values[axis] for axis in self.axis_values.keys()]).T
 
-                # Use the correct interpolation function based on backend
+                # 4. Select the appropriate interpolation function based on the backend.
                 if self.xp.__name__ == "cupy":
                     from cupyx.scipy.interpolate import interpn
                 else:
                     from scipy.interpolate import interpn
 
-                interpolated_values = interpn(points, self, query_points, method=self.interpolation_method)
+                # Perform interpolation.
+                # With query_points shaped (d_{N-1}, d_{N-2}, ..., d0, N), the output will have shape (d_{N-1}, d_{N-2}, ..., d0).
+                interpolated_values = interpn(points, self, query_points, method=self.interpolation_method, bounds_error=False, fill_value=None)
+
+                # 5. Restore the original grid order:
+                #    - The current shape is (d_{N-1}, d_{N-2}, ..., d0).
+                #    - We reverse the axes to get (d0, d1, ..., d_{N-1}).
+                #    - For arbitrary dimensions, we generate the reversed order automatically.
+                axes_order = tuple(range(interpolated_values.ndim))[::-1]
+                interpolated_values = interpolated_values.transpose(*axes_order)
+
+                # 6. Return the result (scalar if size==1, or array otherwise).
                 return interpolated_values if interpolated_values.size > 1 else interpolated_values.item()
 
             def set_value(self, value, **axis_values):
