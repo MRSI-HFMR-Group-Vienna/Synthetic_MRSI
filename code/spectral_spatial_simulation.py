@@ -6,29 +6,21 @@ if TYPE_CHECKING:                       #TODO: due to circular import. Maybe sol
 
 from cupyx.scipy.interpolate import interpn as interpn_gpu
 from scipy.interpolate import interpn as interpn_cpu
-from dask.diagnostics import ProgressBar
-from scipy.interpolate import interp1d
+from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 from tools import CustomArray
-from dask.array import Array
 from printer import Console
 import dask.array as da
 import seaborn as sns
 from tqdm import tqdm
-import pandas as pd
 import numpy as np
 # import numba
 # from numba import cuda
 import tools
-import cupy
-import time
 import cupy as cp
 import dask
 import sys
 import os
-
-
-import xarray as xr
 
 
 class FID:
@@ -610,7 +602,7 @@ class LookupTableWET:
                  T1_range: np.ndarray | list = np.ndarray([300, 5000]),                 # e.g., [300, 5000] in ms
                  T1_step_size: float = 50.0,                                            # e.g., 50 ms
                  T2: float = 250,                                                       # e.g., 250
-                 B1_scales_inhomogeneity: np.ndarray | list = np.ndarray([0, 2]),        # e.g., [0, 2]
+                 B1_scales_inhomogeneity: np.ndarray | list = np.ndarray([0, 2]),       # e.g., [0, 2]
                  B1_scales_gauss: np.ndarray | list = np.array([0.01, 1]),              # e.g., [0.01, 1]
                  B1_scales_inhomogeneity_step_size: float = 0.05,                       # e.g., 0.05
                  B1_scales_gauss_step_size: float = 0.05,                               # e.g., 0.05
@@ -618,8 +610,8 @@ class LookupTableWET:
                  TE: float = 0.0,
                  flip_angle_excitation_degree: float = 47.0,
                  flip_angles_WET_degree: np.ndarray | list = np.array([89.2, 83.4, 160.8]),
-                 time_gaps_WET: np.ndarray | list = np.ndarray([30, 30, 30])
-                 ):
+                 time_gaps_WET: np.ndarray | list = np.ndarray([30, 30, 30]),
+                 off_resonance: float = 0):
 
         # A) Fixed input variables for Bloch Simulation
         self.TR = TR
@@ -649,12 +641,12 @@ class LookupTableWET:
 
         # C) Create Bloch Simulation object via fixed input variables
         self.bloch_simulation_WET = LookupTableWET._BlochSimulation(flip_angles=self.flip_angles_WET_rad,
-                                                                    time_gap=self.time_gaps_WET,
+                                                                    time_gaps=self.time_gaps_WET,
                                                                     flip_final_excitation=self.flip_angle_excitation_rad,
                                                                     T2=self.T2,
                                                                     TE1=self.TE,
                                                                     TR=self.TR,
-                                                                    off_resonance=0)
+                                                                    off_resonance=off_resonance)
 
         #D) TODO: Test:
         self.simulated_data = tools.NamedAxesArray(input_array=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
@@ -663,6 +655,11 @@ class LookupTableWET:
                                                        "T1_over_TR": self.T1_values / self.TR
                                                    },
                                                    device="cpu")
+
+
+        # TODO: Delete after test usage!
+        self.negative_with_WET = 0
+        self.negative_without_WET = 0
         ###self.simulated_data = xr.DataArray(
         ###    data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
         ###    coords={
@@ -695,9 +692,8 @@ class LookupTableWET:
         signal_without_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=False)
         signal_with_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=True)
 
-
         with np.errstate(divide='ignore', invalid='ignore'):
-            attenuation = np.divide(signal_with_WET, signal_without_WET)
+            attenuation = np.divide(np.abs(signal_with_WET), np.abs(signal_without_WET))
 
         return attenuation
 
@@ -733,90 +729,7 @@ class LookupTableWET:
                     #self.simulated_data.loc[{"B1_scale_effective": B1_scale, "T1_over_TR": T1 / self.TR}] = value
 
         total_entries = self.simulated_data.size
-        Console.printf("success", f"Created WET lookup table with {total_entries} entries")
-
-
-    def plot(self):
-        """
-        To plot the created lookup table as heatmap.
-        :return: Nothing
-        """
-        T1_over_TR_formatted = [f"{val/self.TR:.2f}" for val in self.T1_values]
-        B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
-
-        plt.figure(figsize=(8, 6))
-        ax = sns.heatmap(self.simulated_data,
-                         annot=False,
-                         cmap='viridis',
-                         robust=True,
-                         xticklabels=T1_over_TR_formatted,
-                         yticklabels=B1_scale_formatted)
-        plt.title('Heatmap of Lookup Table')
-        plt.ylabel('B1 Scale Value')
-        plt.xlabel('T1/TR Value')
-
-        ax.set_xticklabels(ax.get_xticklabels(), fontsize=7)
-        ax.set_yticklabels(ax.get_yticklabels(), fontsize=7)
-
-        plt.tight_layout()
-
-        plt.show()
-
-
-    def _find_nearest_available_keys(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
-        """
-        TODO
-        Get only indices available in lookup table.
-
-        """
-
-        if interpolation_type != "nearest":
-            raise ValueError("Only 'nearest' interpolation is supported at the moment.")
-
-        if device.lower() not in ["cpu", "cuda", "gpu"]:
-            raise ValueError(f"Device must be 'cpu' or 'gpu', but got '{device}'.")
-
-        # Select appropriate NumPy or CuPy
-        xp = np if device == "cpu" else cp
-        interpn = interpn_cpu if device == "cpu" else interpn_gpu
-
-        # Convert lookup tables to array format
-        B1_scales_effective_values = xp.asarray(self.B1_scales_effective_values)
-        T1_values = xp.asarray(self.T1_values)
-        TR = xp.asarray(self.TR)
-
-        # Create 1D grid
-        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
-        x_grid_T1 = xp.arange(len(T1_values))
-
-        # Compute T1/TR values
-        T1_over_TR_values = T1_values / TR
-
-        # Prepare interpolation points
-        xi_B1 = B1_scale.reshape(-1)  # Convert from (1000, 1) to (1000,)
-        xi_T1_over_TR = T1_over_TR.reshape(-1)  # Convert from (1000, 1) to (1000,)
-
-
-        row_key = interpn(points=(B1_scales_effective_values,),
-                          values=x_grid_B1_scales,
-                          xi=xi_B1,
-                          method="nearest",
-                          bounds_error=False,
-                          fill_value=None)
-
-
-        col_key = interpn(points=(T1_over_TR_values,),
-                          values=x_grid_T1,
-                          xi=xi_T1_over_TR,
-                          method="nearest",
-                          bounds_error=False,
-                          fill_value=None)
-
-        # Reshape to original shape
-        row_key = row_key.reshape(B1_scale.shape)
-        col_key = col_key.reshape(T1_over_TR.shape)
-
-        return xp.stack([row_key, col_key], axis=0)
+        Console.printf("success", f"Created WET lookup table with {total_entries} entries. Values Range: [{np.min(self.simulated_data)}, {np.max(self.simulated_data)}]")
 
 
     class _BlochSimulation:
@@ -828,7 +741,7 @@ class LookupTableWET:
         It is designed to store constant simulation parameters as instance attributes.
         """
 
-        def __init__(self, flip_angles, time_gap, flip_final_excitation, T2, TE1, TR, off_resonance):
+        def __init__(self, flip_angles, time_gaps, flip_final_excitation, T2, TE1, TR, off_resonance):
             """
             Initialize the simulation with constant parameters.
 
@@ -841,7 +754,7 @@ class LookupTableWET:
             :param off_resonance: Off-resonance frequency (Hz).
             """
             self.flip_angles = flip_angles
-            self.time_gap = time_gap
+            self.time_gaps = time_gaps
             self.flip_final_excitation = flip_final_excitation
             self.T2 = T2
             self.TE1 = TE1
@@ -861,19 +774,45 @@ class LookupTableWET:
                      a_fp (np.ndarray, 3x3): Rotation and relaxation matrix.
                      b_fp (np.ndarray, 3,): Recovery term added to the magnetization.
             """
+
+            # angle = Δϕ=ωΔt with ω=2πf (and also off resonance); divided by 1000 to get from [ms] ->[s]
             angle = 2.0 * np.pi * off_resonance * time_interval / 1000.0  # radians
-            e1 = np.exp(-time_interval / t1)
-            e2 = np.exp(-time_interval / t2)
+            e1 = np.exp(-time_interval / t1) # Mz(t) = M0 * (1-e^(-t/T1)    # TODO
+            e2 = np.exp(-time_interval / t2) # Mxy(t) = Mxy(0) * e^(-t/T2)  # TODO
 
             decay_matrix = np.array([
-                [e2, 0.0, 0.0],
-                [0.0, e2, 0.0],
-                [0.0, 0.0, e1]
+                [e2, 0.0, 0.0],                   # | Mx |          | e2   0    0 |   | Mx |
+                [0.0, e2, 0.0],                   # | My |      =   | 0    e2   0 | * | My |
+                [0.0, 0.0, e1]                    # | Mz |end       | 0    0   e1 |   | Mz |start
             ], dtype=float)
+
 
             z_rot_matrix = LookupTableWET._BlochSimulation.z_rot(angle)
             a_fp = decay_matrix @ z_rot_matrix
+            # (!) TODO: Because on resonance, nothing happens
+            # if system is "on-resonance" (thus if off-resonance == 0), and since the z_rot (rotation around z-axis):
+            #
+            #                         |cos(Δϕ), -sin(Δϕ),  0|,     when on resonance yields    | 1  0  0 |
+            # z_rot_matrix = Rz(Δϕ) = |sin(Δϕ),  cos(Δϕ),  0|,     ----------------------->    | 0  1  0 |
+            #                         |0,        0,        1|                                  | 0  0  1 |
+            #
+            # ... it yields identity matrix (since cos(0) == 1 and sin(0) == 0). Thus, since decay matrix @ z rot matrix => yields only decay matrix for a_fp
+
             b_fp = np.array([0.0, 0.0, 1.0 - e1], dtype=float)
+            # Mz(Δt) = Mz(0) * e^(−Δt/T1) + M0 * (1−e−Δt/T1) ... with M0 = 1 # TODO
+
+            # a_fp => exponential decay + rotation of the magnetisation vector
+            #          => transverse part   (xy via e2, effect of T2 decay)
+            #          => longitudinal part (z via e1, effect of T1 decay)
+            #
+            # b_fp => for the T1 recovery offset, meaning for pulling the Mz back to its equilibrium. Since main magnetic B0,
+            #         tge equilibrium is in z-plane (M0 = 1).
+            #
+            #                | e2 * cos(Δϕ)  -e2 * sin(Δϕ)    0 |             | 0    |
+            #         a_fp = | e2 * sin(Δϕ)   e2 * cos(Δϕ)    0 |   , b_fp =  | 0    |
+            #                | 0              0              e1 |             | 1-e1 |
+            #
+            # Finally, it can yield: M_new = a_fp * M_old + b_fp or same: M(t+Δt) = a_fp * M(t) + b_fp.
 
             return a_fp, b_fp
 
@@ -923,10 +862,12 @@ class LookupTableWET:
 
             # Check if water suppression should be applied or not. If not, assign just empty list []
             flip_angles = self.flip_angles if with_WET else []
-            time_gap = self.time_gap if with_WET else []
+            time_gaps = self.time_gaps if with_WET else []
 
-            n_wet_pulses = len(time_gap)
-            total_delay = np.sum(time_gap)
+            #print(f"time_gaps: {time_gaps}")
+
+            n_wet_pulses = len(time_gaps)
+            total_delay = np.sum(time_gaps)
 
             # Spoiler matrix: destroys transverse magnetization.
             spoiler_matrix = np.array([
@@ -940,9 +881,20 @@ class LookupTableWET:
             a_exc_to_next_exc = []
             b_exc_to_next_exc = []
 
+            # (!) Only enter this part if WET pulses should be applied, thus if with_WET == True. Else n_wet_pulses == [], thus range(len([])) == 0
             for ii in range(n_wet_pulses):
-                r_flip.append(LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii]))
-                a_fp, b_fp = LookupTableWET._BlochSimulation.free_precess(time_gap[ii], T1, self.T2, self.off_resonance)
+
+                # *) Calculate the flip angle (rotation matrix around y-axis) for each B1 scale * flip angle
+                #    Here the flip angle gets scaled based on the actual RF-Field conditions
+                r_flip.append(LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii])) # TODO: Remove abs
+
+                #if np.any(LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii]) < 0):
+                #    print("LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii]) < 0")
+                #    print(LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii]))
+                #    print(np.abs(LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii])))
+                #    sys.exit()
+
+                a_fp, b_fp = LookupTableWET._BlochSimulation.free_precess(time_gaps[ii], T1, self.T2, self.off_resonance)
                 a_exc_to_next_exc.append(spoiler_matrix @ a_fp)
                 b_exc_to_next_exc.append(b_fp)
 
@@ -950,42 +902,61 @@ class LookupTableWET:
             r_flip_last = LookupTableWET._BlochSimulation.y_rot(B1_scale * self.flip_final_excitation)
 
             # Free precession from final WET pulse to acquisition.
-            a_exc_last_to_acq, b_exc_last_to_acq = LookupTableWET._BlochSimulation.free_precess(self.TE1, T1, self.T2,
-                                                                                                self.off_resonance)
+            a_exc_last_to_acq, b_exc_last_to_acq = LookupTableWET._BlochSimulation.free_precess(self.TE1, T1, self.T2, self.off_resonance)
 
             # Free precession from acquisition to the end of TR.
             a_tr, b_tr = LookupTableWET._BlochSimulation.free_precess(self.TR - self.TE1 - total_delay, T1, self.T2, self.off_resonance)
             a_tr = spoiler_matrix @ a_tr  # Apply spoiler after acquisition.
 
             # Containers for magnetization states.
+            ### print(f"n_wet_pulses: {n_wet_pulses}")
             magnetizations = [None] * ((n_wet_pulses + 1) * 2 + 2)
             magnetizations_fid = [None] * (n_wet_pulses + 1)
 
+            ### print(magnetizations)
+            ### print("~~~~~~~~~~~~")
+            ### print(magnetizations_fid)
+            ### sys.exit()
+
             # Start magnetization along +z.
-            magnetizations[0] = np.array([0.0, 0.0, 1.0], dtype=float)
+            magnetizations[0] = np.array([0.0, 0.0, 1.0], dtype=float) # TODO: x,y,z -> where y stays 0
+
 
             # Iterate multiple times to approach steady state.
             for _ in range(30):
                 idx = 0
+
+                after_wet = False
+
+                #-----------------------------------------------------------------------------
                 for ii in range(n_wet_pulses):
+                    # Take previous magnetisation
                     magnetizations[idx + 1] = r_flip[ii] @ magnetizations[idx]
                     idx += 1
 
+                    after_wet = True
+
+                    # TODO: magnetisation FID?
                     magnetizations_fid[ii] = magnetizations[idx]
 
-                    magnetizations[idx + 1] = (a_exc_to_next_exc[ii] @ magnetizations[idx] +
-                                               b_exc_to_next_exc[ii])
+                    ## To calculate magnetisation afterwards (TODO: after pulse?)
+                    # M_after = a_fp @ M_before + b_fp
+                    magnetizations[idx + 1] = (a_exc_to_next_exc[ii] @ magnetizations[idx] + b_exc_to_next_exc[ii])
                     idx += 1
+                #print(f"magnetizations: {magnetizations}")
+                #sys.exit()
+                #------------------------------------------------------------------------------
 
+                # TODO: Last excitations after WET pulses
                 magnetizations[idx + 1] = r_flip_last @ magnetizations[idx]
                 idx += 1
 
-                magnetizations[idx + 1] = (a_exc_last_to_acq @ magnetizations[idx] +
-                                           b_exc_last_to_acq)
+                magnetizations[idx + 1] = (a_exc_last_to_acq @ magnetizations[idx] + b_exc_last_to_acq)
                 idx += 1
 
                 magnetizations_fid[n_wet_pulses] = magnetizations[idx]
 
+                # TODO: At last free precession. Why?
                 magnetizations[idx + 1] = a_tr @ magnetizations[idx] + b_tr
                 idx += 1
 
@@ -995,54 +966,413 @@ class LookupTableWET:
                 [magnetizations_fid[i][0] for i in range(n_wet_pulses)],
                 dtype=float
             )
+
+
+            ### if after_wet is False:
+            ###     print("with_WET = False:")
+            ###     print(f"magnetizations: {magnetizations}")
+            ###     print(f"magnetizations_fid : {magnetizations_fid}\n")
+            ###     #print(magnetizations_fid[n_wet_pulses])
+            ###     #print(magnetizations_fid[n_wet_pulses][0])
+            ###     #print("lalalalalala")
+            ### elif after_wet:
+            ###     print("with_WET = True:")
+            ###     print(f"magnetizations: {magnetizations}")
+            ###     print(f"magnetizations_fid : {magnetizations_fid}\n")
+            ###     #print(magnetizations_fid[n_wet_pulses])
+            ###     #print(magnetizations_fid[n_wet_pulses][0])
+            ###     sys.exit()
+
             magnetization_fid_last = magnetizations_fid[n_wet_pulses][0]
 
             return magnetization_fid_last, magnetization_fid_rest
 
+###        def compute_signal_after_pulses(self, T1: float, B1_scale: float, with_WET: bool = True) -> tuple:
+###            """
+###            Compute the signal after multiple WET pulses followed by a final excitation pulse.
+###            Only T1 and B1_scale are provided since the other parameters are stored as instance attributes.
+###            Returns a tuple (magnetization_fid_last, magnetization_fid_rest) where:
+###              - magnetization_fid_last (float): x-component of the magnetization at the final echo.
+###              - magnetization_fid_rest (np.ndarray): x-components after each WET pulse.
+###            """
+###
+###            # Use the WET settings if active, otherwise use empty lists.
+###            flip_angles = self.flip_angles if with_WET else []
+###            time_gap = self.time_gap if with_WET else []
+###            n_wet_pulses = len(time_gap)
+###            total_delay = np.sum(time_gap)
+###
+###            # Spoiler matrix: destroys transverse magnetization.
+###            spoiler_matrix = np.array([
+###                [0.0, 0.0, 0.0],
+###                [0.0, 0.0, 0.0],
+###                [0.0, 0.0, 1.0]
+###            ], dtype=float)
+###
+###            # Precompute rotations and free precession for each WET pulse.
+###            r_flip = [LookupTableWET._BlochSimulation.y_rot(B1_scale * flip_angles[ii])
+###                      for ii in range(n_wet_pulses)]
+###            a_exc_to_next_exc = []
+###            b_exc_to_next_exc = []
+###            for ii in range(n_wet_pulses):
+###                a_fp, b_fp = LookupTableWET._BlochSimulation.free_precess(time_gap[ii], T1, self.T2, self.off_resonance)
+###                a_exc_to_next_exc.append(spoiler_matrix @ a_fp)
+###                b_exc_to_next_exc.append(b_fp)
+###
+###            # Final excitation pulse.
+###            r_flip_last = LookupTableWET._BlochSimulation.y_rot(B1_scale * self.flip_final_excitation)
+###            # Free precession from final WET pulse to acquisition.
+###            a_exc_last_to_acq, b_exc_last_to_acq = LookupTableWET._BlochSimulation.free_precess(self.TE1, T1, self.T2,
+###                                                                                                self.off_resonance)
+###            # Free precession from acquisition to the end of TR.
+###            a_tr, b_tr = LookupTableWET._BlochSimulation.free_precess(self.TR - self.TE1 - total_delay, T1, self.T2,
+###                                                                      self.off_resonance)
+###            a_tr = spoiler_matrix @ a_tr
+###
+###            # Initialize the magnetization state along +z.
+###            current = np.array([0.0, 0.0, 1.0], dtype=float)
+###            # We want to store the fiducial (FID) signals.
+###            # Pre-initialize a list of fixed length with -1000 as a sentinel value.
+###            # Each fid signal is a 3-element vector.
+###            fid_signals = [np.full(3, -1000, dtype=float) for _ in range(n_wet_pulses + 1)]
+###
+###            # Iterate a fixed number of times to reach steady state.
+###            # Instead of manual index management, we build the cycle step by step.
+###            for _ in range(30):
+###                cycle_fid = []  # temporary list for the current cycle's fid signals
+###                M = current.copy()  # start this cycle with the current magnetization
+###
+###                # Apply each WET pulse:
+###                for ii in range(n_wet_pulses):
+###                    # 1. RF pulse rotation.
+###                    M = r_flip[ii] @ M
+###                    # Save the signal after the pulse.
+###                    cycle_fid.append(M.copy())
+###                    # 2. Free precession (with spoiling) to the next excitation.
+###                    M = a_exc_to_next_exc[ii] @ M + b_exc_to_next_exc[ii]
+###
+###                # Final excitation pulse.
+###                M = r_flip_last @ M
+###                # Free precession from the final WET pulse to the acquisition.
+###                M = a_exc_last_to_acq @ M + b_exc_last_to_acq
+###                cycle_fid.append(M.copy())
+###                # Free precession from acquisition to the end of TR.
+###                M = a_tr @ M + b_tr
+###                # Update the starting state for the next cycle.
+###                current = M.copy()
+###                # Keep the fid signals from the last cycle.
+###                fid_signals = cycle_fid
+###
+###            # Extract the x-component from each fid signal.
+###            # The last signal corresponds to the final echo.
+###            magnetization_fid_last = fid_signals[-1][0]
+###            # The rest are the signals after each WET pulse.
+###            magnetization_fid_rest = np.array([fid[0] for fid in fid_signals[:-1]], dtype=float)
+###
+###            return magnetization_fid_last, magnetization_fid_rest
+
+    def plot(self):
+        """
+        Plot the lookup table as a heatmap using matplotlib. Negative values
+        are overlaid in red.
+        :return: Nothing
+        """
+        # Format tick labels.
+        T1_over_TR_formatted = [f"{val / self.TR:.2f}" for val in self.T1_values]
+        B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
+
+        # Ensure the simulated data is a numpy array.
+        data = np.array(self.simulated_data)
+
+        # Create a figure and axis.
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Create two masked arrays:
+        pos_data = np.ma.masked_less(data, 0)
+        neg_data = np.ma.masked_greater_equal(data, 0)
+
+        # Plot non-negative values using the viridis colormap.
+        im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
+
+        # Overlay negative values in red.
+        im2 = ax.imshow(neg_data, cmap=ListedColormap(['red']), aspect='auto')
+
+        # Set x and y ticks with custom labels.
+        ax.set_xticks(np.arange(len(T1_over_TR_formatted)))
+        ax.set_xticklabels(T1_over_TR_formatted, fontsize=7, rotation=90, ha='right')
+        ax.set_yticks(np.arange(len(B1_scale_formatted)))
+        ax.set_yticklabels(B1_scale_formatted, fontsize=7)
+
+        # Add a colorbar for the viridis part.
+        cbar = fig.colorbar(im1, ax=ax)
+        cbar.ax.tick_params(labelsize=7)
+
+        # Set axis titles.
+        ax.set_title('Heatmap of Lookup Table')
+        ax.set_xlabel('T1/TR Value')
+        ax.set_ylabel('B1 Scale Value')
+
+        plt.tight_layout()
+        plt.show()
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+
+    def plot_waterfall_interactive(self):
+        import plotly.graph_objects as go
+        """
+        Creates an interactive waterfall plot using Plotly.
+        Each column (signal) of the lookup table is offset to prevent overlap,
+        and segments with negative values are overlaid with a transparent red fill.
+        """
+        # Prepare formatted labels.
+        T1_over_TR_formatted = [f"{val / self.TR:.2f}" for val in self.T1_values]
+        B1_scale_values = np.array(self.B1_scales_effective_values, dtype=float)
+
+        # Convert simulated data to a NumPy array.
+        data = np.array(self.simulated_data)  # shape: (num_y, num_x)
+        num_y, num_x = data.shape
+
+        # Define offsets for waterfall effect.
+        horizontal_offset = 0.1  # shift right per trace
+        vertical_offset = 0.1  # shift upward per trace
+
+        # Create a Plotly figure.
+        fig = go.Figure()
+
+        # Loop over each column (each signal).
+        for i in range(num_x):
+            signal = data[:, i]
+            # Apply offsets.
+            x_vals = B1_scale_values + i * horizontal_offset
+            y_vals = signal + i * vertical_offset
+
+            # Add the main signal trace.
+            fig.add_trace(go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode='lines',
+                name=f"T1/TR: {T1_over_TR_formatted[i]}",
+                line=dict(width=1)
+            ))
+
+            # Identify indices where the original signal is below zero.
+            neg_mask = signal < 0
+            if np.any(neg_mask):
+                # For the negative regions, we create a filled area between the curve and the baseline.
+                x_neg = x_vals[neg_mask]
+                y_neg = y_vals[neg_mask]
+                # The baseline for this trace is the offset level.
+                baseline = np.full_like(x_neg, i * vertical_offset)
+
+                # Create a closed polygon for the fill area.
+                fill_x = np.concatenate([x_neg, x_neg[::-1]])
+                fill_y = np.concatenate([y_neg, baseline[::-1]])
+
+                fig.add_trace(go.Scatter(
+                    x=fill_x,
+                    y=fill_y,
+                    mode='none',
+                    fill='toself',
+                    fillcolor='rgba(255,0,0,0.3)',
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
+
+        # Update the layout for improved aesthetics.
+        fig.update_layout(
+            title='Interactive Waterfall Plot with Negative Value Overlay',
+            xaxis_title='B1 Scale Value (offset applied)',
+            yaxis_title='Signal Amplitude (offset applied)',
+            template='plotly_white'
+        )
+
+        fig.show()
+
+    def plot_waterfall(self):
+        """
+        Plot each column of the lookup table as an offset signal (waterfall plot)
+        and overlay a transparent red fill where the original signal is below 0.
+        Additionally, annotate each curve with its T1/TR value next to the line.
+        """
+        # Format labels.
+        T1_over_TR_formatted = [f"{val / self.TR:.2f}" for val in self.T1_values]
+        B1_scale_values = np.array(self.B1_scales_effective_values, dtype=float)
+
+        # Convert simulated data to a NumPy array (shape: [num_y, num_x]).
+        data = np.array(self.simulated_data)
+        num_y, num_x = data.shape
+
+        # Offsets for the waterfall effect.
+        horizontal_offset = 0.03  # shift in x per signal
+        vertical_offset = 0.1  # shift in y per signal
+
+        plt.figure(figsize=(10, 8))
+
+        for i in range(num_x):
+            # Extract the signal for the i-th column.
+            signal = data[:, i]
+            # Compute the x and y values with offsets.
+            x_vals = B1_scale_values + i * horizontal_offset
+            y_vals = signal + i * vertical_offset
+
+            # Plot the offset signal.
+            plt.plot(x_vals, y_vals, lw=1)
+
+            # Determine the baseline (offset level) for this curve.
+            base_line = i * vertical_offset
+            # Calculate the portion of the original signal (before offset) that is below 0.
+            negative_part = np.where(signal < 0, signal + i * vertical_offset, base_line)
+
+            # Use fill_between to overlay the negative parts.
+            plt.fill_between(x_vals, negative_part, base_line,
+                             where=(signal < 0), color='red', alpha=0.3)
+
+            # Annotate the curve: place the T1/TR label at the end of the curve.
+            # Here, we use the last x and y values, with a slight offset for clarity.
+            plt.text(x_vals[-1] + horizontal_offset,
+                     y_vals[-1],
+                     f"{T1_over_TR_formatted[i]}",
+                     fontsize=7,
+                     verticalalignment='center',
+                     color='black')
+
+        plt.xlabel('B1 Scale Value (with horizontal offset...)')
+        plt.ylabel('Signal Amplitude (with vertical offset...)')
+        plt.title('Waterfall Plot of Lookup Table')
+        plt.tight_layout()
+        plt.show()
+
+    ###   def plot(self):
+###       """
+###       To plot the created lookup table as heatmap.
+###       :return: Nothing
+###       """
+###       T1_over_TR_formatted = [f"{val/self.TR:.2f}" for val in self.T1_values]
+###       B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
+
+###       plt.figure(figsize=(8, 6))
+###       ax = sns.heatmap(self.simulated_data,
+###                        annot=False,
+###                        cmap='viridis',
+###                        robust=True,
+###                        xticklabels=T1_over_TR_formatted,
+###                        yticklabels=B1_scale_formatted)
+###       plt.title('Heatmap of Lookup Table')
+###       plt.ylabel('B1 Scale Value')
+###       plt.xlabel('T1/TR Value')
+
+###       ax.set_xticklabels(ax.get_xticklabels(), fontsize=7)
+###       ax.set_yticklabels(ax.get_yticklabels(), fontsize=7)
+
+###       plt.tight_layout()
+
+###       plt.show()
+
+
+###    def _find_nearest_available_keys(self, B1_scale, T1_over_TR, interpolation_type: str = "nearest", device="cpu"):
+###        """
+###        TODO
+###        Get only indices available in lookup table.
+###
+###        """
+###
+###        if interpolation_type != "nearest":
+###            raise ValueError("Only 'nearest' interpolation is supported at the moment.")
+###
+###        if device.lower() not in ["cpu", "cuda", "gpu"]:
+###            raise ValueError(f"Device must be 'cpu' or 'gpu', but got '{device}'.")
+###
+###        # Select appropriate NumPy or CuPy
+###        xp = np if device == "cpu" else cp
+###        interpn = interpn_cpu if device == "cpu" else interpn_gpu
+###
+###        # Convert lookup tables to array format
+###        B1_scales_effective_values = xp.asarray(self.B1_scales_effective_values)
+###        T1_values = xp.asarray(self.T1_values)
+###        TR = xp.asarray(self.TR)
+###
+###        # Create 1D grid
+###        x_grid_B1_scales = xp.arange(len(B1_scales_effective_values))
+###        x_grid_T1 = xp.arange(len(T1_values))
+###
+###        # Compute T1/TR values
+###        T1_over_TR_values = T1_values / TR
+###
+###        # Prepare interpolation points
+###        xi_B1 = B1_scale.reshape(-1)  # Convert from (1000, 1) to (1000,)
+###        xi_T1_over_TR = T1_over_TR.reshape(-1)  # Convert from (1000, 1) to (1000,)
+###
+###
+###        row_key = interpn(points=(B1_scales_effective_values,),
+###                          values=x_grid_B1_scales,
+###                          xi=xi_B1,
+###                          method="nearest",
+###                          bounds_error=False,
+###                          fill_value=None)
+###
+###
+###        col_key = interpn(points=(T1_over_TR_values,),
+###                          values=x_grid_T1,
+###                          xi=xi_T1_over_TR,
+###                          method="nearest",
+###                          bounds_error=False,
+###                          fill_value=None)
+###
+###        # Reshape to original shape
+###        row_key = row_key.reshape(B1_scale.shape)
+###        col_key = col_key.reshape(T1_over_TR.shape)
+###
+###        return xp.stack([row_key, col_key], axis=0)
+
 
 if __name__ == '__main__':
 
+    # ========================= TO LOAD THE MAPS ANS INTERPOLATE IT ====================================================
     import file
     configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
-                                     file_name="paths_25092024.json")
+                                     file_name="paths_14032025.json")
     configurator.load()
 
     loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1").load_file()
     loaded_B1_map_shape = loaded_B1_map.loaded_maps.shape
+
+    loaded_B0_map = file.Maps(configurator=configurator, map_type_name="B0").load_file()
+    loaded_B0_map = loaded_B0_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
 
 
     loaded_GM_map = file.Maps(configurator=configurator, map_type_name="GM_segmentation").load_file()
     loaded_WM_map = file.Maps(configurator=configurator, map_type_name="WM_segmentation").load_file()
     loaded_CSF_map = file.Maps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
 
-    #threshold_binary = 0.7
-    show_axial_slice = 70
-    #loaded_GM_map.loaded_maps = (loaded_GM_map.loaded_maps > threshold_binary).astype(int)
-    #loaded_WM_map.loaded_maps = (loaded_WM_map.loaded_maps > threshold_binary).astype(int)
-    #loaded_CSF_map.loaded_maps = (loaded_CSF_map.loaded_maps > threshold_binary).astype(int)
+    loaded_GM_map = loaded_GM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
+    loaded_WM_map = loaded_WM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
+    loaded_CSF_map = loaded_CSF_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
+    Console.printf("info", "Interpolated all maps via 'order 1' to B1 map shape")
 
-    loaded_GM_map = loaded_GM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
-    loaded_WM_map = loaded_WM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
-    loaded_CSF_map = loaded_CSF_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=0)
+    # ==================================================================================================================
 
-    plt.figure()
-    fig, axs = plt.subplots(nrows=1, ncols=4)
-    axs[0].set_title(f"WM map (axial slice {show_axial_slice})")
-    axs[1].set_title(f"GM map (axial slice {show_axial_slice})")
-    axs[2].set_title(f"CSF map (axial slice {show_axial_slice})")
-    axs[3].set_title(f"WM+GM+CSF map (axial slice {show_axial_slice})")
+    #### show_axial_slice = 70
+    #### plt.figure()
+    #### fig, axs = plt.subplots(nrows=1, ncols=4)
+    #### axs[0].set_title(f"WM map (axial slice {show_axial_slice})")
+    #### axs[1].set_title(f"GM map (axial slice {show_axial_slice})")
+    #### axs[2].set_title(f"CSF map (axial slice {show_axial_slice})")
+    #### axs[3].set_title(f"WM+GM+CSF map (axial slice {show_axial_slice})")
+    ####
+    #### img0 = axs[0].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice])
+    #### img1 = axs[1].imshow(loaded_GM_map.loaded_maps[:, :, show_axial_slice])
+    #### img2 = axs[2].imshow(loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
+    #### img3 = axs[3].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice] + loaded_GM_map.loaded_maps[:, :, show_axial_slice] + loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
+    ####
+    #### fig.colorbar(img0, ax=axs[0])
+    #### fig.colorbar(img1, ax=axs[1])
+    #### fig.colorbar(img2, ax=axs[2])
+    #### fig.colorbar(img3, ax=axs[3])
+    #### #plt.show()
 
-    img0 = axs[0].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice])
-    img1 = axs[1].imshow(loaded_GM_map.loaded_maps[:, :, show_axial_slice])
-    img2 = axs[2].imshow(loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
-    img3 = axs[3].imshow(loaded_WM_map.loaded_maps[:, :, show_axial_slice] + loaded_GM_map.loaded_maps[:, :, show_axial_slice] + loaded_CSF_map.loaded_maps[:, :, show_axial_slice])
-
-    fig.colorbar(img0, ax=axs[0])
-    fig.colorbar(img1, ax=axs[1])
-    fig.colorbar(img2, ax=axs[2])
-    fig.colorbar(img3, ax=axs[3])
-    #plt.show()
-
+    # =============================== TO CREATE THE LOOKUP TABLE =======================================================
     TR=600
     lookup_table_WET_test = LookupTableWET(T1_range=[300, 5000],
                                            T1_step_size=50,
@@ -1055,28 +1385,100 @@ if __name__ == '__main__':
                                            TE=0, # TODO -> why 0???
                                            flip_angle_excitation_degree=47.0,
                                            flip_angles_WET_degree=[89.2, 83.4, 160.8],
-                                           time_gaps_WET=[30, 30, 30])
+                                           time_gaps_WET=[30, 30, 30],
+                                           off_resonance=0)
 
     lookup_table_WET_test.create()
     lookup_table_WET_test.plot()
-    #print(lookup_table_WET_test.get_entry(B1_scale=1.0, T1_over_TR=2.1))
+    #lookup_table_WET_test.plot_waterfall_interactive()
+    lookup_table_WET_test.plot_waterfall()
+    # ==================================================================================================================
 
-    loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1")
-    loaded_B1_map.load_file()
+    # =========================== To check different off-resonance frequency ===========================================
+###    lookup_table_WET_test_2 = LookupTableWET(T1_range=[300, 5000],
+###                                             T1_step_size=50,
+###                                             T2=250,
+###                                             B1_scales_inhomogeneity=[1e-10,3],
+###                                             B1_scales_gauss=[0.01, 1],
+###                                             B1_scales_inhomogeneity_step_size=0.05,
+###                                             B1_scales_gauss_step_size=0.05,
+###                                             TR=TR,
+###                                             TE=0,
+###                                             flip_angle_excitation_degree=47.0,
+###                                             flip_angles_WET_degree=[89.2, 83.4, 160.8],
+###                                             time_gaps_WET=[30, 30, 30],
+###                                             off_resonance=100)
+###
+###    lookup_table_WET_test.create()
+###    lookup_table_WET_test_2.create()
+###
+###
+###    #####################################
+###    #####################################
+###    # Format labels for the axes.
+###    T1_over_TR_formatted = [f"{val / lookup_table_WET_test.TR:.2f}" for val in lookup_table_WET_test.T1_values]
+###    B1_scale_formatted = [f"{val:.2f}" for val in lookup_table_WET_test.B1_scales_effective_values]
+###
+###    # Compute the difference between the simulated datasets.
+###    data_diff = np.array(lookup_table_WET_test.simulated_data) - np.array(lookup_table_WET_test_2.simulated_data)
+###
+###    print("------------------------------------------------------------------------")
+###    print(f"data_diff min: {np.min(data_diff)} | data_diff max: {np.max(data_diff)}")
+###    print("------------------------------------------------------------------------")
+###
+###    # Mask negative values so only non-negative differences are plotted.
+###    pos_data = np.ma.masked_less(data_diff, 0)
+###
+###    # Create a figure and axis.
+###    fig, ax = plt.subplots(figsize=(8, 6))
+###
+###    # Plot the positive differences using the viridis colormap.
+###    im = ax.imshow(pos_data, cmap='viridis', aspect='auto')
+###
+###    # Set x and y ticks with custom labels.
+###    ax.set_xticks(np.arange(len(T1_over_TR_formatted)))
+###    ax.set_xticklabels(T1_over_TR_formatted, fontsize=7, rotation=90, ha='right')
+###    ax.set_yticks(np.arange(len(B1_scale_formatted)))
+###    ax.set_yticklabels(B1_scale_formatted, fontsize=7)
+###
+###    # Add a colorbar for the positive differences.
+###    cbar = fig.colorbar(im, ax=ax)
+###    cbar.ax.tick_params(labelsize=7)
+###
+###    # Set axis titles.
+###    ax.set_title('Heatmap of Difference Lookup Table')
+###    ax.set_xlabel('T1/TR Value')
+###    ax.set_ylabel('B1 Scale Value')
+###
+###    plt.tight_layout()
+###    plt.show()
+###
+###    print("lalalalalalalalalalala lllll")
+###    sys.exit()
+###
+###    #####################################
+###    #####################################
+    # ==================================================================================================================
 
-    shape_B1_map = loaded_B1_map.loaded_maps.shape
+
+
+
+    # ===================== Display B1 map =============================================================================
+    ###shape_B1_map = loaded_B1_map.loaded_maps.shape
+    ###scaled_B1_map[scaled_B1_map < 0] = 0.001
+    ###
+    ###plt.figure()
+    ###plt.imshow(scaled_B1_map[:,:,50])
+    ###plt.colorbar()
+    ###plt.show()
+    ###Console.printf("info", f"Scaled B1 Map: min={np.min(scaled_B1_map)}, max={np.max(scaled_B1_map)}")
+    # ==================================================================================================================
+
+
+    # =============================== Create map from lookup table =====================================================
     scaled_B1_map = loaded_B1_map.loaded_maps / 39.0
     scaled_B1_map[scaled_B1_map < 0] = 0.001
-
-    plt.figure()
-    plt.imshow(scaled_B1_map[:,:,50])
-    plt.colorbar()
-    plt.show()
-    #sys.exit()
-
-    Console.printf("info", f"Scaled B1 Map: min={np.min(scaled_B1_map)}, max={np.max(scaled_B1_map)}")
-
-    #print(lookup_table_WET_test.get_entry4(B1_scale=np.array([1.0, 2.2, 1.0]), T1_over_TR=np.array([0.8, 0.8, 0.8]), device="cpu"))
+    Console.printf("info", "set values < 0 to 0 in scaled B1 map (map/39°)")
 
     # TODO: get entry is in only get index to get entry!!!!!
     # TODO: scaled B1_map -> consider - values or to set it to 0 ????
@@ -1091,70 +1493,178 @@ if __name__ == '__main__':
     T1_over_TR_WM_map = loaded_WM_map.loaded_maps * (T1_WM/TR)
     T1_over_TR_CSF_map = loaded_CSF_map.loaded_maps * (T1_CSF/TR)
 
-    print(f"GM min: {np.min(T1_over_TR_GM_map)}; max: {np.max(T1_over_TR_GM_map)}")
-    print(f"WM min: {np.min(T1_over_TR_WM_map)}; max: {np.max(T1_over_TR_WM_map)}")
-    print(f"CSF min: {np.min(T1_over_TR_CSF_map)}; max: {np.max(T1_over_TR_CSF_map)}")
+    # T1_over_TR_GM_map + T1_over_TR_WM_map + T1_over_TR_CSF_map --> lookup_table_WET_test.simulated_data.get_value
+
+    Console.add_lines("Scaled maps:")
+    Console.add_lines(f" => GM min: {np.min(T1_over_TR_GM_map)}; max: {np.max(T1_over_TR_GM_map)}")
+    Console.add_lines(f" => WM min: {np.min(T1_over_TR_WM_map)}; max: {np.max(T1_over_TR_WM_map)}")
+    Console.add_lines(f" => CSF min: {np.min(T1_over_TR_CSF_map)}; max: {np.max(T1_over_TR_CSF_map)}")
+    Console.printf_collected_lines("info")
     #sys.exit()
 
     #print(np.min(scaled_B1_map.flatten()), np.max(scaled_B1_map.flatten()))
     #print(np.full_like(scaled_B1_map, 1).flatten()))
+    #lookup_table_WET_test.simulated_data.set_interpolation_method(method="linear")
     lookup_table_WET_test.simulated_data.set_interpolation_method(method="linear")
 
-    result_GM = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_GM_map)
-    result_WM = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_WM_map)
-    result_CSF = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_CSF_map)
+    #result_GM = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_GM_map)
+    #result_WM = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_WM_map)
+    #result_CSF = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map, T1_over_TR=T1_over_TR_CSF_map)
+
+    result_all = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map,
+                                                                T1_over_TR=T1_over_TR_GM_map + T1_over_TR_WM_map + T1_over_TR_CSF_map)
+    Console.printf("success", "Get map from Lookup Table via T1/R = (T1/TR)_GM + (T1/TR)_WM + (T1/TR)_CSF)")
+
+    # ==================================================================================================================
+
+    # ====================== OLD: separate plot LookupTable results of WM, GM, CSF =====================================
+    ###plt.figure(1)
+    ###plt.title("GM Remaining Signal Map")
+    ###plt.subplot(2, 3, 1)
+    ###plt.imshow(result_GM[:, :, 50])
+    ###plt.subplot(2, 3, 2)
+    ###plt.imshow(np.rot90(result_GM[:, 90, :]))
+    ###plt.subplot(2, 3, 3)
+    ###plt.imshow(np.rot90(result_GM[90, :, :]))
+    ###plt.colorbar()
+    ###plt.subplot(2, 3, 4)
+    ###plt.imshow(np.log2(result_GM[:, :, 50]+0.1))
+    ###plt.subplot(2, 3, 5)
+    ###plt.imshow(np.log2(np.rot90(np.abs(result_GM[:, 90, :]+0.1))))
+    ###plt.subplot(2, 3, 6)
+    ###plt.imshow(np.log2(np.rot90(result_GM[90, :, :]+0.1)))
+    ###plt.colorbar()
 
 
-    plt.figure(1)
-    plt.title("GM Attenuation Map")
+    ###plt.figure(2)
+    ###plt.title("WM Remaining Signal Map")
+    ###plt.subplot(2, 3, 1)
+    ###plt.imshow(result_WM[:, :, 50])
+    ###plt.subplot(2, 3, 2)
+    ###plt.imshow(np.rot90(result_WM[:, 90, :]))
+    ###plt.subplot(2, 3, 3)
+    ###plt.imshow(np.rot90(result_WM[90, :, :]))
+    ###plt.colorbar()
+    ###plt.subplot(2, 3, 4)
+    ###plt.imshow(np.log2(result_WM[:, :, 50]+0.1))
+    ###plt.subplot(2, 3, 5)
+    ###plt.imshow(np.log2(np.rot90(np.abs(result_WM[:, 90, :]+0.1))))
+    ###plt.subplot(2, 3, 6)
+    ###plt.imshow(np.log2(np.rot90(result_WM[90, :, :]+0.1)))
+    ###plt.colorbar()
+
+
+    ####plt.figure(3)
+    ####plt.title("CSF Remaining Signal Map")
+    ####plt.subplot(2, 3, 1)
+    ####plt.imshow(result_CSF[:, :, 50])
+    ####plt.subplot(2, 3, 2)
+    ####plt.imshow(np.rot90(result_CSF[:, 90, :]))
+    ####plt.subplot(2, 3, 3)
+    ####plt.imshow(np.rot90(result_CSF[90, :, :]))
+    ####plt.colorbar()
+    ####plt.subplot(2, 3, 4)
+    ####plt.imshow(np.log2(result_CSF[:, :, 50]+0.1))
+    ####plt.subplot(2, 3, 5)
+    ####plt.imshow(np.log2(np.rot90(np.abs(result_CSF[:, 90, :]+0.1))))
+    ####plt.subplot(2, 3, 6)
+    ####plt.imshow(np.log2(np.rot90(result_CSF[90, :, :]+0.1)))
+    ####plt.colorbar()
+    ####plt.show()
+    # ==================================================================================================================
+
+    # ==================== Plot combination GM+WM+CSF ==================================================================
+
+
+    plt.figure(4)
+    plt.title("Remaining Signal Map (used (T1/TR)_GM map + (T1/TR_WM)_map + (T1/TR_CSF)_map as LookupTable input) (all)")
+    plt.subplot(1, 3, 1)
+    plt.imshow(result_all[:, :, 50])
+    plt.subplot(1, 3, 2)
+    plt.imshow(np.rot90(result_all[:, 90, :]))
+    plt.subplot(1, 3, 3)
+    plt.imshow(np.rot90(result_all[90, :, :]))
+    plt.colorbar()
+    plt.show()
+    ###plt.subplot(2, 3, 4)
+    ###plt.imshow(np.log2(result_all[:, :, 50]+0.1))
+    ###plt.imshow(np.log2(result_all[:, :, 50]+0.1))
+    ###plt.subplot(2, 3, 5)
+    ###plt.imshow(np.log2(np.rot90(np.abs(result_all[:, 90, :]+0.1))))
+    ###plt.subplot(2, 3, 6)
+    ###plt.imshow(np.log2(np.rot90(result_all[90, :, :]+0.1)))
+    ###plt.colorbar()
+    #plt.show()
+
+    # T1/TR und B1+ -> für Kombinationen wird negativ im Lookup Table
+    # If B0 map in ppm ---> 297.223 Hz/ppm
+    # B0 * pulse * B1+ * T1/TR
+
+    # ==================================================================================================================
+
+
+    # ================= To incorporate the B0 map and Gauss Pulse ======================================================
+    import scipy.io as sio
+
+    path_gauss_wet = configurator.data["path"]["pulse"]["gauss_wet"]
+    gauss_wet_pulse = sio.loadmat(path_gauss_wet)
+    amplitude_pulse = gauss_wet_pulse["Pulse1_Freq"].squeeze()
+    frequency_pulse = gauss_wet_pulse["Freq_Vec"].squeeze()
+
+    import matplotlib.pyplot as plt
+    plt.plot(frequency_pulse, amplitude_pulse)
+    plt.show()
+
+    plt.figure(4)
+    plt.title("Loaded B0 map")
+    plt.subplot(1, 3, 1)
+    plt.imshow(loaded_B0_map.loaded_maps[:, :, 50])
+    plt.subplot(1, 3, 2)
+    plt.imshow(np.rot90(loaded_B0_map.loaded_maps[:, 90, :]))
+    plt.subplot(1, 3, 3)
+    plt.imshow(np.rot90(loaded_B0_map.loaded_maps[90, :, :]))
+    plt.colorbar()
+    plt.show()
+
+
+    from scipy.interpolate import interp1d
+    # to create interpolation function:
+    interp_func = interp1d(frequency_pulse, amplitude_pulse)
+
+    loaded_B0_map_flat = loaded_B0_map.loaded_maps.ravel()
+    scaled_B0_map_wet_pulse = np.empty_like(loaded_B0_map_flat)
+
+    Console.printf("info", "Scaling B0 values based on pulse")
+    for i, item in tqdm(enumerate(loaded_B0_map_flat), total=len(loaded_B0_map_flat)):
+        scaled_B0_map_wet_pulse[i] = interp_func(-loaded_B0_map_flat[i]) # TODO: Added minus as Bernhard told!
+
+    scaled_B0_map_wet_pulse = scaled_B0_map_wet_pulse.reshape(loaded_B0_map.loaded_maps.shape)
+
+    #amplitude_at_freq = interp_func(freq_to_find)
+
+    for i in tqdm(range(500000), total=500000):
+        result_all_gauss = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map * scaled_B0_map_wet_pulse,
+                                                                          T1_over_TR=T1_over_TR_GM_map + T1_over_TR_WM_map + T1_over_TR_CSF_map)
+
+    Console.printf("success", "Get map from Lookup Table via T1/R = (T1/TR)_GM + (T1/TR)_WM + (T1/TR)_CSF) AND Gauss(B0)")
+    # TODO -B0?
+
+
+    plt.figure(5)
+    plt.title("Remaining Signal Map (used (T1/TR)_GM map + (T1/TR_WM)_map + (T1/TR_CSF)_map as LookupTable input) + Gauss Pulse")
     plt.subplot(2, 3, 1)
-    plt.imshow(result_GM[:, :, 50])
+    plt.imshow(result_all_gauss[:, :, 50])
     plt.subplot(2, 3, 2)
-    plt.imshow(np.rot90(result_GM[:, 90, :]))
+    plt.imshow(np.rot90(result_all_gauss[:, 90, :]))
     plt.subplot(2, 3, 3)
-    plt.imshow(np.rot90(result_GM[90, :, :]))
+    plt.imshow(np.rot90(result_all_gauss[90, :, :]))
     plt.colorbar()
     plt.subplot(2, 3, 4)
-    plt.imshow(np.log2(result_GM[:, :, 50]+0.1))
+    plt.imshow(np.log2(result_all_gauss[:, :, 50]+0.1))
+    plt.imshow(np.log2(result_all_gauss[:, :, 50]+0.1))
     plt.subplot(2, 3, 5)
-    plt.imshow(np.log2(np.rot90(np.abs(result_GM[:, 90, :]+0.1))))
+    plt.imshow(np.log2(np.rot90(np.abs(result_all_gauss[:, 90, :]+0.1))))
     plt.subplot(2, 3, 6)
-    plt.imshow(np.log2(np.rot90(result_GM[90, :, :]+0.1)))
-    plt.colorbar()
-
-
-    plt.figure(2)
-    plt.title("WM Attenuation Map")
-    plt.subplot(2, 3, 1)
-    plt.imshow(result_WM[:, :, 50])
-    plt.subplot(2, 3, 2)
-    plt.imshow(np.rot90(result_WM[:, 90, :]))
-    plt.subplot(2, 3, 3)
-    plt.imshow(np.rot90(result_WM[90, :, :]))
-    plt.colorbar()
-    plt.subplot(2, 3, 4)
-    plt.imshow(np.log2(result_WM[:, :, 50]+0.1))
-    plt.subplot(2, 3, 5)
-    plt.imshow(np.log2(np.rot90(np.abs(result_WM[:, 90, :]+0.1))))
-    plt.subplot(2, 3, 6)
-    plt.imshow(np.log2(np.rot90(result_WM[90, :, :]+0.1)))
-    plt.colorbar()
-
-
-    plt.figure(3)
-    plt.title("CSF Attenuation Map")
-    plt.subplot(2, 3, 1)
-    plt.imshow(result_CSF[:, :, 50])
-    plt.subplot(2, 3, 2)
-    plt.imshow(np.rot90(result_CSF[:, 90, :]))
-    plt.subplot(2, 3, 3)
-    plt.imshow(np.rot90(result_CSF[90, :, :]))
-    plt.colorbar()
-    plt.subplot(2, 3, 4)
-    plt.imshow(np.log2(result_CSF[:, :, 50]+0.1))
-    plt.subplot(2, 3, 5)
-    plt.imshow(np.log2(np.rot90(np.abs(result_CSF[:, 90, :]+0.1))))
-    plt.subplot(2, 3, 6)
-    plt.imshow(np.log2(np.rot90(result_CSF[90, :, :]+0.1)))
+    plt.imshow(np.log2(np.rot90(result_all_gauss[90, :, :]+0.1)))
     plt.colorbar()
     plt.show()

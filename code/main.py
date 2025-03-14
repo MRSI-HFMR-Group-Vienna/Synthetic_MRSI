@@ -1,9 +1,8 @@
-import default
-from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler, MetabolicPropertyMap
+from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler
 from spectral_spatial_simulation import Model as SpectralSpatialModel
 from sampling import Model as SamplingModel
 from display import plot_FID
-from printer import Console
+from code.tests.printer_logger_test import Console
 import dask.array as da
 import numpy as np
 import cupy as cp
@@ -16,16 +15,6 @@ import file
 import h5py
 
 from tqdm import tqdm
-
-import seaborn as sns
-import pandas as pd
-
-from pycallgraph import Config
-from pycallgraph import PyCallGraph
-from pycallgraph.output import GraphvizOutput
-from dask.cache import Cache
-
-from cupyx.profiler import benchmark
 
 
 def zen_of_python():

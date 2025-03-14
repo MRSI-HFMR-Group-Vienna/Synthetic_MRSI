@@ -1,20 +1,13 @@
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 from scipy.ndimage import zoom as zoom_cpu
-from dataclasses import dataclass, asdict
-from dataclasses import dataclass
 from tools import CustomArray
-from printer import Console
+from code.tests.printer_logger_test import Console
 import dask.array as da
 from tqdm import tqdm
 import numpy as np
 import cupy as cp
 import pint
 import sys
-
-import dask
-from dask.delayed import Delayed
-
-import default
 
 
 class Model:

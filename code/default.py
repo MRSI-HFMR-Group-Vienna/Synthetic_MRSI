@@ -1,8 +1,6 @@
 import os
 import sys
 
-import printer
-
 # The purpose of this file is to run a required default setup.
 # It is also possible to check if the requirements are met.
 

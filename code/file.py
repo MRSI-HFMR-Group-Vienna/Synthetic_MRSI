@@ -1,4 +1,3 @@
-import default
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 import spectral_spatial_simulation
 from typing_extensions import Self
