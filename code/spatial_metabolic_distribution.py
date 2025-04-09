@@ -1,7 +1,7 @@
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 from scipy.ndimage import zoom as zoom_cpu
 from tools import CustomArray
-from code.tests.printer_logger_test import Console
+from printer import Console
 import dask.array as da
 from tqdm import tqdm
 import numpy as np
@@ -92,7 +92,7 @@ class Maps:
             Console.printf("error", f"Invalid target device: {target_device}. it must be either 'cpu' or 'cuda'.")
             sys.exit()
 
-        # Interpolate each map in tghe dictionary
+        # Interpolate each map in the dictionary
         for i, (working_name, loaded_map) in tqdm(enumerate(self.maps.items()), total=len(self.maps)):
             # Calculate the zoom factor required by the interpolation method
             zoom_factor = np.divide(target_size, loaded_map.shape)
@@ -119,14 +119,25 @@ class Maps:
 
 
 class MetabolicPropertyMapsAssembler:
-    # TODO Docstring
+    """
+    This class handles Maps objects. Each Maps object contains one map for each Metabolite.
+
+    The functionality can also be seen als re-sort. The Maps object contains one type of map for each metabolite, e.g.
+    all concentration maps of each metabolite, and then will be re-sorted that one MetabolicPropertyMap contains all
+    Maps only associated to this one metabolite.
+
+    Example transformation (multiple Maps are required):
+
+    Concentration: [Glucose, NAA, Cholin] ==> Glucose: [Concentration, T1, T2]  ==> dict[Glucose]: MetabolicPropertyMap
+
+    """
 
     def __init__(self,
                  block_size: tuple,
-                 concentration_maps: Maps,  # TODO change to Maps that is in spectral_spatial_simulation!
-                 t1_maps: Maps,
-                 t2_maps: Maps,
-                 concentration_unit,  # TODO define data type
+                 concentration_maps: Maps,
+                 t1_maps:            Maps,
+                 t2_maps:            Maps,
+                 concentration_unit,       # TODO define data type
                  t1_unit,
                  t2_unit):
 
@@ -139,10 +150,21 @@ class MetabolicPropertyMapsAssembler:
         self.t1_unit = t1_unit
         self.t2_unit = t2_unit
 
-    def assemble(self):
-        # TODO: Create Docstring
-        # TODO Create metabolic property map --> i guess i need dictionary --> see main file
+    def assemble(self) -> dict:
+        """
+        To take maps, each of one type (T1, T2, concentration) with a volume for each metabolite, and create
+        MetabolicPropertyMaps, each for one metabolite containing all types (T1, T2, concentration). Finally
+        creates dict with key as name of metabolite and value the corresponding MetabolicPropertyMap.
+
+        :return: Dictionary of MetabolicPropertyMaps. One for each metabolite, containing associated volumes.
+        """
+
+        # The dict object will contain:
+        #    key:    name of the chemical compound
+        #    value:  maps (in MetabolicPropertyMap)
         metabolic_property_maps_dict: dict[str, MetabolicPropertyMap] = {}
+
+        # Assemble dictionary with name (chemical compound / metabolite name) and corresponding MetabolicPropertyMap
         for name, _ in self.concentration_maps.maps.items():
 
             metabolic_property_map = MetabolicPropertyMap(chemical_compound_name=name,
@@ -160,9 +182,11 @@ class MetabolicPropertyMapsAssembler:
 
 class MetabolicPropertyMap:
     """
-    Takes 3D volumes (maps) of the respective metabolite. This includes T1, T2 and concentration so far.
-    """
+    This is class is to pack together the different maps (so far T1, T2, concentration) of one metabolite (e.g. Glucose).
+    (!) It also transforms the numpy maps to a dask-array extension called CustomArray and further defines the block size for computations.
 
+    The MetabolicPropertyMap It is mainly used in the class MetabolicPropertyMapsAssembler.
+    """
     def __init__(self,
                  chemical_compound_name: str,
                  block_size: tuple,
@@ -175,7 +199,11 @@ class MetabolicPropertyMap:
                  t1_metadata: dict = None,
                  t2_metadata: dict = None,
                  concentration_metadata: dict = None):
+
+        # The name of the metabolite of one object
         self.chemical_compound_name = chemical_compound_name
+
+        # The associates Maps with the metabolite:
         self.t1 = CustomArray(dask_array=da.from_array(t1, chunks=block_size),
                               unit=t1_unit,
                               meta=t1_metadata)

@@ -1,8 +1,10 @@
+import sys
+
 from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler
 from spectral_spatial_simulation import Model as SpectralSpatialModel
 from sampling import Model as SamplingModel
 from display import plot_FID
-from code.tests.printer_logger_test import Console
+from printer import Console
 import dask.array as da
 import numpy as np
 import cupy as cp
@@ -48,26 +50,28 @@ def zen_of_python():
 
 
 def main_entry():
+    cm = tools.CitationManager("../docs/references.bib")
 
     if True:  # TODO change: use cache here:
 
         Console.start_timer()
-        target_gpu_smaller_tasks = 0
-        target_gpus_big_tasks = [0, 1, 3]
+        target_gpu_smaller_tasks = 1
+        target_gpus_big_tasks = [1]
 
         # Initialize the UnitRegistry
         u = pint.UnitRegistry()
 
         # Load defined paths in the configurator
         Console.printf_section("Load FID and Mask")
-        configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/code/config/",
-                                         file_name="config_12062024.json")
+        configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
+                                         file_name="paths_14032025.json")
         configurator.load()
         configurator.print_formatted()
 
         # Load metabolic mask
         metabolic_mask = file.Mask.load(configurator=configurator,
                                         mask_name="metabolites")
+
 
         # Load the FIDs
         metabolites = file.FID(configurator=configurator)
@@ -78,7 +82,12 @@ def main_entry():
         loaded_fid = metabolites.loaded_fid
 
         Console.printf_section("Load and prepare the Maps")
-        # Load and prepare the concentration maps
+
+        # Load and prepare the concentration maps ################################################################ START
+        # [X] Real data / computation is used
+        # [ ] Placeholder data / computation is used
+        # [ ] Something is missing here
+        # TODO: Nothing yet
         loaded_concentration_maps = file.Maps(configurator=configurator, map_type_name="metabolites")
         working_name_and_file_name = {"Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii",
                                       "Gln": "MetMap_Gln_con_map_TargetRes_HiRes.nii",
@@ -91,8 +100,18 @@ def main_entry():
 
         # Assign loaded maps from module file to maps object from the spatial metabolic distribution & Interpolate it
         concentration_maps = Maps(loaded_concentration_maps.loaded_maps)
-        concentration_maps.interpolate_to_target_size(target_size=metabolic_mask.shape, order=3, target_device='cuda', target_gpu=target_gpu_smaller_tasks)
+        concentration_maps.interpolate_to_target_size(target_size=metabolic_mask.shape,
+                                                      order=3,
+                                                      target_device='cuda',
+                                                      target_gpu=target_gpu_smaller_tasks)
+        ############################################################################################################ END
 
+
+        # Load and prepare the T1 maps ########################################################################### START
+        # [ ] Real data / computation is used
+        # [ ] Placeholder data / computation is used
+        # [X] Something is missing here
+        # TODO: Same T1 map for each metabolite used
         # Load T1 map (TODO: only one for the moment, but need one for each metabolite?)
         path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "T1_TargetRes_HiRes.nii")
         loaded_T1_map = file.NeuroImage(path=path_to_one_map).load_nii().data * 1e-3
@@ -105,20 +124,49 @@ def main_entry():
                                 "GPC+PCh": loaded_T1_map,
                                 }
         t1_maps = Maps(maps=working_name_and_map)
-        t1_maps.interpolate_to_target_size(target_size=metabolic_mask.shape, order=3, target_device='cuda', target_gpu=target_gpu_smaller_tasks)
+        t1_maps.interpolate_to_target_size(target_size=metabolic_mask.shape,
+                                           order=3,
+                                           target_device='cuda',
+                                           target_gpu=target_gpu_smaller_tasks)
+        ############################################################################################################ END
 
-        # Create T2 map (TODO: only random values for the moment!)
-        working_name_and_map = {"Glu": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
-                                "Gln": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
-                                "m-Ins": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
-                                "NAA": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
-                                "Cr+PCr": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
-                                "GPC+PCh": np.random.uniform(low=55 * 1e-3, high=70 * 1e-3, size=metabolic_mask.data.shape),
+
+        # Load and prepare the T1 maps ########################################################################### START
+        # [ ] Real data / computation is used
+        # [X] Placeholder data / computation is used
+        # [X] Something is missing here
+        # TODO: Only placeholder values for T2. Need also for each metabolite map?
+
+        # Using T2* values from:
+        cm.cite("peters2007t2") # Paper offers Grey Matter (GM), White matter (WM), Caudate, Putamen T2* values in [ms];
+                                # However, using naive approach for first step: (GM+WM)/2 and also the scattering of values
+                                # (33.2+26.8)/2 +/- (1.3+1.2)/2 ==> 30 +/- 1.25
+
+        mu=30
+        sigma=1.25
+
+        working_name_and_map = {"Glu":      np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
+                                "Gln":      np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
+                                "m-Ins":    np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
+                                "NAA":      np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
+                                "Cr+PCr":   np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
+                                "GPC+PCh":  np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
                                 }
-        t2_maps = Maps(maps=working_name_and_map)
-        t2_maps.interpolate_to_target_size(target_size=metabolic_mask.shape, order=3, target_device='cuda', target_gpu=target_gpu_smaller_tasks)
 
-        # Get partially FID containign only the desired signals
+        t2_maps = Maps(maps=working_name_and_map)
+        t2_maps.interpolate_to_target_size(target_size=metabolic_mask.shape,
+                                           order=3,
+                                           target_device='cuda',
+                                           target_gpu=target_gpu_smaller_tasks)
+        ############################################################################################################ END
+
+
+        # Get a subset of all signals of teh FID and merge some FID signals ###################################### START
+        # [X] Real data / computation is used
+        # [ ] Placeholder data / computation is used
+        # [ ] Something is missing here
+        # TODO: Nothing yet
+        # Get partially FID containing only the desired signals
         using_fid_signals = ["Glutamate (Glu)",
                              "Glutamine_noNH2 (Gln)",
                              "MyoInositol (m-Ins)",
@@ -134,9 +182,15 @@ def main_entry():
         fid = loaded_fid.get_partly_fid(using_fid_signals)
 
         # Merge signals of the FID in order to match the Maps
-        fid.merge_signals(names=["Creatine (Cr)", "Phosphocreatine (PCr)"], new_name="Creatine (Cr)+Phosphocreatine (PCr)", divisor=2)
-        fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"], new_name="GPC+PCh", divisor=2)
+        fid.merge_signals(names=["Creatine (Cr)", "Phosphocreatine (PCr)"],
+                          new_name="Creatine (Cr)+Phosphocreatine (PCr)",
+                          divisor=2)
+        fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"],
+                          new_name="GPC+PCh",
+                          divisor=2)
         fid.name = fid.get_name_abbreviation()
+        ############################################################################################################ END
+
 
         ##### TODO
         ####fid.signal = np.random.rand(6, 100_000) + 1j * np.random.rand(6, 100_000)
@@ -149,8 +203,8 @@ def main_entry():
         #block_size = (int(5), int(112 / 2), int(128 / 2), int(80 / 2)) # TODO: worked almost with 100_000 FID points
         # TODO: Print number of blocks used for the computation and how much memory it eats up per block
 
-        # block_size = (int(5), int(112/2), int(128/2), int(80/2)) # works with 100_000
-        # block_size = (int(200), int(60), int(60), int(20))
+
+        # Get a subset of all signals of the FID and merge some FID signals ###################################### START
         assembler = MetabolicPropertyMapsAssembler(block_size=(block_size[1], block_size[2], block_size[3]),
                                                    concentration_maps=concentration_maps,
                                                    t1_maps=t1_maps,
@@ -168,8 +222,8 @@ def main_entry():
                                                       TR=0.6,
                                                       alpha=45,
                                                       data_type="complex64",
-                                                      compute_on_device="cuda",
-                                                      return_on_device="cuda")
+                                                      compute_on_device="cpu",
+                                                      return_on_device="cpu") # TODO TODO TODO TODO
 
         # TODO: Also state size of one block after created model!
         spectral_spatial_model.add_metabolic_property_maps(metabolic_property_map_dict)  # all maps
@@ -180,30 +234,32 @@ def main_entry():
         computational_graph = spectral_spatial_model.assemble_graph()
 
         cluster = tools.MyLocalCluster()
-        cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="20GB", use_rmm_cupy_allocator=True)
+        #cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="20GB", use_rmm_cupy_allocator=True)
+        cluster.start_cpu(number_workers=2, threads_per_worker=10, memory_limit_per_worker="60GB")
 
         # Load and interpolate the coil sensitivity maps
         coil_sensitivity_maps_loader = file.CoilSensitivityMaps(configurator=configurator)
         coil_sensitivity_maps_loader.load_h5py(keys=["imag", "real"], dtype=np.complex64)
         target_size = (32, metabolic_mask.shape[0], metabolic_mask.shape[1], metabolic_mask.shape[2])
-        coil_sensitivity_maps = coil_sensitivity_maps_loader.interpolate(target_size=target_size, order=3, compute_on_device='cuda', gpu_index=0, return_on_device='cuda')
+        coil_sensitivity_maps = coil_sensitivity_maps_loader.interpolate(target_size=target_size, order=3, compute_on_device='cuda', gpu_index=target_gpu_smaller_tasks, return_on_device='cpu') # TODO TODO TODO TODO
+
 
         sampling_model = SamplingModel(computational_graph_spectral_spatial_model=computational_graph,
                                        block_size_computational_graph_spectral_spatial_model=(10, 112, 128, 80),
                                        coil_sensitivity_maps=coil_sensitivity_maps,
                                        block_size_coil_sensitivity_maps=(10, 112, 128, 80),
-                                       path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp', # TODO: ha sno effect!
+                                       path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp', # TODO: has no effect!
                                        persist_computational_graph_spectral_spatial_model=False
                                        )
 
-        computational_graphs_list = sampling_model.apply_coil_sensitivity_maps(compute_on_device='cuda', # cuda work with 100_000
-                                                                               return_on_device='cuda')   # cpu work with 100_000
+        computational_graphs_list = sampling_model.apply_coil_sensitivity_maps(compute_on_device='cpu', # cuda work with 100_000
+                                                                               return_on_device='cpu')   # cpu work with 100_000
         computational_graphs_list = sampling_model.cartesian_FFT(volumes_with_coil_sensitivity_maps=computational_graphs_list,
                                                                  crop_center_shape=(64, 64, 40),
-                                                                 compute_on_device='cuda', # cuda work with 100_000
-                                                                 return_on_device='cuda')   # cpu work with 100_000
+                                                                 compute_on_device='cpu', # cuda work with 100_000
+                                                                 return_on_device='cpu')   # cpu work with 100_000
         computational_graphs_list = sampling_model.cartesian_IFFT(volumes_cartesian_k_space=computational_graphs_list,
-                                                                  compute_on_device='cuda',  # cuda work with 100_000
+                                                                  compute_on_device='cpu',  # cuda work with 100_000
                                                                   return_on_device='cpu')    # cpu work with 100_000
 
         import time
@@ -214,7 +270,11 @@ def main_entry():
                 print(f"Computing and storing for coil {i} / {len(computational_graphs_list)}")
                 # Create a dataset for each computed Dask array
                 #f.create_dataset(f'coil_{i}', data=cp.asnumpy(dask_array.compute()), shape=dask_array.shape, chunks=dask_array.chunksize, compression="gzip", compression_opts=9)
-                f.create_dataset(f'coil_{i}', data=cp.asnumpy(dask_array.compute()), shape=dask_array.shape, chunks=dask_array.chunksize)
+                #f.create_dataset(f'coil_{i}', data=cp.asnumpy(dask_array.compute()), shape=dask_array.shape, chunks=dask_array.chunksize)
+                f.create_dataset(f'coil_{i}',
+                                 data=dask_array.compute(),
+                                 shape=dask_array.shape,
+                                 chunks=dask_array.chunksize)
 
         write_time_hdf5 = time.time() - start_time
         print(write_time_hdf5/60)
@@ -224,8 +284,8 @@ def main_entry():
     ####################################################################################################################################
     sampling_model = SamplingModel(path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp')
 
-    target_gpu_smaller_tasks = 0
-    target_gpus_big_tasks = [0, 1, 3]
+    target_gpu_smaller_tasks = 1
+    target_gpus_big_tasks = [1]
     cluster = tools.MyLocalCluster()
     cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="20GB", use_rmm_cupy_allocator=True)
 

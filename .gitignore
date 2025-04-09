@@ -1,4 +1,5 @@
 # Ignore all files in the code/config/ folder
+*h5
 config/paths_*
 config/OLD/config_*
 config/OLD/paths_*

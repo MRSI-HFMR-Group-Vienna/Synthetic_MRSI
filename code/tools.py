@@ -16,9 +16,58 @@ u = pint.UnitRegistry()  # for using units
 import dask.array as da
 import math
 import pint
-
 import numpy as np
 import cupy as cp
+import bibtexparser
+
+
+class CitationManager:
+    def __init__(self, bib_file_path):
+        """
+        Initialize the CitationManager by loading a BibTeX file.
+
+        :param bib_file_path: Path to the BibTeX file.
+        """
+        with open(bib_file_path, encoding="utf-8") as bib_file:
+            bib_database = bibtexparser.load(bib_file)
+        # Create a dictionary mapping citation keys to BibTeX entries.
+        self.entries = {entry['ID']: entry for entry in bib_database.entries}
+
+    def cite(self, key):
+        """
+        Mimic LaTeX \\cite behavior by returning a formatted citation string.
+
+        :param key: The BibTeX key to cite the entry.
+        :return: A formatted citation string.
+        """
+        if key not in self.entries:
+            raise Exception(f"Citation key '{key}' not found.")
+
+        entry = self.entries[key]
+        authors = entry.get("author", "Unknown authors")
+        title = entry.get("title", "No title")
+        year = entry.get("year", "n.d.")
+        doi = entry.get("doi", None)
+        url = entry.get("url", None)
+
+        # Format the citation with improved alignment.
+        citation = f"    {title}\n    {authors} ({year})."
+        if doi:
+            citation += f"\n    DOI: {doi}"
+        elif url:
+            citation += f"\n    URL: {url}"
+        return citation
+
+    def print_all_citations(self):
+        """
+        Print all citations loaded from the BibTeX file in a formatted style.
+        """
+        print("Bibliography entries ==========================================")
+        for i, key in enumerate(self.entries):
+            print(f"Source {i}:")
+            print(f"    {key}: {self.cite(key)}\n")
+        print("=============================================================")
+
 
 class NamedAxesArray_NEW:
     """
@@ -873,7 +922,7 @@ class MyLocalCluster:
         self.__start_client()
 
     def __start_client(self):
-        from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
 
         self.client = Client(self.cluster)
         # self.client = self.cluster.get_client()
@@ -915,7 +964,7 @@ class ConfiguratorGPU():
         self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
 
     def print_available_gpus(self):
-        from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
 
         Console.add_lines("Available GPU(s) and free space on it:")
 
@@ -928,14 +977,16 @@ class ConfiguratorGPU():
         Console.printf_collected_lines("info")
 
     def select_gpu(self, gpu_index: int = 0):
-        from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+        #from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+        from printer import Console
 
         torch.cuda.set_device(gpu_index)
         self.selected_gpu = gpu_index
         Console.printf("info", f"Selected GPU {gpu_index} -> manually selected by the user!")
 
     def enough_space_available(self) -> bool:
-        from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+        #from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+        from printer import Console
 
         if self.selected_gpu is not None:
             self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
@@ -978,16 +1029,16 @@ class SpaceEstimator:
         # itemsize... bytes required by each element in array
         space_required_bytes = np.prod(data_shape) * data_type.itemsize
 
-        if unit is "byte":
+        if unit == "byte":
             return space_required_bytes
 
-        elif unit is "KB":
+        elif unit == "KB":
             return space_required_bytes * 1 / 1024
 
-        elif unit is "MB":
+        elif unit == "MB":
             return space_required_bytes * 1 / (1024 ** 2)
 
-        elif unit is "GB":
+        elif unit == "GB":
             return space_required_bytes * 1 / (1024 ** 3)
 
     @staticmethod
@@ -1077,3 +1128,4 @@ def deprecated(reason, replacement=None) -> Callable:
         return wrapper
 
     return decorator
+

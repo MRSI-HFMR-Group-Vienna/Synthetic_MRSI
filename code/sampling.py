@@ -5,7 +5,7 @@ from scipy.interpolate import CubicSpline
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
 from file import Configurator
-from tools import Console
+from printer import Console
 import dask.array as da
 from tqdm import tqdm
 import numpy as np
@@ -53,6 +53,7 @@ class Model:
         self.data_type = data_type
 
         dask.config.set(temporary_directory=path_cache)
+
         # self.compute_on_device = compute_on_device
         # self.return_on_device = return_on_device
 
@@ -131,12 +132,20 @@ class Model:
         :return: list of volumes (one for each coil) in cartesian k-space
         """
 
+        if compute_on_device == 'cpu':
+            xp = np
+            Console.printf("info", f"Cartesian FFT: compute on device '{compute_on_device}' and return on '{return_on_device}'")
+        elif compute_on_device == 'cuda':
+            xp = cp
+        else:
+            Console.printf("error", f"Only possible to compute on 'cpu' or on 'cuda', but you set: {compute_on_device}")
+
         volumes_cartesian_k_space: list[da.Array] = []
         for one_coil_image_domain in volumes_with_coil_sensitivity_maps:
             one_coil_image_domain = self._to_device(one_coil_image_domain, device=compute_on_device)
 
-            one_coil_k_space = one_coil_image_domain.map_blocks(cp.fft.fftn, dtype=cp.complex64, axes=(1, 2, 3))
-            one_coil_k_space_shifted = one_coil_k_space.map_blocks(cp.fft.fftshift, dtype=cp.complex64, axes=(1, 2, 3))
+            one_coil_k_space = one_coil_image_domain.map_blocks(xp.fft.fftn, dtype=xp.complex64, axes=(1, 2, 3))
+            one_coil_k_space_shifted = one_coil_k_space.map_blocks(xp.fft.fftshift, dtype=xp.complex64, axes=(1, 2, 3))
             one_coil_k_space = one_coil_k_space_shifted
 
             if crop_center_shape is not None:
@@ -178,12 +187,20 @@ class Model:
                        compute_on_device: str = 'cpu',
                        return_on_device: str = 'cpu') -> list[da.Array]:
 
+        if compute_on_device == 'cpu':
+            xp = np
+            Console.printf("info", f"Cartesian IFFT: compute on device '{compute_on_device}' and return on '{return_on_device}'")
+        elif compute_on_device == 'cuda':
+            xp = cp
+        else:
+            Console.printf("error", f"Only possible to compute on 'cpu' or on 'cuda', but you set: {compute_on_device}")
+
         volumes_image_domain: list[da.Array] = []
         for one_coil_k_space in volumes_cartesian_k_space:
             one_coil_k_space = self._to_device(one_coil_k_space, device=compute_on_device)
 
-            one_coil_image_domain = one_coil_k_space.map_blocks(cp.fft.ifftshift, dtype=cp.complex64, axes=(1, 2, 3))
-            one_coil_image_domain = one_coil_image_domain.map_blocks(cp.fft.ifftn, dtype=cp.complex64, axes=(1, 2, 3))
+            one_coil_image_domain = one_coil_k_space.map_blocks(xp.fft.ifftshift, dtype=xp.complex64, axes=(1, 2, 3))
+            one_coil_image_domain = one_coil_image_domain.map_blocks(xp.fft.ifftn, dtype=xp.complex64, axes=(1, 2, 3))
             volumes_image_domain.append(self._to_device(one_coil_image_domain, device=return_on_device))
         return volumes_image_domain
 

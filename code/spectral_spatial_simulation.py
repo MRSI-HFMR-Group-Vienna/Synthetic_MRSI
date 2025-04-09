@@ -658,8 +658,8 @@ class LookupTableWET:
 
 
         # TODO: Delete after test usage!
-        self.negative_with_WET = 0
-        self.negative_without_WET = 0
+        #self.negative_with_WET = 0
+        #self.negative_without_WET = 0
         ###self.simulated_data = xr.DataArray(
         ###    data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
         ###    coords={
@@ -722,7 +722,6 @@ class LookupTableWET:
                                    "NaN value occurred while creating dictionary. Check proposed ranges. Terminating program!")
                     sys.exit()
                 else:
-                    # Use .loc to assign the computed value based on coordinate labels.
                     self.simulated_data.set_value(B1_scale_effective=B1_scale, # first axis
                                                   T1_over_TR=T1/self.TR,       # second axis
                                                   value=value)                 # and to axis coordinated according values
@@ -1634,13 +1633,40 @@ if __name__ == '__main__':
     loaded_B0_map_flat = loaded_B0_map.loaded_maps.ravel()
     scaled_B0_map_wet_pulse = np.empty_like(loaded_B0_map_flat)
 
+
+    # =============================================================================================================================
+
+    # 1 Understand the problem!
+    #   --> have shape 180 x 180 x 109 MB --> yields ~27 MB --> lets calculate with 30 MB --> thus using 1000 at once yields 30000 MB (30 GB)
+    #
+    #
+    #
+
+    dummy = np.empty((180, 109), dtype=np.float64)
+
+    # 2 Develop solutions
+
+    Console.start_timer()
+    result_all_gauss = lookup_table_WET_test.simulated_data.get_value(
+        B1_scale_effective=dummy,
+        T1_over_TR=T1_over_TR_GM_map + T1_over_TR_WM_map + T1_over_TR_CSF_map)
+    Console.stop_timer()
+
+    sys.exit()
+
     Console.printf("info", "Scaling B0 values based on pulse")
+
+    # for just one Δf_B0 --> need A(B1_scale * B1_Gauss(Δf + Δf_B0))
+    delta_f = 0
     for i, item in tqdm(enumerate(loaded_B0_map_flat), total=len(loaded_B0_map_flat)):
-        scaled_B0_map_wet_pulse[i] = interp_func(-loaded_B0_map_flat[i]) # TODO: Added minus as Bernhard told!
+        scaled_B0_map_wet_pulse[i] = interp_func(delta_f + -1*loaded_B0_map_flat[i]) # TODO: Added minus as Bernhard told!
 
     scaled_B0_map_wet_pulse = scaled_B0_map_wet_pulse.reshape(loaded_B0_map.loaded_maps.shape)
 
     #amplitude_at_freq = interp_func(freq_to_find)
+
+
+    # =============================================================================================================================
 
     for i in tqdm(range(500000), total=500000):
         result_all_gauss = lookup_table_WET_test.simulated_data.get_value(B1_scale_effective=scaled_B1_map * scaled_B0_map_wet_pulse,
