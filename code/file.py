@@ -612,6 +612,7 @@ class CoilSensitivityMaps:
     def __init__(self, configurator: Configurator):
         self.configurator = configurator
         self.maps = None
+        self.shape = None
 
     def load_h5py(self, keys: list = ["imag", "real"], dtype=np.complex64) -> None:
         """
@@ -665,6 +666,8 @@ class CoilSensitivityMaps:
         if self.maps is None:
             Console.printf("error", "No maps data available to interpolate. You might call 'load_h5py' first! Aborting program.")
             sys.exit()
+
+        self.shape = self.maps.shape
 
         # Get the zoom factor, based on the current maps size and desired size
         zoom_factor = np.divide(target_size, self.maps.shape)

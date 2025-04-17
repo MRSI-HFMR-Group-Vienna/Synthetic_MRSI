@@ -164,23 +164,6 @@ class Model:
 
         return volumes_cartesian_k_space
 
-    def non_cartesian_FT(self):
-        " TODO TODO TODO TODO TODO"
-        pass
-        # load necessary data from json file
-        import json
-        with open('data.json', 'r') as file:
-            data = json.load(file)
-
-        # data_shape =
-
-    # def non_cartesian_FT
-    # -> this function calculates/uses and operator and multiplies them for getting the volume in non cartesian k-space
-    # -> maybe: to cartesian k-space
-    # -> maybe: to concentric ring k-sapce? or just to non_cartesian_k_space
-    #                                               --> because in and out trajectory is defined! (thus general naming like non_cartesian_k_space/non_cartesian FT?)
-    # ----> need to read the (crt) concentric ring trajectory from json file
-    # ----> need to calculate the cartesian trajectory (based on parameters -> where?)
 
     def cartesian_IFFT(self,
                        volumes_cartesian_k_space: list[da.Array],
@@ -257,28 +240,47 @@ class Model:
 
     def coil_combination(self,
                          volumes_with_coil_sensitivity_maps: list[da.Array],
-                         compute_each_coil: bool = True,
+                         compute_graph_each_coil: bool = True,
                          compute_on_device: str = 'cpu',
                          return_on_device: str = 'cpu') -> da.Array | np.ndarray | cp.ndarray:
 
         shape = volumes_with_coil_sensitivity_maps[0].shape
         dtype = volumes_with_coil_sensitivity_maps[0].dtype
 
-        cumulative_sum_coils = np.zeros(shape=shape, dtype=dtype) if compute_on_device else cp.zeros(shape=shape, dtype=dtype)
+        if compute_on_device == "cpu" or compute_graph_each_coil == True:
+            cumulative_sum_coils = da.array(np.zeros(shape=shape, dtype=dtype)) # TODO: Need to define chunksize?
+        elif compute_on_device == "cuda":
+            cumulative_sum_coils = da.array(cp.zeros(shape=shape, dtype=dtype)) # TODO: Need to define chunksize?
+        else:
+            Console.printf("error", f"Possible to compute on device 'cpu' or 'cuda', but you set '{compute_on_device}'. Exit program!")
+            sys.exit()
+
 
         for i, one_coil_volume in tqdm(enumerate(volumes_with_coil_sensitivity_maps), total=len(volumes_with_coil_sensitivity_maps), desc="coil combination"):
             Console.printf("info", f"Start to include coil sensitivity map:{i} / {len(volumes_with_coil_sensitivity_maps)}")
             one_coil_volume = self._to_device(one_coil_volume, device=compute_on_device)
 
-            if compute_each_coil:
-                cumulative_sum_coils += self._to_device(one_coil_volume, device=return_on_device).compute()
-                print(f"compute and sum up coil {i}")
+
+            if compute_graph_each_coil:
+                #print(type(self._to_device(one_coil_volume, device=return_on_device).compute()))
+                #temp_result = one_coil_volume.rechunk((10, 20, 20, 20)).compute()
+                #print(type(temp_result))
+                cumulative_sum_coils += self._to_device(one_coil_volume, device='cpu').compute()
+
+                #del temp_result
+                #cp.get_default_memory_pool().free_all_blocks()
+
+                #input("=================")
+
+                Console.printf("success", f"Computed coil {i} from dask array and added to sum.")
             else:
+                #print("HAHAHAAHAHAHAHAHA")
                 cumulative_sum_coils += one_coil_volume
+                #input("=================")
 
-            print(cumulative_sum_coils.shape)  # TODO: Remove!!!
+            #print(cumulative_sum_coils.shape)  # TODO: Remove!!!
 
-        if compute_each_coil:
+        if compute_graph_each_coil:
             if isinstance(cumulative_sum_coils, np.ndarray) and return_on_device == 'cpu':
                 return cumulative_sum_coils  # do nothing
             elif isinstance(cumulative_sum_coils, cp.ndarray) and return_on_device == 'cuda':

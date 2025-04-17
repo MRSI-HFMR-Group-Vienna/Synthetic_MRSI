@@ -330,7 +330,11 @@ class Model:
         self.data_type = data_type
 
     def model_summary(self):
-        # TODO: make more beautiful (programming style) ;)
+        """
+        Simpy summary of the whole model.
+
+        :return: Nothing
+        """
         # TODO: add units
         Console.add_lines("Spectral-Spatial-Model Summary:")
         Console.add_lines(f" TE          ... {self.TE}")
@@ -409,28 +413,40 @@ class Model:
         Console.printf_collected_lines("success")
 
     @staticmethod
-    def _transform_T1(xp, volume, alpha, TR, T1):
-        """
-        TODO: make full docstring
-        Transform the volume. Therefore, alpha, TR and T1 is used.
-           alpha ... scalar value (either numpy or cupy)
-           TR    ... scalar value (either numpy or cupy)
-           T1    ... matrix       (either numpy or cupy)
-           xp    ... either numpy or cupy -> using the whole imported library (np or cp is xp)
+    def _transform_T1(xp: np|cp, volume: da.Array, alpha, TR, T1):
+        r"""
 
-        It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
+        Applying a T1 map (ideally masked) to a volume of fid signals. Thus, transforming via the formular below the
+        input volume V_{in} --> V_{out}:
+        .. math::
+
+            V_{out} = V_{in} \, \sin(\alpha) \, \frac{1 - e^{-TR/T_1}}{1 - \cos(\alpha) \, e^{-TR/T_1}}
+
+
+        For the transformation a flip angle, TR and T1 is used.
+           * alpha ... scalar value (either numpy or cupy)
+           * TR    ... scalar value (either numpy or cupy)
+           * T1    ... matrix       (either numpy or cupy)
+           * xp    ... either numpy or cupy -> using the whole imported library (np or cp is xp)
+
+        (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
         """
         return volume * xp.sin(xp.deg2rad(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(np.deg2rad(alpha)) * xp.exp(-TR / T1)))
 
     @staticmethod
-    def _transform_T2(xp, volume, time_vector, TE, T2):
-        """
-        TODO: make full docstring
-        Transform the volume. Therefore, a time vector, TE and T2 is used.
-           time vector ... vector (either numpy or cupy)
-           TE          ... scalar value (either numpy or cupy)
-           T2          ... matrix       (either numpy or cupy)
-           xp          ... either numpy or cupy -> using the whole imported library (np or cp is xp)
+    def _transform_T2(xp: np|cp, volume, time_vector, TE, T2):
+        r"""
+        Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in}} --> V_{out}:
+        .. math::
+
+            V_{out} = V_{in} \, e^{\frac{TE \cdot t}{T_2}}
+
+
+        For the transformation a time vector, TE and T2 is used.
+           * time vector ... vector (either numpy or cupy)
+           * TE          ... scalar value (either numpy or cupy)
+           * T2          ... matrix       (either numpy or cupy)
+           * xp          ... either numpy or cupy -> using the whole imported library (np or cp is xp)
 
         It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
         """
@@ -538,7 +554,7 @@ class Model:
         if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
             volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy)
         elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
-            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)  # TODO: Check if it works
+            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)
 
         # (9) Just clarify a computational graph is returned
         computational_graph: CustomArray = volume_sum_all_metabolites
@@ -547,7 +563,7 @@ class Model:
 
     def build(self):
         """
-        Do we need this? I guess not!
+        Do we need this? I guess not! Would give whole computed model, which would be very big!
 
         :return:
         """

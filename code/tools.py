@@ -10,10 +10,12 @@ import sys
 import warnings
 import functools
 from typing import Callable
+from printer import Console
 
 u = pint.UnitRegistry()  # for using units
 
 import dask.array as da
+import os
 import math
 import pint
 import numpy as np
@@ -902,6 +904,9 @@ class MyLocalCluster:
         self.cluster_type: str = None
         self.client = None
 
+        # 1) Prevent rapids libs from initializing cuda at import time
+        os.environ.setdefault("RAPIDS_NO_INITIALIZE", "1") # Prevent RAPIDS from auto‑initializing CUDA at import time
+
     def start_cpu(self, number_workers: int, threads_per_worker: int, memory_limit_per_worker: str = "30GB"):
         self.cluster = LocalCluster(n_workers=number_workers,
                                     threads_per_worker=threads_per_worker,
@@ -909,17 +914,64 @@ class MyLocalCluster:
         self.cluster_type = "cpu"
         self.__start_client()
 
-    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", use_rmm_cupy_allocator: bool = False):
-        if use_rmm_cupy_allocator:
-            rmm.reinitialize(pool_allocator=True)
-            cp.cuda.set_allocator(rmm_cupy_allocator)
+    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", use_rmm_cupy_allocator: bool = False, protocol="ucx"):
+        """
+        Protocols like tcp possible, or ucx. "ucx" is best for GPU to GPU, GPU to host communication: https://ucx-py.readthedocs.io/en/latest/install.html
+        """
+        #if use_rmm_cupy_allocator:
+            #rmm.reinitialize(pool_allocator=True)
+            #cp.cuda.set_allocator(rmm_cupy_allocator)
 
+        possible_protocols = ["tcp", "tls", "inproc", "ucx"]
+        if protocol not in possible_protocols:
+            Console.printf("error", f"Only protocols {possible_protocols} available for Local CUDA cluster, but you set {protocol}. Terminate program!")
+            sys.exit()
+
+        # 2) To spawn UCX cluster before any CUDA imports happen. Important!
         self.cluster = LocalCUDACluster(n_workers=len(device_numbers),
                                         device_memory_limit=device_memory_limit,
                                         jit_unspill=True,
-                                        CUDA_VISIBLE_DEVICES=device_numbers)
+                                        CUDA_VISIBLE_DEVICES=device_numbers,
+                                        protocol=protocol)
         self.cluster_type = "cuda"
         self.__start_client()
+
+        # 3) Now, if you want RMM on the workers, do it via client.run
+        if use_rmm_cupy_allocator:
+            def _init_rmm():
+                import rmm, cupy as cp
+                rmm.reinitialize(pool_allocator=True)
+                cp.cuda.set_allocator(rmm_cupy_allocator)
+            # push that init to each worker
+            self.client.run(_init_rmm)
+
+    def close(self):
+        """
+        Close both the Dask client and the underlying cluster,
+        freeing up threads/processes (and GPU memory, if using CUDA).
+        """
+        # 1) Close client first
+        if self.client is not None:
+            try:
+                self.client.close()
+                Console.printf("success", "Successfully closed client")
+            except Exception as e:
+                Console.printf("error", f"Error closing client: {e}")
+            finally:
+                self.client = None
+
+        # 2) Then close cluster
+        if self.cluster is not None:
+            try:
+                self.cluster.close()
+                Console.printf("success", "Successfully closed cluster")
+            except Exception as e:
+                Console.printf("error", f"Error closing cluster: {e}")
+            finally:
+                self.cluster = None
+
+        # 3) Reset cluster type
+        self.cluster_type = None
 
     def __start_client(self):
         from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
@@ -928,7 +980,7 @@ class MyLocalCluster:
         # self.client = self.cluster.get_client()
         dashboard_url = self.client.dashboard_link
 
-        Console.printf("info", f"Started {self.cluster_type} Cluster \n"
+        Console.printf("success", f"Started {self.cluster_type} Cluster \n"
                                f" Link to dashboard: {dashboard_url}")
 
 
