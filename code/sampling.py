@@ -78,14 +78,17 @@ class Model:
 
         To bring a dask array to the desired device. 'cuda' and 'cpu' is supported.
 
-        :param array:
-        :param device:
-        :return:
+        :param array: dask.Array
+        :param device: "cpu" or "cuda"
+        :return: dask.Array with numpy or cupy backend
         """
         possible_devices = {'cpu', 'cuda'}
         if device not in possible_devices:
             Console.printf("error", f"Selected device is {device}. However, only {possible_devices} is possible.")
             sys.exit()
+
+        if not isinstance(array, da.Array):
+            Console.printf("error", f"Can only convert dask array backend 'cpu' <-> 'cuda'. But you gave: {type(array)}")
 
         if isinstance(array._meta, np.ndarray) and device == 'cpu':
             return array  # do nothing
@@ -95,10 +98,13 @@ class Model:
             return array.map_blocks(cp.asarray)
         elif isinstance(array._meta, cp.ndarray) and device == 'cpu':
             return array.map_blocks(cp.asnumpy)
+        else:
+            Console.printf("error", f"In Sampling: Some error occurred. Cannot do transfer CPU <-> CUDA of type {type(array._meta)}")
+            sys.exit()
 
     def apply_coil_sensitivity_maps(self,
                                     compute_on_device: str = 'cpu',
-                                    return_on_device: str = 'cpu') -> list[da.Array]:
+                                    return_on_device: str = 'cpu') -> da.Array:
         """
         For applying the coil sensitivity maps to the volume of the spectral spatial model.
 
@@ -107,14 +113,23 @@ class Model:
         :return: list of dask arrays
         """
 
-        coil_sensitivity_maps = self._to_device(self.coil_sensitivity_maps, device=compute_on_device)
+        # 1) Bring both the sampling volume and the coil sensitivity maps volumes to same device
+        self.coil_sensitivity_maps = self._to_device(self.coil_sensitivity_maps, device=compute_on_device)
+        self.computational_graph_spectral_spatial_model = self._to_device(self.computational_graph_spectral_spatial_model, device=compute_on_device)
 
-        volumes_with_coil_sensitivity_maps: list[da.Array] = []
 
-        for i in range(coil_sensitivity_maps.shape[0]):
-            volumes_with_coil_sensitivity_maps.append(
-                self._to_device(self.computational_graph_spectral_spatial_model[:, :, :, :] * self.coil_sensitivity_maps[i, :, :, :], device=return_on_device))
-        return volumes_with_coil_sensitivity_maps
+        # 2) Broadcasting to be able to multiply at once:
+        #    coil sensitivity maps shape   : e.g., (32,   X, Y, Z) --> (32, 1,    X, Y, Z)
+        #    spectral spatial volume shape : e.g., (1536, X, Y, Z) --> (32, 1536, X, Y, Z)
+        volume = (
+            self.coil_sensitivity_maps[:, None, ...]                      # (coils, 1,    X, Y, Z)
+            * self.computational_graph_spectral_spatial_model[None, ...]  # (1,     time, X, Y, Z)
+        )
+
+        # 3) Move the full (coils,time,X,Y,Z) stacked volume back once to target device
+        volume = self._to_device(volume, device=return_on_device)
+
+        return volume
 
     def cartesian_FFT(self,
                       volumes_with_coil_sensitivity_maps: list[da.Array],
@@ -239,60 +254,22 @@ class Model:
         return volumes_image_domain_noisy
 
     def coil_combination(self,
-                         volumes_with_coil_sensitivity_maps: list[da.Array],
-                         compute_graph_each_coil: bool = True,
+                         volume_with_coil_sensitivity: da.Array,
                          compute_on_device: str = 'cpu',
                          return_on_device: str = 'cpu') -> da.Array | np.ndarray | cp.ndarray:
+        """
+        Gets a volume of shape (coils, time, X, Y, Z) and combines it to ==> (time, X, Y, Z) via summing up along coils axis.
 
-        shape = volumes_with_coil_sensitivity_maps[0].shape
-        dtype = volumes_with_coil_sensitivity_maps[0].dtype
+        :param volume_with_coil_sensitivity: dask array of shape (coils, time, X, Y, Z)
+        :param compute_on_device: "cuda" or "cpu"
+        :param return_on_device: "cuda" or "cpu"
+        :return:
+        """
 
-        if compute_on_device == "cpu" or compute_graph_each_coil == True:
-            cumulative_sum_coils = da.array(np.zeros(shape=shape, dtype=dtype)) # TODO: Need to define chunksize?
-        elif compute_on_device == "cuda":
-            cumulative_sum_coils = da.array(cp.zeros(shape=shape, dtype=dtype)) # TODO: Need to define chunksize?
-        else:
-            Console.printf("error", f"Possible to compute on device 'cpu' or 'cuda', but you set '{compute_on_device}'. Exit program!")
-            sys.exit()
+        volume_with_coil_sensitivity = self._to_device(volume_with_coil_sensitivity, device=compute_on_device).sum(axis=0)
+        volume_with_coil_sensitivity = self._to_device(volume_with_coil_sensitivity, device=return_on_device)
+        return volume_with_coil_sensitivity
 
-
-        for i, one_coil_volume in tqdm(enumerate(volumes_with_coil_sensitivity_maps), total=len(volumes_with_coil_sensitivity_maps), desc="coil combination"):
-            Console.printf("info", f"Start to include coil sensitivity map:{i} / {len(volumes_with_coil_sensitivity_maps)}")
-            one_coil_volume = self._to_device(one_coil_volume, device=compute_on_device)
-
-
-            if compute_graph_each_coil:
-                #print(type(self._to_device(one_coil_volume, device=return_on_device).compute()))
-                #temp_result = one_coil_volume.rechunk((10, 20, 20, 20)).compute()
-                #print(type(temp_result))
-                cumulative_sum_coils += self._to_device(one_coil_volume, device='cpu').compute()
-
-                #del temp_result
-                #cp.get_default_memory_pool().free_all_blocks()
-
-                #input("=================")
-
-                Console.printf("success", f"Computed coil {i} from dask array and added to sum.")
-            else:
-                #print("HAHAHAAHAHAHAHAHA")
-                cumulative_sum_coils += one_coil_volume
-                #input("=================")
-
-            #print(cumulative_sum_coils.shape)  # TODO: Remove!!!
-
-        if compute_graph_each_coil:
-            if isinstance(cumulative_sum_coils, np.ndarray) and return_on_device == 'cpu':
-                return cumulative_sum_coils  # do nothing
-            elif isinstance(cumulative_sum_coils, cp.ndarray) and return_on_device == 'cuda':
-                return cumulative_sum_coils  # do nothing
-            elif isinstance(cumulative_sum_coils, np.ndarray) and return_on_device == 'cuda':
-                return cp.asarray(cumulative_sum_coils)
-            elif isinstance(cumulative_sum_coils, cp.ndarray) and return_on_device == 'cpu':
-                return cp.asnumpy(cumulative_sum_coils)
-        else:
-            return self._to_device(cumulative_sum_coils, device=return_on_device)
-
-        return cumulative_sum_coils
 
 
 class Trajectory:

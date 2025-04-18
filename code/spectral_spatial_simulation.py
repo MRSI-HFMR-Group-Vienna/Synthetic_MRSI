@@ -369,7 +369,7 @@ class Model:
         :return: Nothing
         """
         try:
-            self.fid + fid  # sum fid according to the __add__ implementation in the FID class
+            self.fid = self.fid + fid  # sum fid according to the __add__ implementation in the FID class
             Console.add_lines(f"Added the following FID signals to the spectral spatial model:")
             for i, name in enumerate(fid.name):
                 Console.add_lines(f"{i}: {name}")
@@ -412,6 +412,17 @@ class Model:
 
         Console.printf_collected_lines("success")
 
+
+###    @staticmethod
+###    def _transform_T1_T2(xp: np|cp, volume: da.Array, time_vector, TE, T2, alpha, TR, T1):
+###        # TODO: DOCSTRING!
+###
+###        volume = Model._transform_T1(xp, volume, alpha, TR, T1)
+###        volume = Model._transform_T2(xp, volume, time_vector, TE, T2)
+###
+###
+###        return volume
+
     @staticmethod
     def _transform_T1(xp: np|cp, volume: da.Array, alpha, TR, T1):
         r"""
@@ -431,7 +442,9 @@ class Model:
 
         (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
         """
-        return volume * xp.sin(xp.deg2rad(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(np.deg2rad(alpha)) * xp.exp(-TR / T1)))
+        decay = xp.sin(xp.radians(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(xp.radians(alpha)) * xp.exp(-TR / T1)))
+        volume = xp.where(volume != 0, volume * decay, volume) # only compute where volume is not zero!
+        return volume
 
     @staticmethod
     def _transform_T2(xp: np|cp, volume, time_vector, TE, T2):
@@ -439,7 +452,7 @@ class Model:
         Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in}} --> V_{out}:
         .. math::
 
-            V_{out} = V_{in} \, e^{\frac{TE \cdot t}{T_2}}
+            V_{out} = V_{in} \, e^{-\frac{TE \cdot t}{T_2}}
 
 
         For the transformation a time vector, TE and T2 is used.
@@ -450,11 +463,8 @@ class Model:
 
         It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
         """
-        # The original implementation:
-        #   for index, t in enumerate(time_vector):
-        #       volume[index, :, :, :] = volume[index, :, :, :] * da.exp((TE * t) / T2)
-        # Also, valid, and it might be faster:
-        volume *= xp.exp((TE * time_vector) / T2)
+        decay = xp.where(T2 != 0, xp.exp(-(TE * time_vector) / T2), 1)
+        volume = xp.where(volume != 0, volume * decay, volume)
         return volume
 
     def assemble_graph(self) -> CustomArray:
@@ -472,6 +482,9 @@ class Model:
             xp = cp  # use cupy
         elif self.compute_on_device == "cpu":
             xp = np  # use numpy
+        else:
+            Console.printf("error", f"Compute on device can be either 'cpu' or 'cuda' but you set {self.compute_on_device}. Terminate program!")
+            sys.exit()
 
         metabolites_volume_list = []
         for fid in tqdm(self.fid, total=len(self.fid.signal)):
@@ -515,22 +528,23 @@ class Model:
                 TR = xp.asarray([self.TR])
                 #dtype = xp.complex64
 
-            # (4) Include T2 effects
-            volume_metabolite = da.map_blocks(Model._transform_T2,
-                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
-                                              volume_with_mask,
-                                              time_vector,
-                                              TE,
-                                              metabolic_map_t2,
-                                              dtype=dtype)
 
             # (3) Include T1 effects
             volume_metabolite = da.map_blocks(Model._transform_T1,
                                               xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
-                                              volume_metabolite,
+                                              volume_with_mask,
                                               alpha,
                                               TR,
                                               metabolic_map_t1,
+                                             dtype=dtype)
+
+            # (4) Include T2 effects
+            volume_metabolite = da.map_blocks(Model._transform_T2,
+                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
+                                              volume_metabolite,
+                                              time_vector,
+                                              TE,
+                                              metabolic_map_t2,
                                               dtype=dtype)
 
             # (4) Include spatial concentration

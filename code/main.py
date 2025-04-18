@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+
 from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler
 from spectral_spatial_simulation import Model as SpectralSpatialModel
 from sampling import Model as SamplingModel
@@ -60,7 +61,7 @@ def main_entry():
 
         Console.start_timer()
         target_gpu_smaller_tasks = 1
-        target_gpus_big_tasks = [0,1]
+        target_gpus_big_tasks = [0, 1]
 
         # Initialize the UnitRegistry
         u = pint.UnitRegistry()
@@ -237,7 +238,7 @@ def main_entry():
                                                       alpha=45,
                                                       data_type="complex64",
                                                       compute_on_device="cuda",
-                                                      return_on_device="cpu")
+                                                      return_on_device="cpu") # TODO: When doing here cpu next part then cuda has issue!
 
         spectral_spatial_model.add_metabolic_property_maps(metabolic_property_map_dict) # Add map holding multiple MetabolicPropertyMaps (one for each metabolite)
         spectral_spatial_model.add_fid(fid)                                             # Add FID (all separate signals summed up)
@@ -250,14 +251,15 @@ def main_entry():
 
         #### (6/X) ####
         # For starting CPU or CPU CLuster and intermediate computation ########################################### START
-
         # 1) Start Cluster
         cluster = tools.MyLocalCluster()
-        cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="30GB", use_rmm_cupy_allocator=True)
+        cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="20GB", use_rmm_cupy_allocator=True)
         #cluster.start_cpu(number_workers=2, threads_per_worker=10, memory_limit_per_worker="60GB")
 
         # 2) Compute intermediate result
+        Console.start_timer()
         volume_computed = computational_graph.compute()
+        Console.stop_timer()
         # 3) Close client and cluster
         cluster.close()
         # 4) Convert again to dask array
@@ -284,17 +286,32 @@ def main_entry():
                                        persist_computational_graph_spectral_spatial_model=False
                                        )
 
-        computational_graphs_list = sampling_model.apply_coil_sensitivity_maps(compute_on_device='cuda',
-                                                                               return_on_device='cuda')
-
+        # Volume (coil, time, X, Y, Z)
+        computational_graph = sampling_model.apply_coil_sensitivity_maps(compute_on_device='cuda',
+                                                                         return_on_device='cuda')
 
 
         computational_graph = sampling_model.coil_combination(
-            volumes_with_coil_sensitivity_maps=computational_graphs_list,
-            compute_graph_each_coil=False,
-            # use cpu if True (for compute_on_device, thus dask.array.compute() for each coil)
-            compute_on_device='cuda',  # cpu work with 100_000
-            return_on_device='cpu')   # cpu work with 100_000
+            volume_with_coil_sensitivity=computational_graph,
+            compute_on_device='cuda',
+            return_on_device='cpu')
+
+
+        cluster = tools.MyLocalCluster()
+        cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="28GB", use_rmm_cupy_allocator=True, protocol="tcp")
+        #cluster.start_cpu(number_workers=2, threads_per_worker=10, memory_limit_per_worker="60GB")
+
+        # 2) Compute intermediate result
+        Console.start_timer()
+        volume_computed = computational_graph.compute()
+        Console.stop_timer()
+        # 3) Close client and cluster
+        cluster.close()
+
+        sys.exit()
+
+
+
 
 
         # 1) Start Cluster
