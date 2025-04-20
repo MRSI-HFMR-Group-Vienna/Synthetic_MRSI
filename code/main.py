@@ -1,8 +1,9 @@
-import matplotlib.pyplot as plt
+from matplotlib.pyplot import legend, title
 
 from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler
 from spectral_spatial_simulation import Model as SpectralSpatialModel
 from sampling import Model as SamplingModel
+import matplotlib.pyplot as plt
 from display import plot_FID
 from printer import Console
 import dask.array as da
@@ -17,7 +18,6 @@ import h5py
 import sys
 
 from tqdm import tqdm
-
 import warnings
 
 
@@ -63,6 +63,9 @@ def main_entry():
         target_gpu_smaller_tasks = 1
         target_gpus_big_tasks = [0, 1]
 
+        # If intermediate computation should be performed in order to reduce computational graph size
+        compute_spectral_spatial_model = False
+
         # Initialize the UnitRegistry
         u = pint.UnitRegistry()
 
@@ -85,6 +88,34 @@ def main_entry():
 
         # Contains the signal of 11 chemical compounds
         loaded_fid = metabolites.loaded_fid
+
+
+        #loaded_fid.plot(x_type="time", plot_offset=10)
+
+        #fid_PCr = loaded_fid.get_signal_by_name("Phosphocreatine (PCr)")
+        #fid_PCr.plot(x_type="frequency")
+
+        #print(fid_NAA_and_PCr.get_spectrum()["y"].shape)
+
+        #print(loaded_fid.get_signal_by_name("NAcetylAspartate (NAA)").signal.shape)
+        #print(loaded_fid.get_signal_by_name("Phosphocreatine (PCr)").signal.shape)
+        #sys.exit()
+
+        #print(loaded_fid.get_spectrum()["x"].shape)
+        #print(loaded_fid.get_spectrum()["y"].shape)
+        sys.exit()
+
+        plt.plot(loaded_fid.get_spectrum()["x"], np.abs(loaded_fid.get_spectrum()["y"]))
+        #plt.xlabel('Chemical shift (ppm)')
+        plt.gca().invert_xaxis()  # optional, but ensures tick labels run high→low left→right
+        plt.show()
+
+        #plot_FID(signal=loaded_fid.get_spectrum()["y"][0], time=loaded_fid.get_spectrum()["x"])
+        #print(loaded_fid.signal)
+        #print(loaded_fid.time)
+        #print(loaded_fid.sampling_period)
+        #plot_FID(loaded_fid.signal[0].get_spectrum(), time=loaded_fid.time)
+        sys.exit()
 
         Console.printf_section("Load and prepare the Maps")
 
@@ -251,19 +282,20 @@ def main_entry():
 
         #### (6/X) ####
         # For starting CPU or CPU CLuster and intermediate computation ########################################### START
-        # 1) Start Cluster
-        cluster = tools.MyLocalCluster()
-        cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="20GB", use_rmm_cupy_allocator=True)
-        #cluster.start_cpu(number_workers=2, threads_per_worker=10, memory_limit_per_worker="60GB")
+        if compute_spectral_spatial_model:
+            # 1) Start Cluster
+            cluster = tools.MyLocalCluster()
+            cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="20GB", use_rmm_cupy_allocator=True)
+            #cluster.start_cpu(number_workers=2, threads_per_worker=10, memory_limit_per_worker="60GB")
 
-        # 2) Compute intermediate result
-        Console.start_timer()
-        volume_computed = computational_graph.compute()
-        Console.stop_timer()
-        # 3) Close client and cluster
-        cluster.close()
-        # 4) Convert again to dask array
-        computational_graph = da.from_array(volume_computed, chunks=(10, 112, 128, 80))
+            # 2) Compute intermediate result
+            Console.start_timer()
+            volume_computed = computational_graph.compute()
+            Console.stop_timer()
+            # 3) Close client and cluster
+            cluster.close()
+            # 4) Convert again to dask array
+            computational_graph = da.from_array(volume_computed, chunks=(10, 112, 128, 80))
         ############################################################################################################ END
 
 
@@ -303,7 +335,17 @@ def main_entry():
 
         # 2) Compute intermediate result
         Console.start_timer()
-        volume_computed = computational_graph.compute()
+        volume_shape = computational_graph.shape
+
+        signal_fid =  computational_graph[:, volume_shape[1]//2, volume_shape[2]//2, volume_shape[3]//2].compute()
+
+        # 1) Create FID, also with time vector!
+        # 2) Implement ppm in FID
+        # 3) Check where the basics like Larmor freq and so on is saved!
+        plot_FID(signal=np.abs(np.fft.fftshift(np.fft.fft(signal_fid))),
+                 time=np.arange(0, volume_shape[0]),
+                 title="FFT of FID Signals")
+        #volume_computed = computational_graph.compute()
         Console.stop_timer()
         # 3) Close client and cluster
         cluster.close()
@@ -311,14 +353,14 @@ def main_entry():
         sys.exit()
 
 
-
-
-
         # 1) Start Cluster
-        cluster = tools.MyLocalCluster()
-        cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="30GB", use_rmm_cupy_allocator=True)
+        #cluster = tools.MyLocalCluster()
+        #cluster.start_cuda(device_numbers=target_gpus_big_tasks, device_memory_limit="30GB", use_rmm_cupy_allocator=True)
 
-        computational_graph.compute()
+
+        #computational_graph.compute()
+
+
 
         sys.exit()
 

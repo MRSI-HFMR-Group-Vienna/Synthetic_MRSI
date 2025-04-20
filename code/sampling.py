@@ -102,12 +102,12 @@ class Model:
             Console.printf("error", f"In Sampling: Some error occurred. Cannot do transfer CPU <-> CUDA of type {type(array._meta)}")
             sys.exit()
 
+
     def apply_coil_sensitivity_maps(self,
-                                    compute_on_device: str = 'cpu',
-                                    return_on_device: str = 'cpu') -> da.Array:
+                                compute_on_device: str = 'cpu',
+                                return_on_device: str = 'cpu') -> da.Array:
         """
         For applying the coil sensitivity maps to the volume of the spectral spatial model.
-
         :param compute_on_device: target device (cpu or cuda)
         :param return_on_device: target device (cpu or cuda)
         :return: list of dask arrays
@@ -117,6 +117,27 @@ class Model:
         self.coil_sensitivity_maps = self._to_device(self.coil_sensitivity_maps, device=compute_on_device)
         self.computational_graph_spectral_spatial_model = self._to_device(self.computational_graph_spectral_spatial_model, device=compute_on_device)
 
+        ########################## NOT USED YET ########################################################################
+        ####### For only computing values that don#t yield 0
+        ####### => But is slower for 1536 FID points => Maybe test with 100_000 FID Points
+        ### if compute_on_device == 'cpu':
+        ###     xp = np
+        ### elif compute_on_device == 'cuda':
+        ###     xp = cp
+        ### else:
+        ###     Console.printf("error", f"Only possible to compute on 'cpu' or on 'cuda', but you set: {compute_on_device}")
+        ### computational_graph_spectral_spatial_model_broadcast = da.broadcast_to(
+        ###     self.computational_graph_spectral_spatial_model,
+        ###     (self.coil_sensitivity_maps[:, None, ...].shape[0],) + self.computational_graph_spectral_spatial_model[None, ...].shape[1:]  # => (coils, time, X, Y, Z)
+        ### )
+        ###
+        ### volume = da.where(
+        ###     self.computational_graph_spectral_spatial_model[None, ...] != 0,
+        ###     self.computational_graph_spectral_spatial_model[None, ...]      # (1,     time, X, Y, Z)
+        ###     * self.coil_sensitivity_maps[:, None, ...],                     # (coils, 1,    X, Y, Z)
+        ###     computational_graph_spectral_spatial_model_broadcast
+        ###     )
+        ################################################################################################################
 
         # 2) Broadcasting to be able to multiply at once:
         #    coil sensitivity maps shape   : e.g., (32,   X, Y, Z) --> (32, 1,    X, Y, Z)
@@ -125,10 +146,8 @@ class Model:
             self.coil_sensitivity_maps[:, None, ...]                      # (coils, 1,    X, Y, Z)
             * self.computational_graph_spectral_spatial_model[None, ...]  # (1,     time, X, Y, Z)
         )
-
         # 3) Move the full (coils,time,X,Y,Z) stacked volume back once to target device
         volume = self._to_device(volume, device=return_on_device)
-
         return volume
 
     def cartesian_FFT(self,

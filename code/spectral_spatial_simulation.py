@@ -8,6 +8,7 @@ from cupyx.scipy.interpolate import interpn as interpn_gpu
 from scipy.interpolate import interpn as interpn_cpu
 from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
+from datetime import datetime
 from tools import CustomArray
 from printer import Console
 import dask.array as da
@@ -37,7 +38,8 @@ class FID:
                  time: np.ndarray = None,
                  name: list[str] = None,
                  signal_data_type: np.dtype = None,
-                 sampling_period: float = None):
+                 sampling_period: float = None,
+                 sampling_period_unit = None):
         """
         A checks if the shape of the time vector equals the signal vector is performed. If false then the program quits.
         Further, it is also possible to instantiate a class containing just "None".
@@ -177,10 +179,10 @@ class FID:
 
     def get_signal_by_name(self, compound_name: str):
         """
-        TODO
+        To get one signal from the whole FID by name.
 
-        :param compound_name:
-        :return:
+        :param compound_name: Depending on the available names. An example coule be "NAcetylAspartate (NAA)".
+        :return: A FID object containing only the desired signal.
         """
         try:
             index = self.name.index(compound_name)
@@ -190,7 +192,7 @@ class FID:
             Console.printf("error", f"Chemical compound not available: {compound_name}. Please check your spelling and possible whitespaces!")
             return
 
-    def get_signal(self, signal_data_type: np.dtype, mute=True):
+    def get_signal(self, signal_data_type: np.dtype=np.complex64, mute=True):
         """
         To get the signal with a certain precision. Useful to reduce the required space.
 
@@ -220,16 +222,150 @@ class FID:
         self.name = [" + ".join(self.name)]  # To put all compound names in one string (in a list)
         return self
 
-    def get_spectrum(self) -> np.ndarray:
+    def get_spectrum(self, x_type="ppm", *, reference_frequency=297_223_042, ppm_center=2.65) -> dict[str, np.ndarray]:
+        r"""
+        To get the spectrum of all signals contained in the FID (e.g. of NAA, Glutamate, and so on). Also, a single signal
+        is possible, but then return is of shape (1, signal)!
+
+        When ppm is computed:
+
+        .. math::
+            \text{ppm} = \text{ppm}_{\text{center}} - \frac{f}{f_{ref}}\times 10^{6} ~~~~
+        .. math:: ~
+        .. math::
+            \text{with:}~f=\text{frequency [Hz]}, f_{ref}=\text{reference frequency [Hz]}, \text{and}~10^{6}~\text{to get [MHz]}
+        .. math::
+            \text{and:}~\text{ppm}_{\text{center}}~\text{specifies which chemical-shift value (in ppm) corresponds to a frequency offset of 0 Hz}
+
+        It returns a dictionary with dict['x'] the type in 'ppm', 'frequency' (Hz), 'time' (sec) and dict ['y'] of the magnitude.
         """
-        To get the spectrum of each
+        # Possible scales on x-axis
+        return_types_possible = ["ppm", "frequency"]
+        if x_type not in return_types_possible:
+            Console.printf("error", f"Return types of FID only possible: {return_types_possible}. But you gave: {x_type}. Terminate program!")
+            sys.exit()
+
+        # A) Compute the frequency vector
+        N = self.time.size
+        dwell_time = self.time[1] - self.time[0]
+        frequency = np.fft.fftfreq(N, d=dwell_time)
+        frequency = np.fft.fftshift(frequency)
+        x = frequency
+
+        # Ensure that shape is (1, y) to enable handling multidimensional arrays
+        if self.signal.ndim == 1:
+            signal = self.signal[np.newaxis, :]
+        else:
+            signal = self.signal
+        spectrum = np.fft.fft(signal, axis=1)
+        spectrum = np.fft.fftshift(spectrum, axes=1)
+
+        # B) Convert the frequency vector a ppm scale (spectroscopic):
+        if x_type == "ppm":
+            ppm = ppm_center - (frequency / reference_frequency) * 1e6
+            x = ppm
+
+        return {'x': x, 'y': spectrum}
+
+
+    def plot(self, x_type="ppm", plot_offset=2_000, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=2.65, additional_description:str="", legend_position='upper left') -> None:
         """
-        # TODO: just check if right axis is used. Should be fft to each row here?
-        # TODO: Also think about the return type! Maybe just return magnitude?
-        frequency = np.fft.fftfreq(self.time.size, self.sampling_period)
-        magnitude = np.fft.fft(self.signal, axis=1)
-        return {'frequency': frequency,
-                'magnitude': magnitude}
+        To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
+
+        The plot supports to plot:
+            - The signals in the time domain (x_type='time')
+            - The signals in the frequency domain in Hz (x_type='frequency')
+            - The signals in the frequency domain in ppm (x_type='ppm')
+
+        Further, it is possible to save this plot and/or show it.
+
+        If ppm is chosen for x_type then spectroscopic axis form [X to 0], thus values are descending.
+
+        **(!) Please note:** If the magnitude is of the individual signals is low and the **plot_offset** relatively high, then the individual signals appear flat in the plot.
+        **(!) The default plot_offset is 2000**!
+
+        :param x_type: Defines the domain. Can be "time", "frequency", "ppm".
+        :param plot_offset: Offset in vertical axis (y-axis) for preventing signal overlapping.
+        :param show: If plot is shown directly after creating it.
+        :param save_path: Path including filename to save plot.
+        :param reference_frequency: Important when using ppm, can be e.g., those of tetramethylsilane (TMS), or water, etc...
+        :param ppm_center: Defines which chemical shift value corresponds to a frequency offset of 0 Hz
+        :param additional_description: Additional string. Please make "\\n" for new lines!
+        :param legend_position: See matplotlib.
+        :return: Nothing
+        """
+
+        # 1) Check if chosen type for x-axis is valid
+        if not x_type in ["time", "frequency", "ppm"]:
+            Console.printf("error", f"Only possible to choose '{x_type}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
+            sys.exit()
+
+        # 2) Then, cases possible: plotting either in time domain or the frequency domain (frequency=>Hz or ppm)
+        if x_type == "time":
+            scales = self.time
+            signal = self.signal
+        else:
+            spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency, ppm_center=ppm_center)
+            scales = spectrum_dict["x"]
+            signal = spectrum_dict["y"]
+
+        # 3a) Left subplot: To create the figure and plot all signals
+        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=(15,5),
+                                                  nrows=1,
+                                                  ncols=2,
+                                                  gridspec_kw={'width_ratios': [5, 1]})
+        for i, (name, scale, spectrum)  in enumerate(zip(self.name, scales, signal)):
+            ax_main.plot(scales, np.abs(spectrum)+(i*plot_offset), label=name, linewidth=0.7)
+        ax_main.set_title('Signals')
+        ax_main.set_xlabel(f"{x_type}")
+
+        # 3b) Right subplot: To create the description
+        ax_sidebar.axis('off')
+        ax_sidebar.set_title('Description')  # keep the box/frame
+        text_description = (f"{'Plot offset':.<17}: {plot_offset}\n"
+                            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
+                            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}")
+
+        # 3c) If ppm then add additional information
+        if x_type == "ppm":
+            ppm_string = (f"{'Ref. frequency':.<17}: {reference_frequency}\n"
+                          f"{'ppm center':.<17}: {ppm_center if x_type == 'ppm' else None}\n")
+            text_description = ppm_string + text_description
+
+        # 3d) Just to ensure this is first in text string
+        text_description = f"{'Show values':.<17}: Absolute values\n" + text_description
+
+        # 4) Add text to the right (description) text subplot
+        ax_sidebar.text(
+            0.01, 0.99, text_description,
+            transform=ax_sidebar.transAxes,
+            va='top',
+            ha='left',
+            family='monospace'
+        )
+
+        # 5a) Just required in case ppm occurs, thus x-axis is mirrored (spectroscopic view)
+        handles, labels = ax_main.get_legend_handles_labels()
+        handles = handles[::-1]
+        labels = labels[::-1]
+
+        # 5b) Apply mirroring of axis in case ppm is chosen
+        if x_type == "ppm":
+            ax_main.invert_xaxis()
+            handles = handles[::-1]
+            labels = labels[::-1]
+
+        # 5c) Create the whole figure
+        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True)
+        plt.tight_layout()
+
+
+        # 6) Save to desired path and/or show
+        if save_path is not None:
+            fig.savefig(save_path)
+        if show:
+            plt.show()
+
 
     def change_signal_data_type(self, signal_data_type: np.dtype) -> None:
         """
