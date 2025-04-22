@@ -2,6 +2,7 @@ from matplotlib.pyplot import legend, title
 
 from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler
 from spectral_spatial_simulation import Model as SpectralSpatialModel
+from spectral_spatial_simulation import FID
 from sampling import Model as SamplingModel
 import matplotlib.pyplot as plt
 from display import plot_FID
@@ -89,36 +90,7 @@ def main_entry():
         # Contains the signal of 11 chemical compounds
         loaded_fid = metabolites.loaded_fid
 
-
-        #loaded_fid.plot(x_type="time", plot_offset=10)
-
-        #fid_PCr = loaded_fid.get_signal_by_name("Phosphocreatine (PCr)")
-        #fid_PCr.plot(x_type="frequency")
-
-        #print(fid_NAA_and_PCr.get_spectrum()["y"].shape)
-
-        #print(loaded_fid.get_signal_by_name("NAcetylAspartate (NAA)").signal.shape)
-        #print(loaded_fid.get_signal_by_name("Phosphocreatine (PCr)").signal.shape)
-        #sys.exit()
-
-        #print(loaded_fid.get_spectrum()["x"].shape)
-        #print(loaded_fid.get_spectrum()["y"].shape)
-        sys.exit()
-
-        plt.plot(loaded_fid.get_spectrum()["x"], np.abs(loaded_fid.get_spectrum()["y"]))
-        #plt.xlabel('Chemical shift (ppm)')
-        plt.gca().invert_xaxis()  # optional, but ensures tick labels run high→low left→right
-        plt.show()
-
-        #plot_FID(signal=loaded_fid.get_spectrum()["y"][0], time=loaded_fid.get_spectrum()["x"])
-        #print(loaded_fid.signal)
-        #print(loaded_fid.time)
-        #print(loaded_fid.sampling_period)
-        #plot_FID(loaded_fid.signal[0].get_spectrum(), time=loaded_fid.time)
-        sys.exit()
-
         Console.printf_section("Load and prepare the Maps")
-
         #### (1/X) ####
         # Load and prepare the concentration maps ################################################################ START
         # [X] Real data / computation is used
@@ -180,8 +152,8 @@ def main_entry():
                                 # However, using naive approach for first step: (GM+WM)/2 and also the scattering of values
                                 # (33.2+26.8)/2 +/- (1.3+1.2)/2 ==> 30 +/- 1.25
 
-        mu=30
-        sigma=1.25
+        mu=30*1e-3
+        sigma=1.25*1e-3
 
         working_name_and_map = {"Glu":      np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
                                 "Gln":      np.random.normal(loc=mu, scale=sigma, size=metabolic_mask.data.shape),
@@ -262,6 +234,9 @@ def main_entry():
 
         # Create spectral spatial model
         block_size = (int(20), int(112), int(128), int(80))
+
+        # TODO: B0 hinzufügen
+        #
         spectral_spatial_model = SpectralSpatialModel(path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp',
                                                       block_size=block_size,  # Note, also possible: 1536x10x10x10
                                                       TE=0.0013,
@@ -322,6 +297,7 @@ def main_entry():
         computational_graph = sampling_model.apply_coil_sensitivity_maps(compute_on_device='cuda',
                                                                          return_on_device='cuda')
 
+        # TODO: (!)
 
         computational_graph = sampling_model.coil_combination(
             volume_with_coil_sensitivity=computational_graph,
@@ -342,13 +318,24 @@ def main_entry():
         # 1) Create FID, also with time vector!
         # 2) Implement ppm in FID
         # 3) Check where the basics like Larmor freq and so on is saved!
-        plot_FID(signal=np.abs(np.fft.fftshift(np.fft.fft(signal_fid))),
-                 time=np.arange(0, volume_shape[0]),
-                 title="FFT of FID Signals")
+
+
+        #plot_FID(signal=np.abs(np.fft.fftshift(np.fft.fft(signal_fid))),
+        #         time=np.arange(0, volume_shape[0]),
+        #         title="FFT of FID Signals")
         #volume_computed = computational_graph.compute()
         Console.stop_timer()
+
         # 3) Close client and cluster
         cluster.close()
+
+        fid_final = FID(signal=signal_fid, time=loaded_fid.time, name=["final"])
+        #fid_final.plot(x_type="ppm")
+
+        fid = fid.sum_all_signals()
+        fid_both = fid + fid_final
+        
+        fid_both.plot(ppm_center=4.65)
 
         sys.exit()
 
@@ -361,8 +348,6 @@ def main_entry():
         #computational_graph.compute()
 
 
-
-        sys.exit()
 
 ###        import math
 ###

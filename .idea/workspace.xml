@@ -139,22 +139,22 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/code/spectral_spatial_simulation.py</url>
-          <line>1219</line>
+          <line>1224</line>
           <option name="timeStamp" value="15" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/code/spectral_spatial_simulation.py</url>
-          <line>792</line>
+          <line>797</line>
           <option name="timeStamp" value="16" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/code/spectral_spatial_simulation.py</url>
-          <line>811</line>
+          <line>816</line>
           <option name="timeStamp" value="17" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/code/spectral_spatial_simulation.py</url>
-          <line>893</line>
+          <line>898</line>
           <option name="timeStamp" value="18" />
         </line-breakpoint>
       </breakpoints>

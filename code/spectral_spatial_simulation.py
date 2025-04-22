@@ -9,6 +9,7 @@ from scipy.interpolate import interpn as interpn_cpu
 from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 from datetime import datetime
+from functools import partial
 from tools import CustomArray
 from printer import Console
 import dask.array as da
@@ -32,7 +33,6 @@ class FID:
     Also, it is possible to get the signal in various data types and thus, if
     necessary, decrease the memory load.
     """
-
     def __init__(self,
                  signal: np.ndarray = None,
                  time: np.ndarray = None,
@@ -97,7 +97,7 @@ class FID:
 
     def merge_signals(self, names: list[str], new_name: str, divisor: int):
         """
-        TODO
+        TODO Describe!
 
         :param new_name:
         :param names:
@@ -262,13 +262,14 @@ class FID:
 
         # B) Convert the frequency vector a ppm scale (spectroscopic):
         if x_type == "ppm":
-            ppm = ppm_center - (frequency / reference_frequency) * 1e6
+            #ppm = ppm_center - (frequency / reference_frequency) * 1e6
+            ppm = (frequency / reference_frequency - 1) * 1e6 + ppm_center
             x = ppm
 
         return {'x': x, 'y': spectrum}
 
 
-    def plot(self, x_type="ppm", plot_offset=2_000, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=2.65, additional_description:str="", legend_position='upper left') -> None:
+    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=2_000, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=4.65, additional_description:str="", legend_position='upper left') -> None:
         """
         To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
 
@@ -295,15 +296,25 @@ class FID:
         :return: Nothing
         """
 
+        # 0) Define possible quantities for x and y axis
+        x_type_possible = ["time", "frequency", "ppm"]
+        y_type_possible = {
+            "magnitude": np.abs,
+            "real": np.real,
+            "imag": np.imag,
+            "phase_rad": partial(np.angle, deg=False),
+            "phase_deg": partial(np.angle, deg=True),
+        }
+
         # 1) Check if chosen type for x-axis is valid
-        if not x_type in ["time", "frequency", "ppm"]:
-            Console.printf("error", f"Only possible to choose '{x_type}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
+        if not x_type in x_type_possible:
+            Console.printf("error", f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
             sys.exit()
 
         # 2) Then, cases possible: plotting either in time domain or the frequency domain (frequency=>Hz or ppm)
         if x_type == "time":
             scales = self.time
-            signal = self.signal
+            signal = self.signal[np.newaxis, :] if self.signal.ndim == 1 else self.signal # to ensure signal has dim (1, X)
         else:
             spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency, ppm_center=ppm_center)
             scales = spectrum_dict["x"]
@@ -314,8 +325,17 @@ class FID:
                                                   nrows=1,
                                                   ncols=2,
                                                   gridspec_kw={'width_ratios': [5, 1]})
-        for i, (name, scale, spectrum)  in enumerate(zip(self.name, scales, signal)):
-            ax_main.plot(scales, np.abs(spectrum)+(i*plot_offset), label=name, linewidth=0.7)
+
+        #  -> Convert complex signal to possible quantity and print error if quantity not supported
+        if not y_type in y_type_possible:
+            Console.printf("error",f"Only possible to choose '{y_type_possible}' for y-axis, but you have chosen '{y_type}'. Terminate program!")
+            sys.exit()
+        else:
+            transform = y_type_possible[y_type]
+
+        #  -> Plot all signals
+        for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
+            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.7)
         ax_main.set_title('Signals')
         ax_main.set_xlabel(f"{x_type}")
 
@@ -333,7 +353,7 @@ class FID:
             text_description = ppm_string + text_description
 
         # 3d) Just to ensure this is first in text string
-        text_description = f"{'Show values':.<17}: Absolute values\n" + text_description
+        text_description = f"{'Show y-values':.<17}: {y_type}\n" + text_description
 
         # 4) Add text to the right (description) text subplot
         ax_sidebar.text(
@@ -352,11 +372,9 @@ class FID:
         # 5b) Apply mirroring of axis in case ppm is chosen
         if x_type == "ppm":
             ax_main.invert_xaxis()
-            handles = handles[::-1]
-            labels = labels[::-1]
 
         # 5c) Create the whole figure
-        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True)
+        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False)
         plt.tight_layout()
 
 
@@ -585,10 +603,10 @@ class Model:
     @staticmethod
     def _transform_T2(xp: np|cp, volume, time_vector, TE, T2):
         r"""
-        Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in}} --> V_{out}:
+        Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in} --> V_{out}:
         .. math::
 
-            V_{out} = V_{in} \, e^{-\frac{TE \cdot t}{T_2}}
+            V_{out} = V_{in} \, e^{-\frac{TE + t}{T_2}}
 
 
         For the transformation a time vector, TE and T2 is used.
@@ -599,7 +617,7 @@ class Model:
 
         It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
         """
-        decay = xp.where(T2 != 0, xp.exp(-(TE * time_vector) / T2), 1)
+        decay = xp.where(T2 != 0, xp.exp(-(TE + time_vector) / T2), 1)
         volume = xp.where(volume != 0, volume * decay, volume)
         return volume
 
