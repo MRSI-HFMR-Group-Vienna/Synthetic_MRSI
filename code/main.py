@@ -1,11 +1,11 @@
 from matplotlib.pyplot import legend, title
-
 from spatial_metabolic_distribution import Maps, MetabolicPropertyMapsAssembler
 from spectral_spatial_simulation import Model as SpectralSpatialModel
 from spectral_spatial_simulation import FID
 from sampling import Model as SamplingModel
 import matplotlib.pyplot as plt
 from display import plot_FID
+from easygraph import Graph
 from printer import Console
 import dask.array as da
 import numpy as np
@@ -58,11 +58,20 @@ def main_entry():
     warnings.filterwarnings("ignore", message="Sending large graph of size")
     cm = tools.CitationManager("../docs/references.bib")
 
+    # To create a directed graph of the comment-like strings for desired steps
+    g = Graph(measure_time=True)
+    g.add_global("main")   # to make it global -> thus access via Graph.globals["main"]
+
+
     if True:  # TODO change: use cache here:
+        g.add_cluster(name="Initial configuration")
 
         Console.start_timer()
-        target_gpu_smaller_tasks = 1
-        target_gpus_big_tasks = [0, 1]
+        target_gpu_smaller_tasks = 0
+        target_gpus_big_tasks = [0]
+        g.add_node(name="Target GPUs",
+                   text=f"Define GPU {target_gpus_big_tasks} for big tasks and "
+                        f"GPU {target_gpu_smaller_tasks} for small tasks", width=0.5, cluster="Initial configuration")
 
         # If intermediate computation should be performed in order to reduce computational graph size
         compute_spectral_spatial_model = False
@@ -71,32 +80,44 @@ def main_entry():
         u = pint.UnitRegistry()
 
         # Load defined paths in the configurator
+        g.add_node(name="Config file paths", text="Using config file for providing paths.",
+                   cluster="Initial configuration")
         Console.printf_section("Load FID and Mask")
         configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
                                          file_name="paths_14032025.json")
         configurator.load()
-        configurator.print_formatted()
+        #configurator.print_formatted()
 
         # Load metabolic mask
-        metabolic_mask = file.Mask.load(configurator=configurator,
-                                        mask_name="metabolites")
+        g.add_cluster(name="Load and prepare the data")
+        g.add_node(name="Load Metabolic Mask", connect_from="Config file paths", cluster="Load and prepare the data")
+        metabolic_mask = file.Mask.load(configurator=configurator, mask_name="metabolites")
 
 
         # Load the FIDs
+        g.add_node(name="Load example FIDs", connect_from="Config file paths", cluster="Load and prepare the data")
         metabolites = file.FID(configurator=configurator)
-        metabolites.load(fid_name="metabolites",
-                         signal_data_type=np.complex64)
+        metabolites.load(fid_name="metabolites", signal_data_type=np.complex64)
 
         # Contains the signal of 11 chemical compounds
         loaded_fid = metabolites.loaded_fid
 
         Console.printf_section("Load and prepare the Maps")
+
+
         #### (1/X) ####
-        # Load and prepare the concentration maps ################################################################ START
-        # [X] Real data / computation is used
-        # [ ] Placeholder data / computation is used
-        # [ ] Something is missing here
-        # TODO: Nothing yet
+        text = """ =====================================================================================================
+        Step: Load and prepare concentration maps 
+        
+        Description: ´Loading the concentration maps, assigning working names and interpolating it with 2nd order. 
+                      Currently using: (a) Glu, (b) Gln, (c) m-Ins, (d) NAA, (e) Cr+PCr, (f) GPC+PCh´
+        
+                      [X] Simulated data is used
+        """
+        g.add_node(name="Load and prepare concentration maps",
+                   text=text, connect_from=["Load Metabolic Mask", "Load example FIDs"],
+                   width=1.05, title_colour="green", cluster="Load and prepare the data")
+
         loaded_concentration_maps = file.Maps(configurator=configurator, map_type_name="metabolites")
         working_name_and_file_name = {"Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii",
                                       "Gln": "MetMap_Gln_con_map_TargetRes_HiRes.nii",
@@ -113,15 +134,23 @@ def main_entry():
                                                       order=2,
                                                       target_device='cuda',
                                                       target_gpu=target_gpu_smaller_tasks)
-        ############################################################################################################ END
+        #=========================================================================================================== END
 
         #### (2/X) ####
-        # Load and prepare the T1 maps ########################################################################### START
-        # [ ] Real data / computation is used
-        # [ ] Placeholder data / computation is used
-        # [X] Something is missing here
-        # TODO: Same T1 map for each metabolite used
-        # Load T1 map (TODO: only one for the moment, but need one for each metabolite?)
+        text = """ =====================================================================================================
+        Step: Load and prepare the T1 maps
+        
+        Description: Only one T1 map is loaded at the moment and used for each metabolite.
+        
+            [ ] Use for each metabolite a corresponding T1 map.
+            [ ] Scale map not manually below to [ms]
+        
+        Note: The same one T1 map is for each metabolite used!
+        """
+        g.add_node(name="Load and prepare T1 maps", text=text, cluster="Load and prepare the data",
+                   title_colour="yellow")
+
+
         path_to_one_map = os.path.join(configurator.data["path"]["maps"]["metabolites"], "T1_TargetRes_HiRes.nii")
         loaded_T1_map = file.NeuroImage(path=path_to_one_map).load_nii().data * 1e-3
 
@@ -137,20 +166,27 @@ def main_entry():
                                            order=2,
                                            target_device='cuda',
                                            target_gpu=target_gpu_smaller_tasks)
-        ############################################################################################################ END
+        #=========================================================================================================== END
 
         #### (3/X) ####
-        # Load and prepare the T2 maps ########################################################################### START
-        # [ ] Real data / computation is used
-        # [X] Placeholder data / computation is used
-        # [X] Something is missing here
-        # TODO: Only placeholder values for T2. USING AT THE MOMENT T2* instead of T2 (!) Need also for each metabolite map?
-        # TODO: Finally need to combine T2 and T2*
+        text = """ =====================================================================================================
+        Step: Load and prepare T2 maps
+        
+        ´Description: At the moment only placeholder data is used. Therefore, mean values of certain regions in brain 
+                      from paper cited in the code.´
+            
+            [X] Using literature values at the first step: random values from distribution exhibiting mu and sigma.
+            [ ] Check if T2 and T2* correctly applied in code!
+            [ ] Using T2 and T2* values from literature
+            [ ] Using a T2 and T2* map for each metabolite
+            Note: Using at the moment T2* for T2 values. Change this!!!
+        """
+        g.add_node(name="Load and prepare T2 maps", text=text, cluster="Load and prepare the data", title_colour="red")
 
         # Using T2* values from:
         cm.cite("peters2007t2") # Paper offers Grey Matter (GM), White matter (WM), Caudate, Putamen T2* values in [ms];
-                                # However, using naive approach for first step: (GM+WM)/2 and also the scattering of values
-                                # (33.2+26.8)/2 +/- (1.3+1.2)/2 ==> 30 +/- 1.25
+                                # However, using naive approach for first step: (GM+WM)/2 and also the scattering of
+                                # values (33.2+26.8)/2 +/- (1.3+1.2)/2 ==> 30 +/- 1.25
 
         mu=30*1e-3
         sigma=1.25*1e-3
@@ -168,15 +204,21 @@ def main_entry():
                                            order=2,
                                            target_device='cuda',
                                            target_gpu=target_gpu_smaller_tasks)
-        ############################################################################################################ END
+        #=========================================================================================================== END
 
         #### (4/X) ####
-        # Get a subset of all signals of teh FID and merge some FID signals ###################################### START
-        # [X] Real data / computation is used
-        # [ ] Placeholder data / computation is used
-        # [ ] Something is missing here
-        # TODO: Nothing yet
-        # Get partially FID containing only the desired signals
+        text = """ =====================================================================================================
+        Step: Partially FID
+        
+        ´Description: Take a subset of all desired signals of the FID. Some signals need to be combined individually by
+                      adding them and dividing it then by a certain factor.´
+        
+            [X] Combine Creatine ( Cr ) and Phosphocreatine ( PCr ) -> Cr+PCr (divisor = 2)
+           ´[X] Combine Choline_moi( GPC ) and Glycerol_moi( GPC ) and PhosphorylCholine_new1 ( PC ) -> GPC+PCh 
+                (divisor = 2)´
+        """
+        g.add_node(name="Partially FID", text=text, cluster="Load and prepare the data",title_colour="green", width=1.1)
+
         using_fid_signals = ["Glutamate (Glu)",
                              "Glutamine_noNH2 (Gln)",
                              "MyoInositol (m-Ins)",
@@ -185,22 +227,26 @@ def main_entry():
                              "Phosphocreatine (PCr)",
                              "Choline_moi(GPC)",
                              "Glycerol_moi(GPC)",
-                             "PhosphorylCholine_new1 (PC)"
-                             ]
+                             "PhosphorylCholine_new1 (PC)"]
 
         Console.printf_section("Use desired FID signals and merge some of them")
+
+        # Take a subset of all signals of the FID. This returns a new FID object.
         fid = loaded_fid.get_partly_fid(using_fid_signals)
 
         # Merge signals of the FID in order to match the Maps
         fid.merge_signals(names=["Creatine (Cr)", "Phosphocreatine (PCr)"],
-                          new_name="Creatine (Cr)+Phosphocreatine (PCr)",
+                          new_name="Cr+PCr",
                           divisor=2)
         fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"],
                           new_name="GPC+PCh",
                           divisor=2)
         fid.name = fid.get_name_abbreviation()
-        ############################################################################################################ END
+        #=========================================================================================================== END
 
+        g.create()
+        g.save("easy_graph_test")
+        sys.exit()
 
         #### (5/X) ####
         # Combine all metabolic maps to a dictionary of MetabolicPropertyMaps #################################### START
