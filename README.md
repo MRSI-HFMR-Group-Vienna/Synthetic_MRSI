@@ -41,6 +41,16 @@ This project is under active development.
     ```bash
     conda activate MRSI_simulation
     ```
+    > ℹ️
+    > If creating the environment from the `.yml` file is slow with `conda`, you can speed it up by using **mamba**.  
+    > Install mamba in the base environment and then create the environment with:
+    >
+    > ```bash
+    > conda install -n base -c conda-forge mamba
+    > mamba env create -f MRSI_simulation.yml
+    > ```
+
+
 
 ### 2. How to Start
 Once the environment is set up, you can start the simulation. Please note that the project is still under development.
@@ -53,8 +63,8 @@ python main.py
 
 ### 3. What to Consider
 - **Hardware Requirements**:
-    - **CPU**: At least one NVIDIA GPU with CUDA 12.0+
-    - **GPU**: Not yet specified.
+    - **CPU**: Not yet specified.
+    - **GPU**: At least one NVIDIA GPU with CUDA 12.0+
     - **RAM**: Not yet specified.
     - **Memory**: Not yet specified.
 - **Performance Tips**:
