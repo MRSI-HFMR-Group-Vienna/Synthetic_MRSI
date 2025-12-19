@@ -946,14 +946,14 @@ class MyLocalCluster:
         self.cluster_type = "cpu"
         self.__start_client()
 
-    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", use_rmm_cupy_allocator: bool = False, protocol="ucx"):
+    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", use_rmm_cupy_allocator: bool = False, protocol="tpc"): # protocol="ucx"
         """
         Protocols like tcp possible, or ucx. "ucx" is best for GPU to GPU, GPU to host communication: https://ucx-py.readthedocs.io/en/latest/install.html
         """
 
         self._config()
 
-        dask.config.set({"distributed.diagnostics.nvml": False})
+        dask.config.set({"distributed.diagnostics.nvml": self.nvml_diagnostics})
         #if use_rmm_cupy_allocator:
             #rmm.reinitialize(pool_allocator=True)
             #cp.cuda.set_allocator(rmm_cupy_allocator)
@@ -969,8 +969,8 @@ class MyLocalCluster:
                                         jit_unspill=True,
                                         CUDA_VISIBLE_DEVICES=device_numbers,
                                         protocol=protocol,
-                                        dashboard_address=":55000",
-                                        nanny=False)
+                                        dashboard_address=":55000")
+                                        #nanny=False)
         self.cluster_type = "cuda"
         self.__start_client()
 
@@ -1342,6 +1342,21 @@ class GPUTools:
             pool.free_all_blocks()
             return result
 
+
+    @staticmethod
+    def dask_map_blocks(dask_array: dask.array, device: str) -> dask.array:
+        """
+        To convert the backbone arrays between numpy to cupy via mapping the chunks. Numpy is for
+        cpu computations and cupy for gpu computations.
+
+        :param dask_array: a dask array with numpy or cupy inside.
+        :param device: either cpu or gpu/cuda is possible.
+        """
+
+        return dask_array.map_blocks(GPUTools.to_device,
+                                     device=device,
+                                     dtype=dask_array.dtype,
+                                     meta=GPUTools.meta_like(dask_array._meta))
 
     @staticmethod
     def to_device(x: np.ndarray|cp.ndarray, device) -> np.ndarray|cp.ndarray:
