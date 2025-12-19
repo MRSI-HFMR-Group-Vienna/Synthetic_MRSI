@@ -12,6 +12,7 @@ from datetime import datetime
 from functools import partial
 from tools import CustomArray
 from printer import Console
+from pathlib import Path
 import dask.array as da
 import seaborn as sns
 from tqdm import tqdm
@@ -222,7 +223,7 @@ class FID:
         self.name = [" + ".join(self.name)]  # To put all compound names in one string (in a list)
         return self
 
-    def get_spectrum(self, x_type="ppm", *, reference_frequency=297_223_042, ppm_center=2.65) -> dict[str, np.ndarray]:
+    def get_spectrum(self, x_type="ppm", *, reference_frequency=297_223_042, ppm_center=4.65) -> dict[str, np.ndarray]: # 2.65
         r"""
         To get the spectrum of all signals contained in the FID (e.g. of NAA, Glutamate, and so on). Also, a single signal
         is possible, but then return is of shape (1, signal)!
@@ -248,9 +249,9 @@ class FID:
         # A) Compute the frequency vector
         N = self.time.size
         dwell_time = self.time[1] - self.time[0]
-        frequency = np.fft.fftfreq(N, d=dwell_time)
-        frequency = np.fft.fftshift(frequency)
-        x = frequency
+        frequency_hz = np.fft.fftfreq(N, d=dwell_time)
+        frequency_hz = np.fft.fftshift(frequency_hz)
+        x = frequency_hz
 
         # Ensure that shape is (1, y) to enable handling multidimensional arrays
         if self.signal.ndim == 1:
@@ -263,13 +264,13 @@ class FID:
         # B) Convert the frequency vector a ppm scale (spectroscopic):
         if x_type == "ppm":
             #ppm = ppm_center - (frequency / reference_frequency) * 1e6
-            ppm = (frequency / reference_frequency - 1) * 1e6 + ppm_center
+            ppm = (frequency_hz / reference_frequency) * 1e6 + ppm_center
             x = ppm
 
         return {'x': x, 'y': spectrum}
 
 
-    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=2_000, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=4.65, additional_description:str="", legend_position='upper left') -> None:
+    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=1_500, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=4.65, additional_description:str="", legend_position='upper left', figsize=(15,8)) -> None:
         """
         To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
 
@@ -321,7 +322,7 @@ class FID:
             signal = spectrum_dict["y"]
 
         # 3a) Left subplot: To create the figure and plot all signals
-        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=(15,5),
+        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=figsize,
                                                   nrows=1,
                                                   ncols=2,
                                                   gridspec_kw={'width_ratios': [5, 1]})
@@ -335,8 +336,8 @@ class FID:
 
         #  -> Plot all signals
         for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
-            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.7)
-        ax_main.set_title('Signals')
+            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.8)
+        ax_main.set_title('Absolute Values of the FID')
         ax_main.set_xlabel(f"{x_type}")
 
         # 3b) Right subplot: To create the description
@@ -374,7 +375,7 @@ class FID:
             ax_main.invert_xaxis()
 
         # 5c) Create the whole figure
-        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False)
+        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False, ncol=1)
         plt.tight_layout()
 
 
@@ -500,7 +501,7 @@ class Model:
         Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
         Console.add_lines(f" Compute on  ... {self.compute_on_device}")
         Console.add_lines(f" Return on   ... {self.return_on_device}")
-        Console.add_lines(f" Cache path  ... {self.path_cache}")
+        Console.add_lines(f" Cache path  ... {Path(*Path(self.path_cache).parts[-2:])} (shortened)")
         Console.printf_collected_lines("info")
 
 
@@ -621,11 +622,21 @@ class Model:
         volume = xp.where(volume != 0, volume * decay, volume)
         return volume
 
-    def assemble_graph(self) -> CustomArray:
+
+    def assemble_graph(self, all_steps_output=False) -> CustomArray | tuple[CustomArray,CustomArray,CustomArray,CustomArray]:
         """
         Create a computational dask graph. It can be used to compute it or to add further operations.
+        Note: all_steps_output=True, it outputs graphs that includes only certain steps:
+                    -> volume after applying the mask
+                    -> volume after applying the T1
+                    -> volume after applying the T2
+                    -> volume after applying the concentration scaling
 
-        :return: CustomArray with numpy or cupy, based on the selected device when created the model.
+                    (!) Each of these steps builds on the previous one and is therefore not independent
+                        of the preceding ones!
+
+        :return: CustomArray with numpy or cupy, based on the selected device when created the model. Note: in case of
+                 all_steps_output=True, a tuple of computational graphs of the respective applied steps is returned.
         """
 
         Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}:")
@@ -641,8 +652,15 @@ class Model:
             sys.exit()
 
         metabolites_volume_list = []
+
+        if all_steps_output:
+            metabolites_volume_list__after_mask = []
+            metabolites_volume_list__after_T1 = []
+            metabolites_volume_list__after_T2 = []
+            #metabolites_volume_list__after_concentration_scaling = [] not necessary since the final output!
+
         for fid in tqdm(self.fid, total=len(self.fid.signal)):
-            # (1) Prepare the data & reshape it
+            # (1) Prepare the data & reshape it ########################################################################
             #   1a) Get the name of the metabolite (unpack from the list)
             metabolite_name = fid.name[0]
             #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
@@ -660,9 +678,15 @@ class Model:
             metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
             metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
 
+
+            #################### FID + MASK = Volume ###################################################################
             # (2) FID with 3D mask volume yields 4d volume
             volume_with_mask = fid_signal * mask
 
+            if all_steps_output:
+                metabolites_volume_list__after_mask.append(volume_with_mask[None, ...])
+
+            #################### APPLY T1 and T2 #######################################################################
             # (3) Based on selected device prepare data
             dtype = eval("xp." + self.data_type) # yields in e.g., xp.complex64 which can be np.complex64 or cp.complex64
             if self.compute_on_device == "cpu":
@@ -682,17 +706,20 @@ class Model:
                 TR = xp.asarray([self.TR])
                 #dtype = xp.complex64
 
-
-            # (3) Include T1 effects
+            # (4) Include T1 and T2 effects
+            #   4a) Include T1 effects
             volume_metabolite = da.map_blocks(Model._transform_T1,
                                               xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
                                               volume_with_mask,
                                               alpha,
                                               TR,
                                               metabolic_map_t1,
-                                             dtype=dtype)
+                                              dtype=dtype)
 
-            # (4) Include T2 effects
+            if all_steps_output:
+                metabolites_volume_list__after_T1.append(volume_metabolite[None, ...])
+
+            #   4b) Include T2 effects
             volume_metabolite = da.map_blocks(Model._transform_T2,
                                               xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
                                               volume_metabolite,
@@ -701,41 +728,184 @@ class Model:
                                               metabolic_map_t2,
                                               dtype=dtype)
 
-            # (4) Include spatial concentration
+            if all_steps_output:
+                metabolites_volume_list__after_T2.append(volume_metabolite[None, ...])
+
+            #################### SCALE WITH SPATIAL CONCENTRATION ######################################################
+            # (5) Include spatial concentration
             if self.compute_on_device == "cuda":
                 volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
             elif self.compute_on_device == "cpu":
                 volume_metabolite *= self.metabolic_property_maps[metabolite_name].concentration
 
-            # (5) Expand dims, since it is only for one metabolite and concatenate
-            volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
+            # (6) Expand dims, since it is only for one metabolite and concatenate
+            #volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
+            volume_metabolite = volume_metabolite[None, ...] # using this version since volume_metabolite = da.expand_dims(volume_metabolite, axis=0) throws large chunks warning
+
             metabolites_volume_list.append(volume_metabolite)
 
-        # (6) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
+        # (7) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
         volume_all_metabolites = da.concatenate(metabolites_volume_list, axis=0)
 
-        # (7) Sum all metabolites & Create CustomArray from dask Array
+        if all_steps_output:
+            volume_all_metabolites__after_mask = da.concatenate(metabolites_volume_list__after_mask, axis=0)
+            volume_all_metabolites__after_T1 = da.concatenate(metabolites_volume_list__after_T1, axis=0)
+            volume_all_metabolites__after_T2 = da.concatenate(metabolites_volume_list__after_T2, axis=0)
+
+        # (8) Sum all metabolites & Create CustomArray from dask Array
         volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
         volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
 
-        # (8) If the computation device and target device does not match then adjust it
+        if all_steps_output:
+            volume_sum_all_metabolites__after_mask = da.sum(volume_all_metabolites__after_mask, axis=0)
+            volume_sum_all_metabolites__after_T1   = da.sum(volume_all_metabolites__after_T1, axis=0)
+            volume_sum_all_metabolites__after_T2   = da.sum(volume_all_metabolites__after_T2, axis=0)
+
+        # (9) If the computation device and target device does not match then adjust it
         if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
             volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy)
+            if all_steps_output:
+                volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(cp.asnumpy)
+                volume_sum_all_metabolites__after_T1   = volume_sum_all_metabolites__after_T1.map_blocks(cp.asnumpy)
+                volume_sum_all_metabolites__after_T2   = volume_sum_all_metabolites__after_T2.map_blocks(cp.asnumpy)
+
         elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
             volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)
+            if all_steps_output:
+                volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(cp.asarray)
+                volume_sum_all_metabolites__after_T1   = volume_sum_all_metabolites__after_T1.map_blocks(cp.asarray)
+                volume_sum_all_metabolites__after_T2   = volume_sum_all_metabolites__after_T2.map_blocks(cp.asarray)
 
-        # (9) Just clarify a computational graph is returned
-        computational_graph: CustomArray = volume_sum_all_metabolites
+        if not all_steps_output:
+            # (10) Return the computional graph
+            computational_graph: CustomArray = volume_sum_all_metabolites
+            return computational_graph
+        else:
+            computational_graph__after_mask: CustomArray = volume_sum_all_metabolites__after_mask
+            computational_graph__after_T1: CustomArray = volume_sum_all_metabolites__after_T1
+            computational_graph__after_T2: CustomArray = volume_sum_all_metabolites__after_T2
+            computational_graph__after_concentration_scaling: CustomArray = volume_sum_all_metabolites
+            return (computational_graph__after_mask, computational_graph__after_T1, computational_graph__after_T2, computational_graph__after_concentration_scaling)
 
-        return computational_graph
 
-    def build(self):
-        """
-        Do we need this? I guess not! Would give whole computed model, which would be very big!
-
-        :return:
-        """
-        raise NotImplementedError
+###    def assemble_graph(self) -> CustomArray:
+###        """
+###        Create a computational dask graph. It can be used to compute it or to add further operations.
+###
+###        :return: CustomArray with numpy or cupy, based on the selected device when created the model.
+###        """
+###
+###        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}:")
+###
+###        # Defining based on the selected device if cupy or numpy should be used
+###        xp = None
+###        if self.compute_on_device == "cuda":
+###            xp = cp  # use cupy
+###        elif self.compute_on_device == "cpu":
+###            xp = np  # use numpy
+###        else:
+###            Console.printf("error", f"Compute on device can be either 'cpu' or 'cuda' but you set {self.compute_on_device}. Terminate program!")
+###            sys.exit()
+###
+###        metabolites_volume_list = []
+###        for fid in tqdm(self.fid, total=len(self.fid.signal)):
+###            # (1) Prepare the data & reshape it ########################################################################
+###            #   1a) Get the name of the metabolite (unpack from the list)
+###            metabolite_name = fid.name[0]
+###            #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
+###            fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
+###            fid_signal = xp.asarray(fid_signal)
+###            fid_signal = da.from_array(fid_signal, chunks=self.block_size[0])
+###            #   1c) Reshape time vector, create dask array with block size defined by the user
+###            time_vector = fid.time[:, xp.newaxis, xp.newaxis, xp.newaxis]
+###            time_vector = da.from_array(time_vector, chunks=(self.block_size[0], 1, 1, 1))
+###            #   1d) Same as for FID and time vector above
+###            mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
+###            mask = xp.asarray(mask)
+###            mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
+###            #   1f) Get T1 and T2 of respective metabolite with the metabolite name
+###            metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
+###            metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
+###
+###            # (2) FID with 3D mask volume yields 4d volume #############################################################
+###            volume_with_mask = fid_signal * mask
+###
+###            # (3) Based on selected device prepare data ################################################################
+###            dtype = eval("xp." + self.data_type) # yields in e.g., xp.complex64 which can be np.complex64 or cp.complex64
+###            if self.compute_on_device == "cpu":
+###                # Creates numpy arrays with xp
+###                TE = xp.asarray([self.TE])
+###                alpha = xp.asarray([self.alpha])
+###                TR = xp.asarray([self.TR])
+###                #dtype = xp.complex64  # TODO
+###            elif self.compute_on_device == "cuda":
+###                # Creates cupy arrays with xp
+###                volume_with_mask = volume_with_mask.map_blocks(xp.asarray, dtype=xp.complex64)
+###                time_vector = time_vector.map_blocks(xp.asarray, dtype=xp.complex64)
+###                TE = xp.asarray([self.TE])
+###                metabolic_map_t2 = metabolic_map_t2.map_blocks(xp.asarray, dtype=xp.complex64)
+###                metabolic_map_t1 = metabolic_map_t1.map_blocks(xp.asarray, dtype=xp.complex64)
+###                alpha = xp.asarray([self.alpha])
+###                TR = xp.asarray([self.TR])
+###                #dtype = xp.complex64
+###
+###            # (4) Include T1 and T2 effects
+###            #   4a) Include T1 effects
+###            volume_metabolite = da.map_blocks(Model._transform_T1,
+###                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
+###                                              volume_with_mask,
+###                                              alpha,
+###                                              TR,
+###                                              metabolic_map_t1,
+###                                             dtype=dtype)
+###
+###            #   4b) Include T2 effects
+###            volume_metabolite = da.map_blocks(Model._transform_T2,
+###                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
+###                                              volume_metabolite,
+###                                              time_vector,
+###                                              TE,
+###                                              metabolic_map_t2,
+###                                              dtype=dtype)
+###
+###            # (5) Include spatial concentration
+###            if self.compute_on_device == "cuda":
+###                volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
+###            elif self.compute_on_device == "cpu":
+###                volume_metabolite *= self.metabolic_property_maps[metabolite_name].concentration
+###
+###            # (6) Expand dims, since it is only for one metabolite and concatenate
+###            #volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
+###            volume_metabolite = volume_metabolite[None, ...] # using this version since volume_metabolite = da.expand_dims(volume_metabolite, axis=0) throws large chunks warning
+###
+###            metabolites_volume_list.append(volume_metabolite)
+###
+###        # (7) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
+###        volume_all_metabolites = da.concatenate(metabolites_volume_list, axis=0)
+###
+###        # (8) Sum all metabolites & Create CustomArray from dask Array
+###        volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
+###        volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
+###
+###        # (9) If the computation device and target device does not match then adjust it
+###        if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
+###            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy)
+###        elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
+###            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)
+###
+###        # (10) Just clarify a computational graph is returned
+###        computational_graph: CustomArray = volume_sum_all_metabolites
+###
+###        return computational_graph
+###
+####    def build(self):
+####        """
+####        Do we need this? I guess not! Would give whole computed model, which would be very big!
+####
+####
+####        :return:
+####        """
+####        raise NotImplementedError
 
 
 class Simulator:

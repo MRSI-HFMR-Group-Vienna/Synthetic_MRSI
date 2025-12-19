@@ -1,0 +1,136 @@
+# syntax=docker/dockerfile:1
+
+# Base image: CUDA 12.2 runtime on Ubuntu 22.04
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System tools + tini + curl + rclone + FUSE userspace
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        git \
+        ca-certificates \
+        bash \
+        tini \
+        curl \
+        rclone \
+        fuse3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Make absolutely sure a "fusermount3" command exists in PATH
+RUN if ! command -v fusermount3 >/dev/null 2>&1 && command -v fusermount >/dev/null 2>&1; then \
+      ln -s "$(command -v fusermount)" /usr/local/bin/fusermount3; \
+    fi
+
+# Hint rclone which helper to use (not strictly required but nice)
+ENV RCLONE_FUSE_COMMAND=fusermount3
+
+# Create non-root user "monkey"
+ARG USERNAME=monkey
+ARG UID=1000
+ARG GID=1000
+
+RUN groupadd -g ${GID} ${USERNAME} && \
+    useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USERNAME}
+
+# Set HOME for the non-root user
+ENV HOME=/home/${USERNAME}
+
+# Miniforge (conda/mamba) to /opt/conda
+ENV CONDA_DIR=/opt/conda
+COPY docker/Miniforge3-Linux-x86_64.sh /tmp/miniforge.sh
+
+RUN bash /tmp/miniforge.sh -b -p ${CONDA_DIR} && \
+    rm /tmp/miniforge.sh
+
+# Put conda/mamba on PATH
+ENV PATH=${CONDA_DIR}/bin:${PATH}
+
+# Use bash for RUN steps from here on
+SHELL ["bash", "-lc"]
+
+# Optional sanity check that mamba is available
+RUN mamba --version
+
+# Install JupyterLab & ipykernel into base env using mamba
+RUN mamba install -y -n base jupyterlab ipykernel && \
+    conda clean -afy
+
+# Project env + repo locations
+ENV PROJECT_ENV_DIR=/opt/envs/MRSI_simulation
+# Expect env file under monkey's home (copied below)
+ENV PROJECT_ENV_FILE=${HOME}/env/MRSI_simulation.yml
+
+# Ensure directory for the env file exists
+RUN mkdir -p "$(dirname "${PROJECT_ENV_FILE}")"
+
+# Copy conda environment file from build context (project-root/env/...)
+# Build with: docker build -f docker/Dockerfile -t mrsi-image .
+COPY env/MRSI_simulation.yml ${PROJECT_ENV_FILE}
+
+# Create project env with mamba (non-interactive)
+RUN mamba env create -y -p "${PROJECT_ENV_DIR}" -f "${PROJECT_ENV_FILE}" && \
+    conda clean -afy
+
+# Register a Jupyter kernel for the project env
+RUN conda run -p "${PROJECT_ENV_DIR}" python -m ipykernel install \
+        --user \
+        --name MRSI_simulation \
+        --display-name "MRSI_simulation"
+
+# Helper start script: init conda + activate project env
+RUN mkdir -p /usr/local/bin && \
+    cat << 'EOF' > /usr/local/bin/start.sh
+#!/bin/bash
+set -e
+
+# Load conda
+source /opt/conda/etc/profile.d/conda.sh
+
+# Try to activate project env if it exists
+if [ -d "$PROJECT_ENV_DIR" ]; then
+    echo "Activating conda env at: $PROJECT_ENV_DIR"
+    conda activate "$PROJECT_ENV_DIR" || export PATH="$PROJECT_ENV_DIR/bin:$PATH"
+else
+    echo "Project env directory $PROJECT_ENV_DIR does not exist."
+    echo "Falling back to base conda env."
+    conda activate base || true
+fi
+
+exec "$@"
+EOF
+
+# Helper script to start JupyterLab (runs inside active env)
+RUN cat << 'EOF' > /usr/local/bin/start-jupyter.sh
+#!/bin/bash
+set -e
+
+jupyter lab \
+  --ip=0.0.0.0 \
+  --port="${JUPYTER_PORT:-8888}" \
+  --no-browser \
+  --notebook-dir="${HOME}"
+EOF
+
+RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/start-jupyter.sh
+
+# Create env root and fix ownership
+RUN mkdir -p /opt/envs && \
+    chown -R ${USERNAME}:${USERNAME} /home/${USERNAME} /opt/envs || true
+
+# Switch to non-root user (container starts as "monkey")
+USER ${USERNAME}
+
+# Default working directory: monkey's home directory
+WORKDIR /home/${USERNAME}
+
+# Expose Jupyter default port (optional but nice)
+EXPOSE 8888
+
+# Entrypoint: tini -> start.sh (which activates env) -> your command
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start.sh"]
+
+# Default command: interactive shell (already inside MRSI_simulation env)
+CMD ["bash"]
+

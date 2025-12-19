@@ -1,6 +1,8 @@
+import time
+
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 from scipy.ndimage import zoom as zoom_cpu
-from tools import CustomArray
+from tools import CustomArray, GPUTools
 from printer import Console
 import dask.array as da
 from tqdm import tqdm
@@ -65,6 +67,7 @@ class Maps:
         else:
             self.maps: dict[str, np.ndarray | np.memmap] = maps
 
+
     def interpolate_to_target_size(self, target_size: tuple, order: int = 3, target_device: str = 'cpu', target_gpu: int = 0):
         """
         To interpolate all maps that the Maps object contains to a desired target size. The order of interpolation
@@ -99,18 +102,15 @@ class Maps:
             # When cuda is selected, convert numpy array to a cupy array
 
             if target_device == 'cuda':
-                # Compute on desired GPU
-                with cp.cuda.Device(target_gpu):
-                    # Convert numpy array to cupy array
-                    loaded_map = cp.asarray(loaded_map)
-                    # Interpolate with selected method
-                    interpolated = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+                # Compute on desired GPU, and then bring back to CPU
+                interpolated = GPUTools.run_cupy_local_pool(working_function=lambda: zoom(input=cp.asarray(loaded_map), zoom=zoom_factor, order=order), device=target_gpu)
             else:
                 # Interpolate with selected method
                 interpolated = zoom(input=loaded_map, zoom=zoom_factor, order=order)
 
-            # When cuda is selected, convert cupy array back to a numpy array and thus transfer to cpu
-            self.maps[working_name] = interpolated if target_device == 'cpu' else cp.asnumpy(interpolated)
+
+            self.maps[working_name] = interpolated
+
 
             Console.add_lines(f"  {(i)}: {working_name:.<10}: {loaded_map.shape} --> {self.maps[working_name].shape}")
         Console.printf_collected_lines("success")

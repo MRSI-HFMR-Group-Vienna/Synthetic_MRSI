@@ -299,7 +299,7 @@ class Maps:
                 raise ValueError(f"Multiple file types found: {files_extensions}, folder operation not possible!")
 
         else:
-            Console.printf("info", "Maps object: The provided does not exist or is neither a file nor a folder. Exiting system.")
+            Console.printf("error", f"Maps object: The provided path does not exist or is neither a file nor a folder: {self.main_path} Exiting system.")
             sys.exit()
 
         if self.file_type not in self.file_type_allowed:
@@ -396,8 +396,13 @@ class Maps:
 
         return self
 
+
+##### This Method is already the spatial_metabolic_distribution.Maps available and that class has also GPU interpolation enabled
     def interpolate_to_target_size(self, target_size: tuple, order: int = 3) -> Self:
         """
+        DELETE THIS METHOD; DELETE THIS METHOD;DELETE THIS METHOD;DELETE THIS METHOD;DELETE THIS METHOD;
+        !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
         To interpolate one or multiple maps to the desired target size. Check for more information direct this
         method and the comments.
 
@@ -405,6 +410,8 @@ class Maps:
         :param order: interpolation order
         :return: the object of the whole class
         """
+
+        Console.printf("warning", "!!!! DONT USE THIS METHOD ANY MORE!!!! INSTEAD INTERPOLATE VIA MAPS FROM spatial_metabolic_distribution")
 
         if isinstance(self.loaded_maps, dict):
             """
@@ -420,7 +427,7 @@ class Maps:
             Console.printf_collected_lines("success")
         else:
             """
-            Case 2: Only one map is handled in the Maps class. This can be for example one nii file. 
+            Case 2: Only one map is handled in the Maps class. This can be for example one nii file.
                     In this case, no dictionary is used.
             """
             initial_shape = self.loaded_maps.shape

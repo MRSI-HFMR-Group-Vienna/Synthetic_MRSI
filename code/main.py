@@ -23,7 +23,6 @@ import warnings
 
 
 
-
 def zen_of_python():
     """
     The zen of python. Or just 'import this' - 42!
@@ -84,13 +83,13 @@ def main_entry():
                    cluster="Initial configuration")
         Console.printf_section("Load FID and Mask")
         configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
-                                         file_name="paths_14032025.json")
+                                         file_name="paths_15082024.json") #"paths_14032025.json"
         configurator.load()
         #configurator.print_formatted()
 
         # Load metabolic mask
         g.add_cluster(name="Load and prepare the data")
-        g.add_node(name="Load Metabolic Mask", connect_from="Config file paths", cluster="Load and prepare the data")
+        g.add_node(name="Load Metabolic Mask", text="[ ] Use newest config file 14032025", connect_from="Config file paths", cluster="Load and prepare the data")
         metabolic_mask = file.Mask.load(configurator=configurator, mask_name="metabolites")
 
 
@@ -101,6 +100,12 @@ def main_entry():
 
         # Contains the signal of 11 chemical compounds
         loaded_fid = metabolites.loaded_fid
+
+
+        sys.exit()
+
+
+
 
         Console.printf_section("Load and prepare the Maps")
 
@@ -244,18 +249,22 @@ def main_entry():
         fid.name = fid.get_name_abbreviation()
         #=========================================================================================================== END
 
-        g.create()
-        g.save("easy_graph_test")
-        sys.exit()
-
-        #### (5/X) ####
-        # Combine all metabolic maps to a dictionary of MetabolicPropertyMaps #################################### START
-        # [ ] Real data / computation is used
-        # [ ] Placeholder data / computation is used
-        # [X] Use previous data for computation
-        # [ ] Something is missing here
+        #g.create()
+        #g.save("easy_graph_test")
+        #sys.exit()
 
         block_size = (int(20), int(112), int(128), int(80))
+        text = f""" =====================================================================================================
+        Step: Create Metabolic Property Maps
+
+        ´Description: Combine all metabolic maps to a dictionary of MetabolicPropertyMaps. 
+        Using dask block size: {block_size}´
+        Note: Try 5, 56, 64, 40 for 100.000 FID points.
+
+        """
+        g.add_node(name="Create Metabolic Property Maps", text=text, cluster="Load and prepare the data", title_colour="yellow")
+
+        #block_size = (int(20), int(112), int(128), int(80))
         #block_size = (int(5), int(112 / 2), int(128 / 2), int(80 / 2)) # for 100.000 FID points  TODO: Print number of blocks used for the computation and how much memory it eats up per block
 
         assembler = MetabolicPropertyMapsAssembler(block_size=(block_size[1], block_size[2], block_size[3]),
@@ -269,17 +278,25 @@ def main_entry():
         ############################################################################################################ END
 
 
-        #### (6/X) ####
-        # Combines spectral part (FIDs) and spatial parts (MetabolicPropertyMaps) ################################ START
-        # Thus, includes FID, T1 & T2 Effects.
-        # [ ] Real data / computation is used
-        # [ ] Placeholder data / computation is used
-        # [X] Use previous data for computation
-        # [ ] Something is missing here
+        block_size = (int(20), int(112), int(128), int(80))
+        text = f""" =====================================================================================================
+        Step: Spectral-spatial combination
+
+        ´Description: Combines spectral part (FID) and spatial parts (Metabolic Property Maps). 
+        It includes: FID, T1, T2 effects.
+        Using dask block size: {block_size}´
+            
+            [ ] Adding B0
+        """
+        g.add_node(name="Spectral-spatial combination",
+                   text=text,
+                   cluster="Create models",
+                   title_colour="yellow")
+
         Console.printf_section("Create Spectral-Spatial-Model")
 
         # Create spectral spatial model
-        block_size = (int(20), int(112), int(128), int(80))
+
 
         # TODO: B0 hinzufügen
         #
@@ -302,7 +319,21 @@ def main_entry():
 
 
         #### (6/X) ####
+        block_size = (int(20), int(112), int(128), int(80))
+        text = f""" =====================================================================================================
+        Step: Start cluster on CPU or GPU
+
+        ´Description: Starts a CPU or CUDA cluster for dask operations.
+        Using dask block size: {block_size}´
+
+        Note: Block size is again changed!
+        """
+        g.add_node(name="Start cluster on CPU or GPU",
+                   text=text,
+                   cluster="Compute the data",
+                   title_colour="green")
         # For starting CPU or CPU CLuster and intermediate computation ########################################### START
+        compute_spectral_spatial_model = True
         if compute_spectral_spatial_model:
             # 1) Start Cluster
             cluster = tools.MyLocalCluster()
@@ -316,25 +347,32 @@ def main_entry():
             # 3) Close client and cluster
             cluster.close()
             # 4) Convert again to dask array
-            computational_graph = da.from_array(volume_computed, chunks=(10, 112, 128, 80))
+            computational_graph = da.from_array(volume_computed, chunks=block_size)
         ############################################################################################################ END
 
 
         #### (7/X) ####
-        # Create Sampling model and include Coil Sensitivity Maps ################################################ START
-        # [X] Real data / computation is used
-        # [ ] Placeholder data / computation is used
-        # [X] Use previous data for computation
-        # [ ] Something is missing here
+        block_size_computational_graph_spectral_spatial_model = (int(20), int(112), int(128), int(80))
+        block_size_coil_sensitivity_maps = (int(20), int(112), int(128), int(80))
+        text = f""" =====================================================================================================
+        Step: Create Sampling Model
+
+        ´Description: Creating Sampling Model and include coil sensitivity maps
+        * Block size spectral spatial model: {block_size_computational_graph_spectral_spatial_model}
+        * Block size coil sensitivity maps: {block_size_coil_sensitivity_maps}´
+        """
+        g.add_node(name="Create Sampling Model", text=text, cluster="Create models", title_colour="green")
+
+
         coil_sensitivity_maps_loader = file.CoilSensitivityMaps(configurator=configurator)
         coil_sensitivity_maps_loader.load_h5py(keys=["imag", "real"], dtype=np.complex64)
         target_size = (32, metabolic_mask.shape[0], metabolic_mask.shape[1], metabolic_mask.shape[2])
         coil_sensitivity_maps = coil_sensitivity_maps_loader.interpolate(target_size=target_size, order=2, compute_on_device='cuda', gpu_index=target_gpu_smaller_tasks, return_on_device='cuda') # TODO TODO TODO TODO
 
         sampling_model = SamplingModel(computational_graph_spectral_spatial_model=computational_graph,
-                                       block_size_computational_graph_spectral_spatial_model=(10, 112, 128, 80),
+                                       block_size_computational_graph_spectral_spatial_model=block_size_computational_graph_spectral_spatial_model,
                                        coil_sensitivity_maps=coil_sensitivity_maps,
-                                       block_size_coil_sensitivity_maps=(10, 112, 128, 80),
+                                       block_size_coil_sensitivity_maps=block_size_coil_sensitivity_maps,
                                        path_cache='/home/mschuster/projects/Synthetic_MRSI/cache/dask_tmp', # TODO: has no effect!
                                        persist_computational_graph_spectral_spatial_model=False
                                        )

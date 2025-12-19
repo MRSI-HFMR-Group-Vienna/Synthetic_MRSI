@@ -1,8 +1,8 @@
-from rmm.allocators.cupy import rmm_cupy_allocator
+from rmm import rmm_cupy_allocator
 from dask.distributed import Client, LocalCluster
 from dask_cuda import LocalCUDACluster
 #from printer import Console
-import torch
+#import torch
 import pint
 import rmm
 import sys
@@ -15,12 +15,18 @@ from printer import Console
 u = pint.UnitRegistry()  # for using units
 
 import dask.array as da
+import dask
 import os
 import math
 import pint
 import numpy as np
 import cupy as cp
 import bibtexparser
+import socket
+import time
+
+from dask.distributed import LocalCluster, Worker
+
 
 
 class CitationManager:
@@ -899,7 +905,7 @@ class CustomBlockView(da.core.BlockView):
 class MyLocalCluster:
     # TODO Docstring and also describe remaining parts of class!
 
-    def __init__(self):
+    def __init__(self, nvml_diagnostics=True, split_large_chunks=False):
         self.cluster = None
         self.cluster_type: str = None
         self.client = None
@@ -907,10 +913,36 @@ class MyLocalCluster:
         # 1) Prevent rapids libs from initializing cuda at import time
         os.environ.setdefault("RAPIDS_NO_INITIALIZE", "1") # Prevent RAPIDS from auto‑initializing CUDA at import time
 
+        # 2) Disable or enable nvml diagnostics. Disabling it can solve permission issues when computing on a gpu node.
+        self.nvml_diagnostics = nvml_diagnostics
+
+        # 3) To avoid/allow creating the large chunks (e.g., caused by reshaping)
+        self.split_large_chunks = split_large_chunks
+
+
+    def _config(self):
+        dask.config.set({
+            "distributed.diagnostics.nvml": self.nvml_diagnostics,
+            "array.slicing.split_large_chunks": self.split_large_chunks,
+            "distributed.worker.memory.target": 0.8,   # start spilling later
+            "distributed.worker.memory.spill": 0.9,    # spill only when very full
+            "distributed.worker.memory.pause": False,  # do not pause workers
+        })
+
+        if self.nvml_diagnostics is False:
+            Console.printf("warning", "nvml diagnostics is disabled!")
+
+        if self.split_large_chunks is True:
+            Console.printf("info", "Splitting large chunks is activated")
+
+
     def start_cpu(self, number_workers: int, threads_per_worker: int, memory_limit_per_worker: str = "30GB"):
+
+        self._config()
         self.cluster = LocalCluster(n_workers=number_workers,
                                     threads_per_worker=threads_per_worker,
-                                    memory_limit=memory_limit_per_worker)
+                                    memory_limit=memory_limit_per_worker,
+                                    dashboard_address=":55000")
         self.cluster_type = "cpu"
         self.__start_client()
 
@@ -918,6 +950,10 @@ class MyLocalCluster:
         """
         Protocols like tcp possible, or ucx. "ucx" is best for GPU to GPU, GPU to host communication: https://ucx-py.readthedocs.io/en/latest/install.html
         """
+
+        self._config()
+
+        dask.config.set({"distributed.diagnostics.nvml": False})
         #if use_rmm_cupy_allocator:
             #rmm.reinitialize(pool_allocator=True)
             #cp.cuda.set_allocator(rmm_cupy_allocator)
@@ -932,7 +968,8 @@ class MyLocalCluster:
                                         device_memory_limit=device_memory_limit,
                                         jit_unspill=True,
                                         CUDA_VISIBLE_DEVICES=device_numbers,
-                                        protocol=protocol)
+                                        protocol=protocol,
+                                        dashboard_address=":55000")
         self.cluster_type = "cuda"
         self.__start_client()
 
@@ -960,6 +997,9 @@ class MyLocalCluster:
             finally:
                 self.client = None
 
+
+        time.sleep(1) # TODO: Maybe solves issue regarding that port still blocked?
+
         # 2) Then close cluster
         if self.cluster is not None:
             try:
@@ -984,78 +1024,177 @@ class MyLocalCluster:
                                f" Link to dashboard: {dashboard_url}")
 
 
-class ConfiguratorGPU():
-    """
-    TODO!!! Describe it
-    """
 
-    def __init__(self, required_space_gpu: np.ndarray):
+    def start_cuda_test(
+        self,
+        device_numbers: list[int] = 1,
+        threads_per_worker: int = 1,
+        memory_limit_per_worker: str = "30GB",
+        dashboard_port: int = 55000,
+        local_directory: str = "/tmp/dask-worker-space",
+        use_rmm_cupy_allocator: bool = False,
+    ):
+        # 0) Force-disable NVML diagnostics for this cluster, regardless of instance setting
+        prev_nvml_diagnostics = self.nvml_diagnostics
+        self.nvml_diagnostics = False
+    
+        self._config()
+        self.nvml_diagnostics = prev_nvml_diagnostics
+    
+        # 1) LocalCluster with *no Nanny* (processes=False or worker_class=Worker)
+        self.cluster = LocalCluster(
+            n_workers=1,
+            threads_per_worker=threads_per_worker,
+            processes=False,                         # <- critical: no Nanny
+            worker_class=Worker,                    # (optional but explicit)
+            memory_limit=memory_limit_per_worker,   # or "auto"
+            local_directory=local_directory,
+            dashboard_address=f":{dashboard_port}",
+        )
+        self.cluster_type = "cuda"
+        self.__start_client()
+    
+        # 2) Optional: RMM / CuPy allocator init
+        if use_rmm_cupy_allocator:
+            def _init_rmm():
+                import rmm
+                import cupy as cp
+                rmm.reinitialize(pool_allocator=True) #, initial_pool_size="10GB")
+                cp.cuda.set_allocator(rmm_cupy_allocator)
+    
+            self.client.run(_init_rmm)
 
-        torch.cuda.empty_cache()
-        self.available_gpus: int = torch.cuda.device_count()
-        self.selected_gpu: int = None
-        self.required_space_gpu = required_space_gpu
-        self.free_space_selected_gpu: torch.Tensor = None
 
-    def select_least_busy_gpu(self):
-        from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+###    def start_cuda_test(
+###        self,
+###        device_numbers: list[int] = 1,
+###        threads_per_worker: int = 1,
+###        memory_limit_per_worker: str = "30GB",
+###        dashboard_port: int = 55000,
+###        local_directory: str = "/tmp/dask-worker-space",
+###        use_rmm_cupy_allocator: bool = False,
+###        nanny=False
+###    ):
+###        """
+###        Experimental GPU-friendly cluster that avoids dask_cuda / NVML.
+###
+###        - Uses a plain LocalCluster (no LocalCUDACluster, no UCX/NVML integration).
+###        - Assumes CUDA_VISIBLE_DEVICES / SLURM already restrict visible GPUs,
+###          but additionally sets CUDA_VISIBLE_DEVICES from `device_numbers`.
+###        - All GPU work must be done explicitly via CuPy / Numba inside your tasks.
+###        """
+###
+###        # 0) Force-disable NVML diagnostics for this cluster, regardless of instance setting
+###        prev_nvml_diagnostics = self.nvml_diagnostics
+###        self.nvml_diagnostics = False
+###
+###        # Apply dask config (nvml off, chunk behavior, memory thresholds, etc.)
+###        self._config()
+###
+###        # Restore original flag so the object state isn't permanently altered
+###        self.nvml_diagnostics = prev_nvml_diagnostics
+###
+###        ## 1) Restrict visible GPUs for this process (and its workers)
+###        #os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(d) for d in device_numbers)
+###
+###        # 2) Start a plain LocalCluster that is "GPU aware" only via CUDA_VISIBLE_DEVICES
+###        self.cluster = LocalCluster(
+###            n_workers=1,
+###            threads_per_worker=1,
+###            processes=True,
+###            memory_limit="600GB",
+###            local_directory=local_directory,
+###            dashboard_address=f":{dashboard_port}",
+###        )
+###        self.cluster_type = "cuda"  # still call it "cuda" for downstream logic
+###        self.__start_client()
+###
+###        # 3) Optional: initialize RMM/CuPy allocator on all workers
+###        if use_rmm_cupy_allocator:
+###            def _init_rmm():
+###                import rmm
+###                import cupy as cp
+###                # You must have rmm_cupy_allocator defined/imported at module level
+###                rmm.reinitialize(pool_allocator=True, initial_pool_size="10GB") ### TODO: Added initial pool size !!!! Maybe remove again
+###                cp.cuda.set_allocator(rmm_cupy_allocator)
+###
+###            self.client.run(_init_rmm)
 
-        # based on percentage free
-        free_space_devices = []
-        for device in range(self.available_gpus):
-            space_total_cuda = torch.cuda.mem_get_info(device)[1]
-            space_free_cuda = torch.cuda.mem_get_info(device)[0]
-            percentage_free_space = space_free_cuda / space_total_cuda
-            free_space_devices.append(percentage_free_space)
 
-        self.selected_gpu = free_space_devices.index(max(free_space_devices))
 
-        torch.cuda.set_device(self.selected_gpu)
-        Console.printf("info", f"Selected GPU {self.selected_gpu} -> most free space at moment!")
 
-        self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
-
-    def print_available_gpus(self):
-        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
-
-        Console.add_lines("Available GPU(s) and free space on it:")
-
-        for device in range(self.available_gpus):
-            space_total_cuda = torch.cuda.mem_get_info(device)[1]
-            space_free_cuda = torch.cuda.mem_get_info(device)[0]
-            percentage_free_space = space_free_cuda / space_total_cuda
-            Console.add_lines(f" GPU {device} [MB]: {space_free_cuda / (1024 ** 2)} / {space_total_cuda / (1024 ** 2)} ({round(percentage_free_space, 2) * 100}%)")
-
-        Console.printf_collected_lines("info")
-
-    def select_gpu(self, gpu_index: int = 0):
-        #from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
-        from printer import Console
-
-        torch.cuda.set_device(gpu_index)
-        self.selected_gpu = gpu_index
-        Console.printf("info", f"Selected GPU {gpu_index} -> manually selected by the user!")
-
-    def enough_space_available(self) -> bool:
-        #from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
-        from printer import Console
-
-        if self.selected_gpu is not None:
-            self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
-
-            if self.required_space_gpu <= self.free_space_selected_gpu:
-                Console.printf("info",
-                               f"Possible to put whole tensor of size {self.required_space_gpu / (1024 ** 2)} [MB] on GPU. Available: {self.free_space_selected_gpu / (1024 ** 2)} [MB]")
-            else:
-                Console.printf("info",
-                               f"Not possible to put whole tensor of size {self.required_space_gpu / (1024 ** 2)} [MB] on GPU. Available: {self.free_space_selected_gpu / (1024 ** 2)} [MB]")
-
-        else:
-            Console.printf("error", f"No GPU is selected. Number of available GPUs: {self.available_gpus}")
-            sys.exit()
-
-        # TODO: Check return type!
-        return self.required_space_gpu <= self.free_space_selected_gpu
+###class ConfiguratorGPU():
+###    """
+###    TODO!!! Describe it
+###    """
+###
+###    def __init__(self, required_space_gpu: np.ndarray):
+###
+###        torch.cuda.empty_cache()
+###        self.available_gpus: int = torch.cuda.device_count()
+###        self.selected_gpu: int = None
+###        self.required_space_gpu = required_space_gpu
+###        self.free_space_selected_gpu: torch.Tensor = None
+###
+###    def select_least_busy_gpu(self):
+###        from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+###
+###        # based on percentage free
+###        free_space_devices = []
+###        for device in range(self.available_gpus):
+###            space_total_cuda = torch.cuda.mem_get_info(device)[1]
+###            space_free_cuda = torch.cuda.mem_get_info(device)[0]
+###            percentage_free_space = space_free_cuda / space_total_cuda
+###            free_space_devices.append(percentage_free_space)
+###
+###        self.selected_gpu = free_space_devices.index(max(free_space_devices))
+###
+###        torch.cuda.set_device(self.selected_gpu)
+###        Console.printf("info", f"Selected GPU {self.selected_gpu} -> most free space at moment!")
+###
+###        self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
+###
+###    def print_available_gpus(self):
+###        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+###
+###        Console.add_lines("Available GPU(s) and free space on it:")
+###
+###        for device in range(self.available_gpus):
+###            space_total_cuda = torch.cuda.mem_get_info(device)[1]
+###            space_free_cuda = torch.cuda.mem_get_info(device)[0]
+###            percentage_free_space = space_free_cuda / space_total_cuda
+###            Console.add_lines(f" GPU {device} [MB]: {space_free_cuda / (1024 ** 2)} / {space_total_cuda / (1024 ** 2)} ({round(percentage_free_space, 2) * 100}%)")
+###
+###        Console.printf_collected_lines("info")
+###
+###    def select_gpu(self, gpu_index: int = 0):
+###        #from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+###        from printer import Console
+###
+###        torch.cuda.set_device(gpu_index)
+###        self.selected_gpu = gpu_index
+###        Console.printf("info", f"Selected GPU {gpu_index} -> manually selected by the user!")
+###
+###    def enough_space_available(self) -> bool:
+###        #from code.tests.printer_logger_test import Console # TODO: To solve circular import issue in spectral_spatial_simulation
+###        from printer import Console
+###
+###        if self.selected_gpu is not None:
+###            self.free_space_selected_gpu = torch.cuda.mem_get_info(self.selected_gpu)[0]  # free memory on GPU [bytes]
+###
+###            if self.required_space_gpu <= self.free_space_selected_gpu:
+###                Console.printf("info",
+###                               f"Possible to put whole tensor of size {self.required_space_gpu / (1024 ** 2)} [MB] on GPU. Available: {self.free_space_selected_gpu / (1024 ** 2)} [MB]")
+###            else:
+###                Console.printf("info",
+###                               f"Not possible to put whole tensor of size {self.required_space_gpu / (1024 ** 2)} [MB] on GPU. Available: {self.free_space_selected_gpu / (1024 ** 2)} [MB]")
+###
+###        else:
+###            Console.printf("error", f"No GPU is selected. Number of available GPUs: {self.available_gpus}")
+###            sys.exit()
+###
+###        # TODO: Check return type!
+###        return self.required_space_gpu <= self.free_space_selected_gpu
 
 
 # put estimate space here
@@ -1093,12 +1232,12 @@ class SpaceEstimator:
         elif unit == "GB":
             return space_required_bytes * 1 / (1024 ** 3)
 
-    @staticmethod
-    def for_torch(torch_array: torch.Tensor, unit: str = "MB"):
-        """
-        TODO: Implement it.
-        """
-        raise NotImplementedError("This method is not yet implemented")
+###    @staticmethod
+###    def for_torch(torch_array: torch.Tensor, unit: str = "MB"):
+###        """
+###        TODO: Implement it.
+###        """
+###        raise NotImplementedError("This method is not yet implemented")
 
 
 class JsonConverter:
@@ -1180,4 +1319,25 @@ def deprecated(reason, replacement=None) -> Callable:
         return wrapper
 
     return decorator
+
+
+class GPUTools:
+
+    @staticmethod
+    def run_cupy_local_pool(working_function, device=0) -> np.ndarray:
+        """
+        For inserting a cupy function that runs on a specific cupy pool.
+        IMPORTANT: Pass the function with the arguments a lambda, e.g.: lambda: function, so
+        this creates an anonymous function that can be called later!
+
+        :param working_function: a anonymous function, created with: lambda: my_function
+        """
+        with cp.cuda.Device(device):
+            pool = cp.cuda.MemoryPool()
+            with cp.cuda.using_allocator(pool.malloc):
+                result = working_function()
+                result = cp.asnumpy(result)
+                cp.cuda.get_current_stream().synchronize()
+            pool.free_all_blocks()
+            return result
 

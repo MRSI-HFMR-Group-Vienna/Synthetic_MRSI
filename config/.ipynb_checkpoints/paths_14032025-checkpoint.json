@@ -1,0 +1,35 @@
+{
+    "Author": "Markus Schuster",
+    "Description": "The paths file containing the paths from Stanislav Motyka, Bernhard Strasser and Alireza Vasfi and additional paths.",
+    "version": "2025-03-14",
+    "path": {
+    	"cache": "/home/mschuster/projects/Synthetic_MRSI/cache/",
+        "pulse": {
+            "gauss_wet": "/home/mschuster/projects/Synthetic_MRSI/data/GaussPulseFreqProfile_v1.mat"
+        },
+        "fid": {
+            "metabolites": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/FID_simulated/NoApodization/FID_7_noApo.m",
+            "lipids": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/FID_simulated/NoApodization/Lipids/FID_7_noApo_lip.m"
+        },
+        "mask": {
+            "metabolites": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/B0maps/Manualy_unwrapped_all_vol/Vol_004_mask_slab.nii",
+            "lipids": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/B0maps/Manualy_unwrapped_all_vol/Vol_004_fatmask_slab.nii"
+        },
+        "maps": {
+            "B0": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/B0Map_TargetRes.nii",
+            "B1": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/B1Map_TargetRes.nii",
+            "metabolites": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii",
+	        "coil_sensitivity": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/docker-sm/data/tensorflow/AUTOMAP_main_folder/SensMaps_smoothed_7T/SensMap_7t_ver1.h5",
+            "CSF_segmentation": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/Segmentation_CSF_TargetRes_HiRes.nii",
+            "GM_segmentation": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/Segmentation_GM_TargetRes_HiRes.nii",
+            "WM_segmentation": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/Segmentation_WM_TargetRes_HiRes.nii"
+        },
+        "trajectories": {
+            "crt": "/home/mschuster/projects/Synthetic_MRSI/data/trajectories_gradients.json"
+        },
+        "girf": {
+            "crt": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/aliv/GIRF_Tony/GIRF_Update/girf_calc/pythonfreqHundred.mat"
+        },
+        "simulation_parameters": "/home/mschuster/projects/Synthetic_MRSI/data/simulation_parameters.json"
+    }
+}

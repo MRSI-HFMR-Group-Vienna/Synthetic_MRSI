@@ -4,6 +4,9 @@ config/paths_*
 config/OLD/config_*
 config/OLD/paths_*
 code/tests/*
+code/OLD/*
+code/This/*
+docker/*.sh
 data/coils_cropped_cartesian_compressed.h5
 cache
 
@@ -12,3 +15,6 @@ cache
 !data/trajectories_gradient.json
 !data/trajectories_structure.json
 !config/OLD/bids_test.json
+
+# docker temp artifacts
+docker/.tmp-*

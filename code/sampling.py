@@ -71,6 +71,25 @@ class Model:
     ###
     ###        return xp_compute, xp_return
 
+
+    def _get_xp(self, to_device):
+        """
+        To choose the appropriate device where something should be computed or returned.
+        :param to_device: choose either "cpu" or "cuda" to select the respective device. For cpu numpy is used and for
+        cuda cupy is used.
+        :return: numpy object (np) or cupy object (cp) as xp
+        """
+        xp = None
+
+        if to_device == 'cpu':
+            xp = np
+        elif to_device == 'cuda':
+            xp = cp
+        else:
+            Console.printf("error", f"Only possible to choose 'cpu' or 'cuda', but you set: {to_device}")
+
+        return xp
+
     def _to_device(self, array: da.Array, device: str = 'cpu'):
         """
         TODO: Bring to tools -> Because general usage possible.
@@ -95,9 +114,13 @@ class Model:
         elif isinstance(array._meta, cp.ndarray) and device == 'cuda':
             return array  # do nothing
         elif isinstance(array._meta, np.ndarray) and device == 'cuda':
-            return array.map_blocks(cp.asarray)
+            #return array.map_blocks(cp.asarray, dtype=array.dtype, meta=cp.empty((0,), dtype=array.dtype),)
+            print(">>>>>>> Transform numpy array to cupy array! <<<<<<<")
+            return array.map_blocks(cp.asarray, dtype='c8', meta=cp.empty((0,), dtype=array.dtype), )
         elif isinstance(array._meta, cp.ndarray) and device == 'cpu':
-            return array.map_blocks(cp.asnumpy)
+            #return array.map_blocks(cp.asnumpy, dtype=array.dtype, meta=np.empty((0,), dtype=array.dtype),)
+            print(">>>>>>> Transform cupy array to numpy array! <<<<<<<")
+            return array.map_blocks(cp.asnumpy, dtype='c8', meta=np.empty((0,), dtype=array.dtype), )
         else:
             Console.printf("error", f"In Sampling: Some error occurred. Cannot do transfer CPU <-> CUDA of type {type(array._meta)}")
             sys.exit()
@@ -175,7 +198,11 @@ class Model:
             Console.printf("error", f"Only possible to compute on 'cpu' or on 'cuda', but you set: {compute_on_device}")
 
         volumes_cartesian_k_space: list[da.Array] = []
-        for one_coil_image_domain in volumes_with_coil_sensitivity_maps:
+
+        Console.add_lines("Performed FFT for:")
+        for i, one_coil_image_domain in enumerate(volumes_with_coil_sensitivity_maps):
+            Console.add_lines(f" > Coil {i+1}")
+            
             one_coil_image_domain = self._to_device(one_coil_image_domain, device=compute_on_device)
 
             one_coil_k_space = one_coil_image_domain.map_blocks(xp.fft.fftn, dtype=xp.complex64, axes=(1, 2, 3))
@@ -186,6 +213,7 @@ class Model:
                 original_shape = one_coil_k_space_shifted.shape
                 desired_shape = (original_shape[0], crop_center_shape[0], crop_center_shape[1], crop_center_shape[2])
                 start_indices = [(orig - des) // 2 for orig, des in zip(original_shape, desired_shape)]
+
                 end_indices = [start + des for start, des in zip(start_indices, desired_shape)]
                 one_coil_k_space_cropped = one_coil_k_space_shifted[
                                            :,
@@ -195,6 +223,8 @@ class Model:
                 one_coil_k_space = one_coil_k_space_cropped
 
             volumes_cartesian_k_space.append(self._to_device(one_coil_k_space, device=return_on_device))
+
+        Console.printf_collected_lines("success")
 
         return volumes_cartesian_k_space
 
@@ -272,22 +302,28 @@ class Model:
 
         return volumes_image_domain_noisy
 
-    def coil_combination(self,
-                         volume_with_coil_sensitivity: da.Array,
-                         compute_on_device: str = 'cpu',
-                         return_on_device: str = 'cpu') -> da.Array | np.ndarray | cp.ndarray:
-        """
-        Gets a volume of shape (coils, time, X, Y, Z) and combines it to ==> (time, X, Y, Z) via summing up along coils axis.
 
-        :param volume_with_coil_sensitivity: dask array of shape (coils, time, X, Y, Z)
-        :param compute_on_device: "cuda" or "cpu"
-        :param return_on_device: "cuda" or "cpu"
-        :return:
-        """
 
-        volume_with_coil_sensitivity = self._to_device(volume_with_coil_sensitivity, device=compute_on_device).sum(axis=0)
-        volume_with_coil_sensitivity = self._to_device(volume_with_coil_sensitivity, device=return_on_device)
-        return volume_with_coil_sensitivity
+###    def coil_combination(self,
+###                         volumes_with_coil_sensitivity: list[da.Array],
+###                         compute_on_device: str = 'cpu',
+###                         return_on_device: str = 'cpu') -> da.Array | np.ndarray | cp.ndarray:
+###        """
+###        Gets a volume of shape (coils, time, X, Y, Z) and combines it to ==> (time, X, Y, Z) via summing up along coils axis.
+###
+###        :param volumes_with_coil_sensitivity: list of dask arrays with (time, X, Y, Z), thus for each coil
+###        :param compute_on_device: "cuda" or "cpu"
+###        :param return_on_device: "cuda" or "cpu"
+###        :return:
+###        """
+###        xp = self._get_xp(compute_on_device)
+###
+###        volume_with_coil_sensitivity = self._to_device(volumes_with_coil_sensitivity, device=compute_on_device)#.sum(axis=0)
+###        xp.conjugate(volume_with_coil_sensitivity)*
+###
+###
+###        volume_with_coil_sensitivity = self._to_device(volume_with_coil_sensitivity, device=return_on_device)
+###        return volume_with_coil_sensitivity
 
 
 
