@@ -28,6 +28,7 @@ import time
 from dask.distributed import LocalCluster, Worker
 
 
+
 class CitationManager:
     def __init__(self, bib_file_path):
         """
@@ -1058,7 +1059,7 @@ class MyLocalCluster:
             def _init_rmm():
                 import rmm
                 import cupy as cp
-                rmm.reinitialize(pool_allocator=True, initial_pool_size="10GB")
+                rmm.reinitialize(pool_allocator=True) #, initial_pool_size="10GB")
                 cp.cuda.set_allocator(rmm_cupy_allocator)
     
             self.client.run(_init_rmm)
@@ -1318,4 +1319,75 @@ def deprecated(reason, replacement=None) -> Callable:
         return wrapper
 
     return decorator
+
+
+class GPUTools:
+
+    @staticmethod
+    def run_cupy_local_pool(working_function, device=0) -> np.ndarray:
+        """
+        For inserting a cupy function that runs on a specific cupy pool.
+        IMPORTANT: Pass the function with the arguments a lambda, e.g.: lambda: function, so
+        this creates an anonymous function that can be called later!
+
+        :param working_function: a anonymous function, created with: lambda: my_function
+        """
+        with cp.cuda.Device(device):
+            pool = cp.cuda.MemoryPool()
+            with cp.cuda.using_allocator(pool.malloc):
+                result = working_function()
+                result = cp.asnumpy(result)
+                cp.cuda.get_current_stream().synchronize()
+            pool.free_all_blocks()
+            return result
+
+
+    @staticmethod
+    def to_device(x: np.ndarray|cp.ndarray, device) -> np.ndarray|cp.ndarray:
+        """
+        To convert between cupy and numpy array and thus between gpu and cpu.
+
+        :param x: either cupy or numpy array
+        :param device: a string with the possible options 'cpu' and 'gpu'
+        """
+        if device is "cpu":
+            GPUTools.to_numpy(x)
+        elif device is "gpu" or device is "cuda":
+            GPUTools.to_cupy(x)
+        else:
+            raise ValueError(f"Chosen device must be either 'cpu' or 'gpu' or 'cuda', got '{device}'")
+
+
+    @staticmethod
+    def to_cupy(x: np.ndarray) -> cp.ndarray:
+        """
+        To convert numpy to cupy array. This is mainly to lazy convert numpy array to cupy array
+        via dask, to not allocate memory in advance.
+
+        :param x: a numpy array that should be converted to a cupy array.
+        """
+
+        if isinstance(x, cp.ndarray):   # already right data type, do nothing
+            return x
+        elif isinstance(x, np.ndarray): # convert
+            return cp.asarray(x)
+        else:                           # wrong datatype
+            raise TypeError(f"Input must be a numpy array, got {type(x).__name__}")
+
+    @staticmethod
+    def to_numpy(x: cp.ndarray) -> np.ndarray:
+        """
+        To convert a cupy to a numpy array. This is mainly to lazy convert a cupy array to a numpy
+        array via dask, to not allocate memory in advance.
+
+        :param x: a cupy array that should be converted to a numpy array.
+        """
+
+        if isinstance(x, cp.ndarray):   # already right data type, do nothing
+            return x.get()
+        elif isinstance(x, np.ndarray): # convert
+            return x
+        else:                           # wrong datatype
+            raise TypeError(f"Input must be a cupy array, got {type(x).__name__}")
+
 

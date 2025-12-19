@@ -12,15 +12,16 @@ from datetime import datetime
 from functools import partial
 from tools import CustomArray
 from printer import Console
+from tools import GPUTools
 from pathlib import Path
 import dask.array as da
 import seaborn as sns
 from tqdm import tqdm
 import numpy as np
+import cupy as cp
 # import numba
 # from numba import cuda
 import tools
-import cupy as cp
 import dask
 import sys
 import os
@@ -568,20 +569,9 @@ class Model:
         Console.printf_collected_lines("success")
 
 
-###    @staticmethod
-###    def _transform_T1_T2(xp: np|cp, volume: da.Array, time_vector, TE, T2, alpha, TR, T1):
-###        # TODO: DOCSTRING!
-###
-###        volume = Model._transform_T1(xp, volume, alpha, TR, T1)
-###        volume = Model._transform_T2(xp, volume, time_vector, TE, T2)
-###
-###
-###        return volume
-
     @staticmethod
-    def _transform_T1(xp: np|cp, volume: da.Array, alpha, TR, T1):
+    def _transform_T1(volume: da.Array, alpha, TR, T1):
         r"""
-
         Applying a T1 map (ideally masked) to a volume of fid signals. Thus, transforming via the formular below the
         input volume V_{in} --> V_{out}:
         .. math::
@@ -597,12 +587,14 @@ class Model:
 
         (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
         """
+        xp: np|cp = cp.get_array_module(volume) # returns cupy or numpy module itself, based on volume data type
+
         decay = xp.sin(xp.radians(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(xp.radians(alpha)) * xp.exp(-TR / T1)))
         volume = xp.where(volume != 0, volume * decay, volume) # only compute where volume is not zero!
         return volume
 
     @staticmethod
-    def _transform_T2(xp: np|cp, volume, time_vector, TE, T2):
+    def _transform_T2(volume, time_vector, TE, T2):
         r"""
         Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in} --> V_{out}:
         .. math::
@@ -616,8 +608,10 @@ class Model:
            * T2          ... matrix       (either numpy or cupy)
            * xp          ... either numpy or cupy -> using the whole imported library (np or cp is xp)
 
-        It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
+        (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
         """
+        xp: np|cp = cp.get_array_module(volume)  # returns cupy or numpy module itself, based on volume data type
+
         decay = xp.where(T2 != 0, xp.exp(-(TE + time_vector) / T2), 1)
         volume = xp.where(volume != 0, volume * decay, volume)
         return volume
@@ -665,54 +659,65 @@ class Model:
             metabolite_name = fid.name[0]
             #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
             fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
-            fid_signal = xp.asarray(fid_signal)
+            #DEL fid_signal = xp.asarray(fid_signal)
             fid_signal = da.from_array(fid_signal, chunks=self.block_size[0])
             #   1c) Reshape time vector, create dask array with block size defined by the user
-            time_vector = fid.time[:, xp.newaxis, xp.newaxis, xp.newaxis]
+            # DEL time_vector = fid.time[:, xp.newaxis, xp.newaxis, xp.newaxis]
+            time_vector = fid.time[:, None, None, None]
             time_vector = da.from_array(time_vector, chunks=(self.block_size[0], 1, 1, 1))
             #   1d) Same as for FID and time vector above
             mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
-            mask = xp.asarray(mask)
+            #DEL mask = xp.asarray(mask)
             mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
             #   1f) Get T1 and T2 of respective metabolite with the metabolite name
             metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
             metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
 
 
+            # (2) Based on selected device prepare data
+            #if self.compute_on_device == "cpu":
+            #    # Creates numpy arrays with xp
+            #    #TE = xp.asarray([self.TE])
+            #    #alpha = xp.asarray([self.alpha])
+            #    #TR = xp.asarray([self.TR])
+            #    #dtype = xp.complex64  # TODO
+            #elif self.compute_on_device == "cuda":
+            fid_signal = fid_signal.map_blocks(            GPUTools.to_device, self.compute_on_device, dtype=fid_signal.dtype      ,meta=GPUTools.meta_like(fid_signal._meta))
+            mask = mask.map_blocks(                        GPUTools.to_device, self.compute_on_device, dtype=fid_signal.dtype      ,meta=GPUTools.meta_like(mask._meta))
+            time_vector = time_vector.map_blocks(          GPUTools.to_device, self.compute_on_device, dtype=time_vector.dtype     ,meta=GPUTools.meta_like(time_vector._meta))
+            metabolic_map_t1 = metabolic_map_t1.map_blocks(GPUTools.to_device, self.compute_on_device, dtype=metabolic_map_t1.dtype,meta=GPUTools.meta_like(metabolic_map_t1._meta))
+            metabolic_map_t2 = metabolic_map_t2.map_blocks(GPUTools.to_device, self.compute_on_device, dtype=metabolic_map_t1.dtype,meta=GPUTools.meta_like(metabolic_map_t2._meta))
+
+
+
+                ## Creates cupy arrays with xp
+                #volume_with_mask = volume_with_mask.map_blocks(xp.asarray, dtype=xp.complex64)
+                #time_vector = time_vector.map_blocks(xp.asarray, dtype=xp.complex64)
+                #TE = xp.asarray([self.TE])
+                #metabolic_map_t2 = metabolic_map_t2.map_blocks(xp.asarray, dtype=xp.complex64)
+                #metabolic_map_t1 = metabolic_map_t1.map_blocks(xp.asarray, dtype=xp.complex64)
+                #alpha = xp.asarray([self.alpha])
+                #TR = xp.asarray([self.TR])
+                ##dtype = xp.complex64
+
+
             #################### FID + MASK = Volume ###################################################################
-            # (2) FID with 3D mask volume yields 4d volume
+            # (3) FID with 3D mask volume yields 4d volume
             volume_with_mask = fid_signal * mask
 
             if all_steps_output:
                 metabolites_volume_list__after_mask.append(volume_with_mask[None, ...])
 
-            #################### APPLY T1 and T2 #######################################################################
-            # (3) Based on selected device prepare data
-            dtype = eval("xp." + self.data_type) # yields in e.g., xp.complex64 which can be np.complex64 or cp.complex64
-            if self.compute_on_device == "cpu":
-                # Creates numpy arrays with xp
-                TE = xp.asarray([self.TE])
-                alpha = xp.asarray([self.alpha])
-                TR = xp.asarray([self.TR])
-                #dtype = xp.complex64  # TODO
-            elif self.compute_on_device == "cuda":
-                # Creates cupy arrays with xp
-                volume_with_mask = volume_with_mask.map_blocks(xp.asarray, dtype=xp.complex64)
-                time_vector = time_vector.map_blocks(xp.asarray, dtype=xp.complex64)
-                TE = xp.asarray([self.TE])
-                metabolic_map_t2 = metabolic_map_t2.map_blocks(xp.asarray, dtype=xp.complex64)
-                metabolic_map_t1 = metabolic_map_t1.map_blocks(xp.asarray, dtype=xp.complex64)
-                alpha = xp.asarray([self.alpha])
-                TR = xp.asarray([self.TR])
-                #dtype = xp.complex64
 
-            # (4) Include T1 and T2 effects
+            #################### APPLY T1 and T2 #######################################################################
+            dtype = eval("xp." + self.data_type)  # yields in e.g., xp.complex64 which can be np.complex64 or cp.complex64
+
+            # (4) Apply T1 and T2
             #   4a) Include T1 effects
             volume_metabolite = da.map_blocks(Model._transform_T1,
-                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
                                               volume_with_mask,
-                                              alpha,
-                                              TR,
+                                              self.alpha,
+                                              self.TR,
                                               metabolic_map_t1,
                                               dtype=dtype)
 
@@ -721,22 +726,31 @@ class Model:
 
             #   4b) Include T2 effects
             volume_metabolite = da.map_blocks(Model._transform_T2,
-                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
                                               volume_metabolite,
                                               time_vector,
-                                              TE,
+                                              self.TE,
                                               metabolic_map_t2,
                                               dtype=dtype)
 
             if all_steps_output:
                 metabolites_volume_list__after_T2.append(volume_metabolite[None, ...])
 
+
+
             #################### SCALE WITH SPATIAL CONCENTRATION ######################################################
             # (5) Include spatial concentration
-            if self.compute_on_device == "cuda":
-                volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
-            elif self.compute_on_device == "cpu":
-                volume_metabolite *= self.metabolic_property_maps[metabolite_name].concentration
+            # DEL if self.compute_on_device == "cuda":
+            # DEL     volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
+            # DEL elif self.compute_on_device == "cpu":
+            # DEL    volume_metabolite *= self.metabolic_property_maps[metabolite_name].concentration
+            concentration = self.metabolic_property_maps[metabolite_name].concentration
+            concentration = concentration.map_blocks(
+                GPUTools.to_device,
+                self.compute_on_device,
+                dtype=concentration.dtype,
+                meta=GPUTools.meta_like(concentration._meta),
+            )
+            volume_metabolite *= concentration
 
             # (6) Expand dims, since it is only for one metabolite and concatenate
             #volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
@@ -763,18 +777,31 @@ class Model:
 
         # (9) If the computation device and target device does not match then adjust it
         if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
-            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy)
+            #DEL volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy)
+            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(GPUTools.to_device, "cpu", dtype=volume_sum_all_metabolites.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites))
+
             if all_steps_output:
-                volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(cp.asnumpy)
-                volume_sum_all_metabolites__after_T1   = volume_sum_all_metabolites__after_T1.map_blocks(cp.asnumpy)
-                volume_sum_all_metabolites__after_T2   = volume_sum_all_metabolites__after_T2.map_blocks(cp.asnumpy)
+                #DEL volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(cp.asnumpy)
+                #DEL volume_sum_all_metabolites__after_T1   = volume_sum_all_metabolites__after_T1.map_blocks(cp.asnumpy)
+                #DEL volume_sum_all_metabolites__after_T2   = volume_sum_all_metabolites__after_T2.map_blocks(cp.asnumpy)
+
+                volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(GPUTools.to_device, "cpu", dtype=volume_sum_all_metabolites__after_mask.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites__after_mask._meta))
+                volume_sum_all_metabolites__after_T1 = volume_sum_all_metabolites__after_T1.map_blocks(GPUTools.to_device, "cpu", dtype=volume_sum_all_metabolites__after_T1.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites__after_T1._meta))
+                volume_sum_all_metabolites__after_T2 = volume_sum_all_metabolites__after_T2.map_blocks(GPUTools.to_device, "cpu", dtype=volume_sum_all_metabolites__after_T2.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites__after_T2._meta))
 
         elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
-            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)
+            #DEL volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)
+            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(GPUTools.to_device, "cuda", dtype=volume_sum_all_metabolites.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites._meta))
+
+
             if all_steps_output:
-                volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(cp.asarray)
-                volume_sum_all_metabolites__after_T1   = volume_sum_all_metabolites__after_T1.map_blocks(cp.asarray)
-                volume_sum_all_metabolites__after_T2   = volume_sum_all_metabolites__after_T2.map_blocks(cp.asarray)
+                #DEL volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(cp.asarray)
+                #DEL volume_sum_all_metabolites__after_T1   = volume_sum_all_metabolites__after_T1.map_blocks(cp.asarray)
+                #DEL volume_sum_all_metabolites__after_T2   = volume_sum_all_metabolites__after_T2.map_blocks(cp.asarray)
+
+                volume_sum_all_metabolites__after_mask = volume_sum_all_metabolites__after_mask.map_blocks(GPUTools.to_device, "cuda", dtype=volume_sum_all_metabolites__after_mask.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites__after_mask._meta))
+                volume_sum_all_metabolites__after_T1 = volume_sum_all_metabolites__after_T1.map_blocks(GPUTools.to_device, "cuda", dtype=volume_sum_all_metabolites__after_T1.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites__after_T1._meta))
+                volume_sum_all_metabolites__after_T2 = volume_sum_all_metabolites__after_T2.map_blocks(GPUTools.to_device, "cuda", dtype=volume_sum_all_metabolites__after_T2.dtype, meta=GPUTools.meta_like(volume_sum_all_metabolites__after_T2._meta))
 
         if not all_steps_output:
             # (10) Return the computional graph
