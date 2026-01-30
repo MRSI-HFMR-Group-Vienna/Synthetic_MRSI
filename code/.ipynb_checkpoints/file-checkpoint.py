@@ -1,13 +1,18 @@
 from cupyx.scipy.ndimage import zoom as zoom_gpu
+
+
 import spectral_spatial_simulation
+from spatial_metabolic_distribution import MetabolicPropertyMap, MetabolicPropertyMaps
 from typing_extensions import Self
-from tools import JsonConverter
+from tools import JsonConverter, UnitTools, JupyterPlotManager
+import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
 from tools import deprecated
 from scipy.io import loadmat
 from printer import Console
 from pathlib import Path
 import nibabel as nib
+from abc import ABC, abstractmethod
 import numpy as np
 import cupy as cp
 import pint
@@ -198,15 +203,34 @@ class Configurator:
         Console.printf("info", f"Content of the config file: {self.file_name} \n"
                                f"{json.dumps(self.data, indent=4)}")
 
+class Plot(ABC):
+    """
+    For other classes to be inherited. Visualisation of the loaded volume.
+    """
 
-class Mask:
+    @abstractmethod
+    def plot_jupyter(self):
+        """Subclasses must implement this."""
+        ...
+
+    @abstractmethod
+    def plot(self):
+        """Subclasses must implement this."""
+        ...
+
+
+class Mask(Plot):
     """
     For loading a mask from a file (e.g., metabolic mask, lipid mask, B0 inhomogeneities, ...). It requires a
     available JSON configuration file. See :class: `Configurator`.
     """
+    def __init__(self, configurator: Configurator):
+        self.configurator = configurator
+        self.mask = None
+        self.mask_name = None
 
-    @staticmethod
-    def load(configurator: Configurator, mask_name: str) -> NeuroImage:
+
+    def load(self, mask_name: str) -> NeuroImage:
         """
         For loading a mask from a path. The necessary path is available in a JSON config file (path_file),
         the :class: `Configurator does handle it.
@@ -217,21 +241,68 @@ class Mask:
         """
 
         # Load the paths from JSON file in the configurator object
-        configurator.load()
+        self.configurator.load()
+
+        # Assign the current mask name to instance variable
+        self.mask_name = mask_name
 
         # Then, check if Mask exists and load the path. Otherwise, warn the user and exit program.
-        available_masks = list(configurator.data["path"]["mask"].keys())
+        available_masks = list(self.configurator.data["mask"].keys())
         if mask_name not in available_masks:
             Console.printf("error", f"Mask '{mask_name}' not listed in {configurator.file_name}. Only listed: {available_masks}. Terminating the program!")
             sys.exit()
 
         # Finally, load the mask according to the path
-        mask = (NeuroImage(path=configurator.data["path"]["mask"][mask_name]).
-                load_nii())
+        self.mask = NeuroImage(path=self.configurator.data["mask"][mask_name]["path"]).load_nii()
 
         Console.printf("success", f"Thus, loaded the '{mask_name}' mask")
 
-        return mask
+        return self.mask
+
+    def plot_jupyter(self, cmap="gray"):
+        """
+        To plot the loaded volume in an interactive form for the jupyter notebook/lab.
+        (!) Note: %matplotlib ipympl need be called once in the respective jupyter notebook.
+
+        :return: Nothing
+        """
+        if self.mask is not None:
+            JupyterPlotManager.volume_grid_viewer(vols=[self.mask.data], rows=1, cols=1, titles=self.mask_name, cmap=cmap)
+        else:
+            Console.printf("error", "No mask loaded yet, thus no plotting possible.")
+
+    def plot(self, figsize=(10,5), cmap="gray", slices:str | tuple[int, int, int] ="central"):
+        """
+        To plot the loaded volume as cross-sectional view. None interactive. Works also with command line.
+
+        :return: Nothing
+        """
+        zz, yy, xx = None, None, None
+
+        if slices == "central":
+            z, y, x = self.mask.data.shape
+            zz, yy, xx = z//2, y//2, x//2
+            Console.printf("info", f"Plotting central slices by default: ({zz},{yy},{xx})")
+        else:
+            if isinstance(slices, tuple):
+                zz, yy, xx = slices[0] // 2, slices[1] // 2, slices[2] // 2
+            else:
+                Console.printf("error", f"Format required for plotting custom slices: tuple(int, int, int). But provided: {type(slices)}")
+
+
+        fig, axs = plt.subplots(figsize=figsize, nrows=1, ncols=3)
+        slice_1 = axs[0].imshow(self.mask.data[zz,:,:], cmap=cmap)
+        axs[0].set_title("Z")
+        slice_2 = axs[1].imshow(self.mask.data[:,yy,:], cmap=cmap)
+        axs[1].set_title("Y")
+        slice_3 = axs[2].imshow(self.mask.data[:,:,xx], cmap=cmap)
+        axs[2].set_title("X")
+        fig.suptitle(self.mask_name, fontsize=16)
+
+        cbar = fig.colorbar(slice_1, ax=axs, location="right", fraction=0.03, pad=0.02)
+        cbar.set_label("Value")
+
+        plt.show()
 
 
 class MetabolicAtlas:
@@ -257,32 +328,36 @@ class T1Image:
         pass
 
 
-class Maps:
+class Maps(Plot):
     """
-    This class can be used at the moment for carious purposes:
+    This class can be used at the moment for various purposes:
 
     1) To load data:
         -> from one nii file, yields dictionary of just values
         -> from one h5 file, yields dictionary (e.g., with keys 'imag', 'real')
         -> from multiple nii files in a respective dictionary (for metabolites)
 
-    2) To interpolate data
-        -> one or dictionary of nii
-        -> one h5 with multiple items (e.g., 'imag', 'real)
+    2) Transform to 'working map' from spatial metabolic distribution
+        Therefore, create working map object with data from this class:
+            -> map_type_name
+            -> loaded maps
+            -> loaded maps unit
 
     The class automatically figures out the filetype, at the moment based on '.nii', '.nii.gz', '.h5', '.hdf5'.
     """
     # TODO: Maybe program more flexible
 
+    u = pint.UnitRegistry() # class variable, same for all instances
+
     def __init__(self, configurator: Configurator, map_type_name: str):
         self.configurator = configurator
         self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
         self.loaded_maps: dict[str, np.memmap | h5py._hl.dataset.Dataset] | np.memmap | np.ndarray = None
+        self.loaded_maps_unit = None
         self.file_type_allowed = ['.nii', '.nii.gz', '.h5', '.hdf5']
 
 
-
-        self.main_path = Path(self.configurator.data["path"]["maps"][self.map_type_name])
+        self.main_path = Path(self.configurator.data["maps"][self.map_type_name]["path"])
         if self.main_path.is_file():
             # Case 1: the main_path points to just one file
             Console.printf("info", "Maps object: The provided path points to a file")
@@ -299,7 +374,7 @@ class Maps:
                 raise ValueError(f"Multiple file types found: {files_extensions}, folder operation not possible!")
 
         else:
-            Console.printf("error", "Maps object: The provided path does not exist or is neither a file nor a folder. Exiting system.")
+            Console.printf("error", f"Maps object: The provided path does not exist or is neither a file nor a folder: {self.main_path} Exiting system.")
             sys.exit()
 
         if self.file_type not in self.file_type_allowed:
@@ -314,11 +389,12 @@ class Maps:
         Load a single map from file.
         Supports both H5 and NIfTI (nii) formats.
         """
-        self.loaded_maps = {}  # key is abbreviation like "Glu" for better matching
+        self.loaded_maps = {}             # key is abbreviation like "Glu" for better matching
+        self._load_and_assign_pint_unit() # load the associated unit defined in the json file
 
         if self.file_type == '.h5' or self.file_type == '.hdf5':
             """
-            Case 1: To handle h5 files: Results in dictionary ->  self.loaded_maps[key] = values 
+            Case 1: To handle h5 files: Results in dictionary ->  self.loaded_maps[key] = values
             """
             Console.printf("info", f"Loading h5 file for map type {self.map_type_name}")
             with h5py.File(self.main_path, "r") as file:
@@ -343,7 +419,7 @@ class Maps:
 
         elif self.file_type == '.nii' or self.file_type == '.nii.gz':
             """
-            Case 2: TO handle nii files: Results NOT in dictionary ->  self.loaded_maps = values
+            Case 2: To handle nii files: Results NOT in dictionary ->  self.loaded_maps = values
             """
             Console.printf("info", f"Loading nii file for map type {self.map_type_name}")
             # Using NeuroImage to load nii file
@@ -353,6 +429,7 @@ class Maps:
             Console.add_lines(
                 f"Loaded nii map: {os.path.basename(self.main_path)} | Shape: {loaded_map.shape} | "
                 f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] | "
+                f"Unit: {self.loaded_maps_unit} | " 
                 f"Unique values: {len(np.unique(loaded_map))}"
             )
             Console.printf_collected_lines("success")
@@ -377,10 +454,12 @@ class Maps:
         :return: the object of the whole class
         """
         Console.printf("warning", "Maps.load_files_from_folder ==> by standard nii is loaded. No h5 support yet!")
+        Console.printf("warning", "The same unit is assumed for all the files in the given folder!")
         self.configurator.load()
-        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+        main_path = self.configurator.data["maps"][self.map_type_name]["path"]
 
-        self.loaded_maps: dict = {} # dict required for the operations afterwards
+        self._load_and_assign_pint_unit()
+        self.loaded_maps: dict = {} # dict required for the operations afterward
 
         Console.add_lines("Loaded maps: ")
         for i, (working_name, file_name) in enumerate(working_name_and_file_name.items()):
@@ -391,43 +470,132 @@ class Maps:
             Console.add_lines(
                 f"  {i}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | "
                 f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] "
+                f"| Unit: {self.loaded_maps_unit} |"
             )
         Console.printf_collected_lines("success")
 
         return self
 
-    def interpolate_to_target_size(self, target_size: tuple, order: int = 3) -> Self:
+    def _load_and_assign_pint_unit(self):
         """
-        To interpolate one or multiple maps to the desired target size. Check for more information direct this
-        method and the comments.
+        For loading the unit string, which should be compliant with the library. If it fails, fallback to "dimensionless" via pint.
 
-        :param target_size: desired size as tuple
-        :param order: interpolation order
-        :return: the object of the whole class
+        :return:
+        """
+        unit_string = self.configurator.data["maps"][self.map_type_name]["unit"]
+
+        # Try to convert provided string in the config file to pint unit, and assign "dimensionless" if it fails
+        try:
+            self.loaded_maps_unit = Maps.u.Unit(unit_string)
+        except:
+            Console.printf("error", f"Could not convert loaded unit '{unit_string}' to pint unit. Therefore, assigned 'dimensionless'!")
+
+
+    def to_base_units(self, verbose=False):
+        """
+        To convert all loaded arrays to the base units.
+
+        :param verbose: it true then it prints conversation results to the console.
+        :return: Nothing
         """
 
-        if isinstance(self.loaded_maps, dict):
-            """
-            Case 1: Multiple maps are handled in the Maps class. Thus a dictionary with keys is used.
-                    This can be for example either due to multiple nii maps (Glucose , Choline, ...),
-                    but also if o h5 file has "real" and "imag" for example.
-            """
-            Console.add_lines("Interpolate loaded maps: ")
-            for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
-                zoom_factor = np.divide(target_size, loaded_map.shape)
-                self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
-                Console.add_lines(f"  {i}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
-            Console.printf_collected_lines("success")
-        else:
-            """
-            Case 2: Only one map is handled in the Maps class. This can be for example one nii file. 
-                    In this case, no dictionary is used.
-            """
-            initial_shape = self.loaded_maps.shape
-            zoom_factor = np.divide(target_size, self.loaded_maps.shape)
-            self.loaded_maps = zoom(input=self.loaded_maps, zoom=zoom_factor, order=order)
-            Console.printf("success", f"Only one map exits: Interpolated map: {initial_shape} --> {self.loaded_maps.shape}")
-        return self
+        loaded_maps_unit_before = self.loaded_maps_unit
+        loaded_maps_unit_after = None
+        try:
+            # CASE A: multiple arrays
+            if isinstance(self.loaded_maps, dict):
+                for i, (name, array) in enumerate(self.loaded_maps.items()):
+                    self.loaded_maps[name], loaded_maps_unit_after = UnitTools.to_base(
+                        values=array,
+                        units=self.loaded_maps_unit,
+                        return_separate=True,
+                        verbose=verbose)
+
+                self.loaded_maps_unit = loaded_maps_unit_after
+
+            # CASE B: assuming single array (e.g. numpy array, numpy memmap, and so on)
+            else:
+                self.loaded_maps, self.loaded_maps_unit = UnitTools.to_base(
+                    values=self.loaded_maps,
+                    units=self.loaded_maps_unit,
+                    return_separate=True,
+                    verbose=verbose)
+
+            Console.printf("success", f"Converted to SI units: {loaded_maps_unit_before} -> {self.loaded_maps_unit}")
+        except:
+            Console.printf("error", "Could not convert to SI units.")
+
+    def plot(self, cmap="viridis"):
+        fig, axs = plt.subplots(figsize=(15, 2), ncols=len(self.loaded_maps.items()), nrows=1, cmap=cmap)
+
+        for i, (key, value) in enumerate(self.loaded_maps.items()):
+            image = axs[i].imshow(value[:, :, 40])
+            axs[i].set_title(key)
+            axs[i].set_axis_off()
+
+        fig.colorbar(image, ax=axs, location="right")
+
+    def plot_jupyter(self):
+        pass
+
+
+
+
+
+
+
+    #Maps.u.Quantity(values)
+    def to_working_maps(self):
+        """
+
+        :return:
+        """
+        pass
+        #for
+        #map = MetabolicPropertyMap()
+        #map has attributes
+        #
+
+
+
+######## This Method is already the spatial_metabolic_distribution.Maps available and that class has also GPU interpolation enabled
+###    def interpolate_to_target_size(self, target_size: tuple, order: int = 3) -> Self:
+###        """
+###        DELETE THIS METHOD; DELETE THIS METHOD;DELETE THIS METHOD;DELETE THIS METHOD;DELETE THIS METHOD;
+###        !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+###
+###        To interpolate one or multiple maps to the desired target size. Check for more information direct this
+###        method and the comments.
+###
+###        :param target_size: desired size as tuple
+###        :param order: interpolation order
+###        :return: the object of the whole class
+###        """
+###
+###        Console.printf("warning", "!!!! DONT USE THIS METHOD ANY MORE!!!! INSTEAD INTERPOLATE VIA MAPS FROM spatial_metabolic_distribution")
+###
+###        if isinstance(self.loaded_maps, dict):
+###            """
+###            Case 1: Multiple maps are handled in the Maps class. Thus a dictionary with keys is used.
+###                    This can be for example either due to multiple nii maps (Glucose , Choline, ...),
+###                    but also if o h5 file has "real" and "imag" for example.
+###            """
+###            Console.add_lines("Interpolate loaded maps: ")
+###            for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
+###                zoom_factor = np.divide(target_size, loaded_map.shape)
+###                self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
+###                Console.add_lines(f"  {i}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
+###            Console.printf_collected_lines("success")
+###        else:
+###            """
+###            Case 2: Only one map is handled in the Maps class. This can be for example one nii file.
+###                    In this case, no dictionary is used.
+###            """
+###            initial_shape = self.loaded_maps.shape
+###            zoom_factor = np.divide(target_size, self.loaded_maps.shape)
+###            self.loaded_maps = zoom(input=self.loaded_maps, zoom=zoom_factor, order=order)
+###            Console.printf("success", f"Only one map exits: Interpolated map: {initial_shape} --> {self.loaded_maps.shape}")
+###        return self
 
 ###class Maps:
 ###    # TODO: Maybe program more flexible
@@ -535,7 +703,7 @@ class FID:
         :return: Nothing. Access the list loaded_fid of the object for the signals!
         """
         self.configurator.load()
-        path = self.configurator.data["path"]["fid"][fid_name]
+        path = self.configurator.data["fid"][fid_name]["path"]
         jmrui = JMRUI(path=path, signal_data_type=signal_data_type)
         data = jmrui.load_m_file()
 

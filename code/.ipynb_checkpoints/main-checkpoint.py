@@ -123,7 +123,7 @@ def main_entry():
                    text=text, connect_from=["Load Metabolic Mask", "Load example FIDs"],
                    width=1.05, title_colour="green", cluster="Load and prepare the data")
 
-        loaded_concentration_maps = file.Maps(configurator=configurator, map_type_name="metabolites")
+        loaded_concentration_maps = file.ParameterMaps(configurator=configurator, map_type_name="metabolites")
         working_name_and_file_name = {"Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii",
                                       "Gln": "MetMap_Gln_con_map_TargetRes_HiRes.nii",
                                       "m-Ins": "MetMap_Ins_con_map_TargetRes_HiRes.nii",

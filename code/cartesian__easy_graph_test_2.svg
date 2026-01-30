@@ -42,9 +42,9 @@
 <g id="node1" class="node">
 <title>Target GPUs</title>
 <path fill="azure" stroke="black" stroke-width="2" d="M1366.83,-1436.25C1366.83,-1436.25 1208.08,-1436.25 1208.08,-1436.25 1202.08,-1436.25 1196.08,-1430.25 1196.08,-1424.25 1196.08,-1424.25 1196.08,-1380.5 1196.08,-1380.5 1196.08,-1374.5 1202.08,-1368.5 1208.08,-1368.5 1208.08,-1368.5 1366.83,-1368.5 1366.83,-1368.5 1372.83,-1368.5 1378.83,-1374.5 1378.83,-1380.5 1378.83,-1380.5 1378.83,-1424.25 1378.83,-1424.25 1378.83,-1430.25 1372.83,-1436.25 1366.83,-1436.25"/>
-<text xml:space="preserve" text-anchor="start" x="1206.08" y="-1416.95" font-family="DejaVu Sans" font-size="14.00">Define GPU [2] for big</text>
+<text xml:space="preserve" text-anchor="start" x="1206.08" y="-1416.95" font-family="DejaVu Sans" font-size="14.00">Define GPU [3] for big</text>
 <text xml:space="preserve" text-anchor="start" x="1206.08" y="-1397.7" font-family="DejaVu Sans" font-size="14.00">tasks (limit=28GB) and</text>
-<text xml:space="preserve" text-anchor="start" x="1206.08" y="-1378.45" font-family="DejaVu Sans" font-size="14.00">GPU 1 for small tasks</text>
+<text xml:space="preserve" text-anchor="start" x="1206.08" y="-1378.45" font-family="DejaVu Sans" font-size="14.00">GPU 2 for small tasks</text>
 </g>
 <!-- Config file paths -->
 <g id="node2" class="node">
@@ -58,8 +58,8 @@
 <title>Target GPUs&#45;&gt;Config file paths</title>
 <path fill="none" stroke="black" d="M1287.46,-1367.67C1287.46,-1352.41 1287.46,-1334.38 1287.46,-1318.95"/>
 <polygon fill="black" stroke="black" points="1290.96,-1319.26 1287.46,-1309.26 1283.96,-1319.26 1290.96,-1319.26"/>
-<text xml:space="preserve" text-anchor="middle" x="1316.33" y="-1341" font-family="DejaVu Sans" font-size="10.00">Δt=666 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1316.33" y="-1328.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(1.64 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1316.33" y="-1341" font-family="DejaVu Sans" font-size="10.00">Δt=669 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1316.33" y="-1328.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.01 s)</text>
 </g>
 <!-- Load Metabolic Mask -->
 <g id="node3" class="node">
@@ -72,8 +72,8 @@
 <title>Config file paths&#45;&gt;Load Metabolic Mask</title>
 <path fill="none" stroke="black" d="M1267.02,-1257.94C1262.27,-1252.27 1257.26,-1246.21 1252.71,-1240.5 1237.79,-1221.81 1221.54,-1200.27 1209.25,-1183.72"/>
 <polygon fill="black" stroke="black" points="1212.17,-1181.78 1203.41,-1175.82 1206.55,-1185.94 1212.17,-1181.78"/>
-<text xml:space="preserve" text-anchor="middle" x="1281.58" y="-1231" font-family="DejaVu Sans" font-size="10.00">Δt=13.2 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1281.58" y="-1218.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(1.65 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1281.58" y="-1231" font-family="DejaVu Sans" font-size="10.00">Δt=13.5 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1281.58" y="-1218.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.02 s)</text>
 </g>
 <!-- Load example FIDs -->
 <g id="node4" class="node">
@@ -86,8 +86,8 @@
 <title>Config file paths&#45;&gt;Load example FIDs</title>
 <path fill="none" stroke="black" d="M1302.11,-1257.65C1314.84,-1236.7 1333.29,-1206.36 1346.63,-1184.43"/>
 <polygon fill="black" stroke="black" points="1349.55,-1186.37 1351.75,-1176 1343.56,-1182.73 1349.55,-1186.37"/>
-<text xml:space="preserve" text-anchor="middle" x="1356.61" y="-1231" font-family="DejaVu Sans" font-size="10.00">Δt=156 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1356.61" y="-1218.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(1.81 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1356.61" y="-1231" font-family="DejaVu Sans" font-size="10.00">Δt=152 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1356.61" y="-1218.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.17 s)</text>
 </g>
 <!-- Load and prepare concentration maps -->
 <g id="node5" class="node">
@@ -108,16 +108,16 @@
 <title>Load Metabolic Mask&#45;&gt;Load and prepare concentration maps</title>
 <path fill="none" stroke="black" d="M1197.33,-1136.83C1206.16,-1116.73 1221.17,-1082.58 1235.75,-1049.39"/>
 <polygon fill="black" stroke="black" points="1238.83,-1051.08 1239.65,-1040.52 1232.42,-1048.27 1238.83,-1051.08"/>
-<text xml:space="preserve" text-anchor="middle" x="1244.04" y="-1110.25" font-family="DejaVu Sans" font-size="10.00">Δt=397 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1244.04" y="-1097.5" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(2.21 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1244.04" y="-1110.25" font-family="DejaVu Sans" font-size="10.00">Δt=395 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1244.04" y="-1097.5" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.57 s)</text>
 </g>
 <!-- Load example FIDs&#45;&gt;Load and prepare concentration maps -->
 <g id="edge5" class="edge">
 <title>Load example FIDs&#45;&gt;Load and prepare concentration maps</title>
 <path fill="none" stroke="black" d="M1355.58,-1136.83C1346.75,-1116.73 1331.74,-1082.58 1317.16,-1049.39"/>
 <polygon fill="black" stroke="black" points="1320.49,-1048.27 1313.26,-1040.52 1314.08,-1051.08 1320.49,-1048.27"/>
-<text xml:space="preserve" text-anchor="middle" x="1375.69" y="-1110.25" font-family="DejaVu Sans" font-size="10.00">Δt=397 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1375.69" y="-1097.5" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(2.21 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1375.69" y="-1110.25" font-family="DejaVu Sans" font-size="10.00">Δt=395 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1375.69" y="-1097.5" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.57 s)</text>
 </g>
 <!-- Interpolate concentration maps -->
 <g id="node10" class="node">
@@ -131,8 +131,8 @@
 <title>Load and prepare concentration maps&#45;&gt;Interpolate concentration maps</title>
 <path fill="none" stroke="black" d="M1375.1,-872.24C1429.6,-826.66 1494.13,-772.67 1533.94,-739.38"/>
 <polygon fill="black" stroke="black" points="1535.94,-742.27 1541.37,-733.17 1531.45,-736.9 1535.94,-742.27"/>
-<text xml:space="preserve" text-anchor="middle" x="1496.49" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.57 s</text>
-<text xml:space="preserve" text-anchor="middle" x="1496.49" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.78 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1496.49" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=5.78 s</text>
+<text xml:space="preserve" text-anchor="middle" x="1496.49" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(9.35 s)</text>
 </g>
 <!-- Load and prepare T1 maps -->
 <g id="node6" class="node">
@@ -160,8 +160,8 @@
 <title>Load and prepare T1 maps&#45;&gt;Interpolate T1</title>
 <path fill="none" stroke="black" d="M1718.97,-872.93C1734.39,-828.69 1752.62,-776.38 1764.35,-742.72"/>
 <polygon fill="black" stroke="black" points="1767.58,-744.09 1767.57,-733.49 1760.97,-741.78 1767.58,-744.09"/>
-<text xml:space="preserve" text-anchor="middle" x="1775.06" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=460 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1775.06" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(5.84 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1775.06" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=468 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1775.06" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(11.4 s)</text>
 </g>
 <!-- Load and prepare T2 maps -->
 <g id="node7" class="node">
@@ -193,8 +193,8 @@
 <title>Load and prepare T2 maps&#45;&gt;Interpolate T2</title>
 <path fill="none" stroke="black" d="M2031.3,-834.27C2015.58,-800.53 1999.72,-766.51 1988.44,-742.29"/>
 <polygon fill="black" stroke="black" points="1991.63,-740.85 1984.23,-733.26 1985.28,-743.8 1991.63,-740.85"/>
-<text xml:space="preserve" text-anchor="middle" x="2051.94" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=56.6 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="2051.94" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(7.14 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="2051.94" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=57.1 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="2051.94" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(12.7 s)</text>
 </g>
 <!-- Partially FID -->
 <g id="node8" class="node">
@@ -239,7 +239,7 @@
 <path fill="none" stroke="black" d="M2209.94,-439C2234.16,-439 2258.91,-439 2283.22,-439"/>
 <polygon fill="black" stroke="black" points="2283.21,-442.5 2293.21,-439 2283.21,-435.5 2283.21,-442.5"/>
 <text xml:space="preserve" text-anchor="middle" x="2252.27" y="-458" font-family="DejaVu Sans" font-size="10.00">Δt=11.9 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="2252.27" y="-445.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(7.54 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="2252.27" y="-445.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(13.1 s)</text>
 </g>
 <!-- Load and prepare coil sensitivity maps -->
 <g id="node9" class="node">
@@ -263,32 +263,32 @@
 <title>Load and prepare coil sensitivity maps&#45;&gt;Interpolate coil sensitivity</title>
 <path fill="none" stroke="black" d="M934.51,-911.28C972.86,-887.55 1022.06,-858.38 1067.46,-835.25 1132.34,-802.19 1207.78,-769.85 1266.26,-746.04"/>
 <polygon fill="black" stroke="black" points="1267.25,-749.42 1275.2,-742.42 1264.62,-742.93 1267.25,-749.42"/>
-<text xml:space="preserve" text-anchor="middle" x="1187.99" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=530 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1187.99" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(2.7 min)</text>
+<text xml:space="preserve" text-anchor="middle" x="1187.99" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=697 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1187.99" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.6 min)</text>
 </g>
 <!-- Interpolate concentration maps&#45;&gt;Load and prepare T1 maps -->
 <g id="edge7" class="edge">
 <title>Interpolate concentration maps&#45;&gt;Load and prepare T1 maps</title>
 <path fill="none" stroke="black" d="M1583.06,-732.06C1597.61,-762.23 1623.4,-815.71 1646.06,-862.7"/>
 <polygon fill="black" stroke="black" points="1642.84,-864.08 1650.34,-871.57 1649.15,-861.04 1642.84,-864.08"/>
-<text xml:space="preserve" text-anchor="middle" x="1652.71" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.6 s</text>
-<text xml:space="preserve" text-anchor="middle" x="1652.71" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(5.38 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1648.21" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.61 s</text>
+<text xml:space="preserve" text-anchor="middle" x="1648.21" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(11 s)</text>
 </g>
 <!-- Interpolate T1&#45;&gt;Load and prepare T2 maps -->
 <g id="edge9" class="edge">
 <title>Interpolate T1&#45;&gt;Load and prepare T2 maps</title>
 <path fill="none" stroke="black" d="M1806.85,-732.12C1835.52,-754.86 1880.81,-790.8 1926.72,-827.22"/>
 <polygon fill="black" stroke="black" points="1924.4,-829.85 1934.41,-833.33 1928.76,-824.37 1924.4,-829.85"/>
-<text xml:space="preserve" text-anchor="middle" x="1942.21" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.24 s</text>
-<text xml:space="preserve" text-anchor="middle" x="1942.21" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(7.08 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="1942.21" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.23 s</text>
+<text xml:space="preserve" text-anchor="middle" x="1942.21" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(12.7 s)</text>
 </g>
 <!-- Interpolate T2&#45;&gt;Partially FID -->
 <g id="edge11" class="edge">
 <title>Interpolate T2&#45;&gt;Partially FID</title>
 <path fill="none" stroke="black" d="M1975.44,-681.93C1978.61,-656.39 1983.87,-613.98 1989.11,-571.74"/>
 <polygon fill="black" stroke="black" points="1992.57,-572.29 1990.33,-561.94 1985.62,-571.43 1992.57,-572.29"/>
-<text xml:space="preserve" text-anchor="middle" x="2011.08" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=394 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="2011.08" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(7.53 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="2011.08" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=393 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="2011.08" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(13.1 s)</text>
 </g>
 <!-- Create Sampling Model -->
 <g id="node17" class="node">
@@ -310,8 +310,8 @@
 <title>Interpolate coil sensitivity&#45;&gt;Create Sampling Model</title>
 <path fill="none" stroke="black" d="M1419.95,-672.21C1434.03,-665.37 1449.41,-659.16 1464.46,-655.5 1504.89,-645.67 2171.88,-647.21 2213.46,-645.5 2321.84,-641.05 2600.69,-654.59 2700.46,-612 2739.22,-595.45 2775.25,-567.49 2805.22,-538.88"/>
 <polygon fill="black" stroke="black" points="2807.3,-541.73 2812.03,-532.25 2802.42,-536.72 2807.3,-541.73"/>
-<text xml:space="preserve" text-anchor="middle" x="2708.88" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=1.79 s</text>
-<text xml:space="preserve" text-anchor="middle" x="2708.88" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(2.73 min)</text>
+<text xml:space="preserve" text-anchor="middle" x="2708.88" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=3.88 s</text>
+<text xml:space="preserve" text-anchor="middle" x="2708.88" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.66 min)</text>
 </g>
 <!-- Interpolate coil sensitivity (ifft) -->
 <g id="node14" class="node">
@@ -345,10 +345,10 @@
 <!-- Interpolate coil sensitivity (ifft)&#45;&gt;Compute the forward process -->
 <g id="edge21" class="edge">
 <title>Interpolate coil sensitivity (ifft)&#45;&gt;Compute the forward process</title>
-<path fill="none" stroke="black" d="M2092.79,-662.53C2085.4,-659.72 2077.89,-657.3 2070.46,-655.5 2019.14,-643.1 1172.95,-647.71 1120.21,-645.5 916.84,-636.98 852.23,-688.12 663.46,-612 646.16,-605.03 629.22,-596.04 612.96,-585.85"/>
-<polygon fill="black" stroke="black" points="615.03,-583.02 604.73,-580.54 611.23,-588.9 615.03,-583.02"/>
-<text xml:space="preserve" text-anchor="middle" x="1152.83" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=512 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="1152.83" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.7 min)</text>
+<path fill="none" stroke="black" d="M2092.79,-662.53C2085.4,-659.72 2077.89,-657.3 2070.46,-655.5 2018.65,-642.99 1164.45,-647.77 1111.21,-645.5 911.83,-637.01 848.48,-686.76 663.46,-612 646.16,-605.01 629.23,-596.02 612.97,-585.83"/>
+<polygon fill="black" stroke="black" points="615.04,-583 604.74,-580.51 611.24,-588.88 615.04,-583"/>
+<text xml:space="preserve" text-anchor="middle" x="1146.83" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=503 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="1146.83" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(5.46 min)</text>
 </g>
 <!-- Spectral&#45;spatial combination -->
 <g id="node16" class="node">
@@ -372,8 +372,8 @@
 <title>Create Metabolic Property Maps&#45;&gt;Spectral&#45;spatial combination</title>
 <path fill="none" stroke="black" d="M2487.18,-308.28C2486.24,-288.85 2485.28,-268.88 2484.34,-249.63"/>
 <polygon fill="black" stroke="black" points="2487.85,-249.72 2483.87,-239.9 2480.86,-250.06 2487.85,-249.72"/>
-<text xml:space="preserve" text-anchor="middle" x="2514.38" y="-271.75" font-family="DejaVu Sans" font-size="10.00">Δt=239 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="2514.38" y="-259" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(7.78 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="2514.38" y="-271.75" font-family="DejaVu Sans" font-size="10.00">Δt=240 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="2514.38" y="-259" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(13.4 s)</text>
 </g>
 <!-- Investigate effects on the spectrum -->
 <g id="node18" class="node">
@@ -391,8 +391,8 @@
 <title>Spectral&#45;spatial combination&#45;&gt;Investigate effects on the spectrum</title>
 <path fill="none" stroke="black" d="M2308.27,-137.14C1803.36,-165.13 343.23,-249.94 253.46,-299.25 225.85,-314.41 203.43,-340.36 186.58,-365.74"/>
 <polygon fill="black" stroke="black" points="183.65,-363.83 181.21,-374.14 189.54,-367.6 183.65,-363.83"/>
-<text xml:space="preserve" text-anchor="middle" x="555.46" y="-271.75" font-family="DejaVu Sans" font-size="10.00">Δt=278 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="555.46" y="-259" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(8.06 s)</text>
+<text xml:space="preserve" text-anchor="middle" x="555.46" y="-271.75" font-family="DejaVu Sans" font-size="10.00">Δt=168 ms</text>
+<text xml:space="preserve" text-anchor="middle" x="555.46" y="-259" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(13.5 s)</text>
 </g>
 <!-- Cartesian Fourier Transformation -->
 <g id="node21" class="node">
@@ -408,7 +408,7 @@
 <path fill="none" stroke="black" d="M2852.67,-531.47C2807.86,-642.91 2733.96,-826.67 2700.23,-910.54"/>
 <polygon fill="black" stroke="black" points="2697.09,-908.99 2696.6,-919.57 2703.58,-911.6 2697.09,-908.99"/>
 <text xml:space="preserve" text-anchor="middle" x="2835.34" y="-710.25" font-family="DejaVu Sans" font-size="10.00">Δt=401 ms</text>
-<text xml:space="preserve" text-anchor="middle" x="2835.34" y="-697.5" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(2.74 min)</text>
+<text xml:space="preserve" text-anchor="middle" x="2835.34" y="-697.5" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.67 min)</text>
 </g>
 <!-- Compute spectral&#45;spatial model -->
 <g id="node19" class="node">
@@ -421,24 +421,24 @@
 <title>Investigate effects on the spectrum&#45;&gt;Compute spectral&#45;spatial model</title>
 <path fill="none" stroke="black" d="M154.48,-375.61C159.85,-309.11 168.1,-206.68 172.11,-156.95"/>
 <polygon fill="black" stroke="black" points="175.58,-157.53 172.89,-147.28 168.6,-156.97 175.58,-157.53"/>
-<text xml:space="preserve" text-anchor="middle" x="199.08" y="-271.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.71 min</text>
-<text xml:space="preserve" text-anchor="middle" x="199.08" y="-259" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(1.84 min)</text>
+<text xml:space="preserve" text-anchor="middle" x="199.08" y="-271.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.87 min</text>
+<text xml:space="preserve" text-anchor="middle" x="199.08" y="-259" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(2.09 min)</text>
 </g>
 <!-- Compute spectral&#45;spatial model&#45;&gt;Load and prepare coil sensitivity maps -->
 <g id="edge16" class="edge">
 <title>Compute spectral&#45;spatial model&#45;&gt;Load and prepare coil sensitivity maps</title>
 <path fill="none" stroke="black" d="M154.89,-145.53C124.7,-174.24 68,-234.41 46.46,-299.25 2.63,-431.16 -30.58,-496.3 46.46,-612 182.98,-817.04 468.14,-899.64 663.45,-932.78"/>
 <polygon fill="black" stroke="black" points="662.78,-936.21 673.22,-934.4 663.93,-929.31 662.78,-936.21"/>
-<text xml:space="preserve" text-anchor="middle" x="103.35" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=50.8 s</text>
-<text xml:space="preserve" text-anchor="middle" x="103.35" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(2.69 min)</text>
+<text xml:space="preserve" text-anchor="middle" x="103.35" y="-636" font-family="DejaVu Sans" font-size="10.00">Δt=1.49 min</text>
+<text xml:space="preserve" text-anchor="middle" x="103.35" y="-623.25" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.59 min)</text>
 </g>
 <!-- Cartesian Fourier Transformation&#45;&gt;Interpolate coil sensitivity (ifft) -->
 <g id="edge20" class="edge">
 <title>Cartesian Fourier Transformation&#45;&gt;Interpolate coil sensitivity (ifft)</title>
 <path fill="none" stroke="black" d="M2612.47,-920.96C2524.21,-878.34 2371.86,-804.77 2271.37,-756.24"/>
 <polygon fill="black" stroke="black" points="2273.09,-753.19 2262.56,-751.99 2270.05,-759.49 2273.09,-753.19"/>
-<text xml:space="preserve" text-anchor="middle" x="2431.99" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=57.3 s</text>
-<text xml:space="preserve" text-anchor="middle" x="2431.99" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(3.69 min)</text>
+<text xml:space="preserve" text-anchor="middle" x="2431.99" y="-807.75" font-family="DejaVu Sans" font-size="10.00">Δt=1.78 min</text>
+<text xml:space="preserve" text-anchor="middle" x="2431.99" y="-795" font-family="DejaVu Sans" font-size="10.00"> &#160;&#160;&#160;&#160;&#160;&#160;(5.45 min)</text>
 </g>
 </g>
 </svg>

@@ -1,7 +1,19 @@
+## just for type checking, to solve circular imports ##
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sampling import CoilSensitivityVolume
+#######################################################
+
+
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 import spectral_spatial_simulation
+#from spatial_metabolic_distribution import MetabolicPropertyMap, MetabolicPropertyMaps
+from spatial_metabolic_distribution import ParameterMap, ParameterVolume
 from typing_extensions import Self
-from tools import JsonConverter
+from tools import JsonConverter, UnitTools, JupyterPlotManager, SpaceEstimator, ArrayTools
+import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
 from tools import deprecated
 from scipy.io import loadmat
@@ -15,6 +27,11 @@ import h5py
 import json
 import sys
 import os
+
+from interfaces import WorkingVolume, Plot
+
+# For enabling to use units
+u = pint.UnitRegistry()
 
 
 class JMRUI:
@@ -108,7 +125,7 @@ class NeuroImage:
         self.data: np.memmap = None  # Image data of the nifti image
         self.shape: tuple = ()  # Just the shape of the nifti image data
 
-    def load_nii(self, mute: bool = False):
+    def load_nii(self, data_type: np.dtype = np.float64, mute: bool = False, report_nan: bool =True):
         """
         The data will be loaded as "np.memmap", thus usage of a memory map. Since the data is just mapped, no
         full workload on the RAM because data is only loaded into memory on demand.
@@ -124,15 +141,18 @@ class NeuroImage:
             return
 
         self.header = self.nifti_object.header
-        self.data = self.nifti_object.get_fdata()
+        self.data = self.nifti_object.get_fdata(dtype=data_type)
         self.shape = self.nifti_object.shape
 
         Console.printf("success", f"Loaded file '{self.name}':"
                                   f"\n    Shape             -> {self.shape}"
                                   f"\n    Pixel dimensions: -> {self.header.get_zooms()}"
                                   f"\n    Values range:     -> [{round(np.min(self.data), 3)}, {round(np.max(self.data), 3)}]"
+                                  f"\n    Data type:        -> {data_type}"
                                   f"\n    In memory cache?  -> {self.nifti_object.in_memory}",  # TODO what was exactly the purpose?
                        mute=mute)
+
+        ArrayTools.check_nan(self.data, verbose=report_nan)
 
         return self
 
@@ -198,40 +218,115 @@ class Configurator:
         Console.printf("info", f"Content of the config file: {self.file_name} \n"
                                f"{json.dumps(self.data, indent=4)}")
 
+### DELETE -> Moved to interfaces module
+###class WorkingVolume(ABC):
+###    """
+###    For other classes to be inherited. The need of implementing the working equivalent to the loader class.
+###    For example: file.ParameterMaps is only for loading the volume, then another class in another module
+###    implements the other functionalities to 'work' with this volume.
+###    """
+###
+###    @abstractmethod
+###    def to_working_volume(self):
+###        """Defines an abstract (interface) method. Subclasses must implement it to transform their data into
+###        a target class in another module."""
+###        ...
 
-class Mask:
+
+
+
+
+class Mask(Plot):
     """
     For loading a mask from a file (e.g., metabolic mask, lipid mask, B0 inhomogeneities, ...). It requires a
     available JSON configuration file. See :class: `Configurator`.
     """
+    def __init__(self, configurator: Configurator):
+        self.configurator = configurator
+        self.mask = None
+        self.mask_name = None
 
-    @staticmethod
-    def load(configurator: Configurator, mask_name: str) -> NeuroImage:
+
+    def load(self, mask_name: str, data_type: np.dtype = np.float64) -> NeuroImage:
         """
         For loading a mask from a path. The necessary path is available in a JSON config file (path_file),
         the :class: `Configurator does handle it.
 
         :param configurator: Handles the paths, thus also for the masks.
         :param mask_name: The name of the mask. Needed to be available in the JSON file.
+        :param data_type: The data type of the mask
         :return: An object of the class :class: `Neuroimage`. The variable 'data' of the object returns the mask data itself (numpy memmap).
         """
 
         # Load the paths from JSON file in the configurator object
-        configurator.load()
+        self.configurator.load()
+
+        # Assign the current mask name to instance variable
+        self.mask_name = mask_name
 
         # Then, check if Mask exists and load the path. Otherwise, warn the user and exit program.
-        available_masks = list(configurator.data["path"]["mask"].keys())
+        available_masks = list(self.configurator.data["mask"].keys())
         if mask_name not in available_masks:
             Console.printf("error", f"Mask '{mask_name}' not listed in {configurator.file_name}. Only listed: {available_masks}. Terminating the program!")
             sys.exit()
 
         # Finally, load the mask according to the path
-        mask = (NeuroImage(path=configurator.data["path"]["mask"][mask_name]).
-                load_nii())
+        self.mask = NeuroImage(path=self.configurator.data["mask"][mask_name]["path"]).load_nii(data_type=data_type)
 
-        Console.printf("success", f"Thus, loaded the '{mask_name}' mask")
+        Console.printf("success", f"Thus, loaded the '{mask_name}' mask.")
 
-        return mask
+        return self.mask
+
+    def plot_jupyter(self, cmap="gray"):
+        """
+        To plot the loaded volume in an interactive form for the jupyter notebook/lab.
+        (!) Note: %matplotlib ipympl need be called once in the respective jupyter notebook.
+
+        :return: Nothing
+        """
+        if self.mask is not None:
+            JupyterPlotManager.volume_grid_viewer(vols=[self.mask.data], rows=1, cols=1, titles=self.mask_name, cmap=cmap)
+        else:
+            Console.printf("error", "No mask loaded yet, thus no plotting possible.")
+
+    def plot(self, figsize=(10,5), cmap="gray", slices:str | tuple[int, int, int] ="central"):
+        """
+        To plot the loaded volume as cross-sectional view. None interactive. Works also with command line.
+
+        :return: Nothing
+        """
+        zz, yy, xx = None, None, None
+
+        if slices == "central":
+            z, y, x = self.mask.data.shape
+            zz, yy, xx = z//2, y//2, x//2
+            Console.printf("info", f"Plotting central slices by default: ({zz},{yy},{xx})")
+        else:
+            if isinstance(slices, tuple):
+                zz, yy, xx = slices[0] // 2, slices[1] // 2, slices[2] // 2
+            else:
+                Console.printf("error", f"Format required for plotting custom slices: tuple(int, int, int). But provided: {type(slices)}")
+
+
+        fig, axs = plt.subplots(figsize=figsize, nrows=1, ncols=3)
+        slice_1 = axs[0].imshow(self.mask.data[zz,:,:], cmap=cmap)
+        axs[0].set_title("Z")
+        slice_2 = axs[1].imshow(self.mask.data[:,yy,:], cmap=cmap)
+        axs[1].set_title("Y")
+        slice_3 = axs[2].imshow(self.mask.data[:,:,xx], cmap=cmap)
+        axs[2].set_title("X")
+        fig.suptitle(self.mask_name, fontsize=16)
+
+        cbar = fig.colorbar(slice_1, ax=axs, location="right", fraction=0.03, pad=0.02)
+        cbar.set_label("Value")
+
+        plt.show()
+
+#    def change_data_type(self, data_type, verbose: bool=True):
+#        data_type_before = self.values.dtype
+#        data_type_after = data_type
+#        self.values = self.values.astype(data_type_after)
+#        Console.printf("success", f"Changed data type from '{data_type_before}' => '{data_type_after}'", mute=not verbose)
 
 
 class MetabolicAtlas:
@@ -257,32 +352,36 @@ class T1Image:
         pass
 
 
-class Maps:
+class ParameterMaps(WorkingVolume, Plot):
     """
-    This class can be used at the moment for carious purposes:
+    This class can be used at the moment for various purposes:
 
     1) To load data:
         -> from one nii file, yields dictionary of just values
         -> from one h5 file, yields dictionary (e.g., with keys 'imag', 'real')
         -> from multiple nii files in a respective dictionary (for metabolites)
 
-    2) To interpolate data
-        -> one or dictionary of nii
-        -> one h5 with multiple items (e.g., 'imag', 'real)
+    2) Transform to 'working map' from spatial metabolic distribution
+        Therefore, create working map object with data from this class:
+            -> map_type_name
+            -> loaded maps
+            -> loaded maps unit
 
     The class automatically figures out the filetype, at the moment based on '.nii', '.nii.gz', '.h5', '.hdf5'.
     """
     # TODO: Maybe program more flexible
 
+    u = pint.UnitRegistry() # class variable, same for all instances
+
     def __init__(self, configurator: Configurator, map_type_name: str):
         self.configurator = configurator
         self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
         self.loaded_maps: dict[str, np.memmap | h5py._hl.dataset.Dataset] | np.memmap | np.ndarray = None
+        self.loaded_maps_unit = None
         self.file_type_allowed = ['.nii', '.nii.gz', '.h5', '.hdf5']
 
 
-
-        self.main_path = Path(self.configurator.data["path"]["maps"][self.map_type_name])
+        self.main_path = Path(self.configurator.data["maps"][self.map_type_name]["path"])
         if self.main_path.is_file():
             # Case 1: the main_path points to just one file
             Console.printf("info", "Maps object: The provided path points to a file")
@@ -314,11 +413,12 @@ class Maps:
         Load a single map from file.
         Supports both H5 and NIfTI (nii) formats.
         """
-        self.loaded_maps = {}  # key is abbreviation like "Glu" for better matching
+        self.loaded_maps = {}             # key is abbreviation like "Glu" for better matching
+        self._load_and_assign_pint_unit() # load the associated unit defined in the json file
 
         if self.file_type == '.h5' or self.file_type == '.hdf5':
             """
-            Case 1: To handle h5 files: Results in dictionary ->  self.loaded_maps[key] = values 
+            Case 1: To handle h5 files: Results in dictionary ->  self.loaded_maps[key] = values
             """
             Console.printf("info", f"Loading h5 file for map type {self.map_type_name}")
             with h5py.File(self.main_path, "r") as file:
@@ -343,16 +443,17 @@ class Maps:
 
         elif self.file_type == '.nii' or self.file_type == '.nii.gz':
             """
-            Case 2: TO handle nii files: Results NOT in dictionary ->  self.loaded_maps = values
+            Case 2: To handle nii files: Results NOT in dictionary ->  self.loaded_maps = values
             """
             Console.printf("info", f"Loading nii file for map type {self.map_type_name}")
             # Using NeuroImage to load nii file
-            loaded_map = NeuroImage(path=self.main_path).load_nii(mute=True).data
+            loaded_map = NeuroImage(path=self.main_path).load_nii(mute=True, report_nan=True).data
             # Use map_type_name as the key, or choose an appropriate one
             self.loaded_maps = loaded_map
             Console.add_lines(
                 f"Loaded nii map: {os.path.basename(self.main_path)} | Shape: {loaded_map.shape} | "
                 f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] | "
+                f"Unit: {self.loaded_maps_unit} | " 
                 f"Unique values: {len(np.unique(loaded_map))}"
             )
             Console.printf_collected_lines("success")
@@ -377,145 +478,124 @@ class Maps:
         :return: the object of the whole class
         """
         Console.printf("warning", "Maps.load_files_from_folder ==> by standard nii is loaded. No h5 support yet!")
+        Console.printf("warning", "The same unit is assumed for all the files in the given folder!")
         self.configurator.load()
-        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
+        main_path = self.configurator.data["maps"][self.map_type_name]["path"]
 
-        self.loaded_maps: dict = {} # dict required for the operations afterwards
+        self._load_and_assign_pint_unit()
+        self.loaded_maps: dict = {} # dict required for the operations afterward
 
         Console.add_lines("Loaded maps: ")
         for i, (working_name, file_name) in enumerate(working_name_and_file_name.items()):
             path_to_map = os.path.join(main_path, file_name)
-            loaded_map = NeuroImage(path=path_to_map).load_nii(mute=True).data
+            loaded_map = NeuroImage(path=path_to_map).load_nii(mute=True, report_nan=True).data
             self.loaded_maps[working_name] = loaded_map
 
             Console.add_lines(
                 f"  {i}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | "
                 f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] "
+                f"| Unit: {self.loaded_maps_unit} |"
             )
         Console.printf_collected_lines("success")
 
+
         return self
 
-
-##### This Method is already the spatial_metabolic_distribution.Maps available and that class has also GPU interpolation enabled
-    def interpolate_to_target_size(self, target_size: tuple, order: int = 3) -> Self:
+    def _load_and_assign_pint_unit(self):
         """
-        DELETE THIS METHOD; DELETE THIS METHOD;DELETE THIS METHOD;DELETE THIS METHOD;DELETE THIS METHOD;
-        !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        For loading the unit string, which should be compliant with the library. If it fails, fallback to "dimensionless" via pint.
 
-        To interpolate one or multiple maps to the desired target size. Check for more information direct this
-        method and the comments.
+        :return:
+        """
+        unit_string = self.configurator.data["maps"][self.map_type_name]["unit"]
 
-        :param target_size: desired size as tuple
-        :param order: interpolation order
-        :return: the object of the whole class
+        # Try to convert provided string in the config file to pint unit, and assign "dimensionless" if it fails
+        try:
+            self.loaded_maps_unit = ParameterMaps.u.Unit(unit_string)
+        except:
+            Console.printf("error", f"Could not convert loaded unit '{unit_string}' to pint unit. Therefore, assigned 'dimensionless'!")
+
+
+    def to_base_units(self, verbose=False):
+        """
+        To convert all loaded arrays to the base units.
+
+        :param verbose: it true then it prints conversation results to the console.
+        :return: Nothing
         """
 
-        Console.printf("warning", "!!!! DONT USE THIS METHOD ANY MORE!!!! INSTEAD INTERPOLATE VIA MAPS FROM spatial_metabolic_distribution")
+        loaded_maps_unit_before = self.loaded_maps_unit
+        loaded_maps_unit_after = None
+        try:
+            # CASE A: multiple arrays
+            if isinstance(self.loaded_maps, dict):
+                for i, (name, array) in enumerate(self.loaded_maps.items()):
+                    self.loaded_maps[name], loaded_maps_unit_after = UnitTools.to_base(
+                        values=array,
+                        units=self.loaded_maps_unit,
+                        return_separate=True,
+                        verbose=verbose)
 
-        if isinstance(self.loaded_maps, dict):
-            """
-            Case 1: Multiple maps are handled in the Maps class. Thus a dictionary with keys is used.
-                    This can be for example either due to multiple nii maps (Glucose , Choline, ...),
-                    but also if o h5 file has "real" and "imag" for example.
-            """
-            Console.add_lines("Interpolate loaded maps: ")
-            for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
-                zoom_factor = np.divide(target_size, loaded_map.shape)
-                self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
-                Console.add_lines(f"  {i}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
-            Console.printf_collected_lines("success")
+                self.loaded_maps_unit = loaded_maps_unit_after
+
+            # CASE B: assuming single array (e.g. numpy array, numpy memmap, and so on)
+            else:
+                self.loaded_maps, self.loaded_maps_unit = UnitTools.to_base(
+                    values=self.loaded_maps,
+                    units=self.loaded_maps_unit,
+                    return_separate=True,
+                    verbose=verbose)
+
+            Console.printf("success", f"Converted to base units: {loaded_maps_unit_before} -> {self.loaded_maps_unit}")
+        except:
+            Console.printf("error", "Could not convert to base units.")
+
+    def plot(self, cmap="viridis"):
+        fig, axs = plt.subplots(figsize=(15, 2), ncols=len(self.loaded_maps.items()), nrows=1, cmap=cmap)
+
+        for i, (key, value) in enumerate(self.loaded_maps.items()):
+            image = axs[i].imshow(value[:, :, 40])
+            axs[i].set_title(key)
+            axs[i].set_axis_off()
+
+        fig.colorbar(image, ax=axs, location="right")
+
+    def plot_jupyter(self, cmap="gray"):
+        """
+        To plot the loaded volume in an interactive form for the jupyter notebook/lab.
+        (!) Note: %matplotlib ipympl need be called once in the respective jupyter notebook.
+
+        :return: Nothing
+        """
+        if self.loaded_maps is not None:
+            JupyterPlotManager.volume_grid_viewer(vols=self.loaded_maps.values(), rows=1, cols=len(self.loaded_maps.keys()), titles=self.loaded_maps.keys(), cmap=cmap)
         else:
-            """
-            Case 2: Only one map is handled in the Maps class. This can be for example one nii file.
-                    In this case, no dictionary is used.
-            """
-            initial_shape = self.loaded_maps.shape
-            zoom_factor = np.divide(target_size, self.loaded_maps.shape)
-            self.loaded_maps = zoom(input=self.loaded_maps, zoom=zoom_factor, order=order)
-            Console.printf("success", f"Only one map exits: Interpolated map: {initial_shape} --> {self.loaded_maps.shape}")
-        return self
+            Console.printf("error", "No maps loaded yet, thus no plotting possible.")
 
-###class Maps:
-###    # TODO: Maybe program more flexible
-###
-###    def __init__(self, configurator: Configurator, map_type_name: str, file_type: str = 'nii'):
-###        self.configurator = configurator
-###        self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
-###        self.loaded_maps: dict[
-###            str, np.memmap | h5py._hl.dataset.Dataset] = {}  # key is abbreviation like "Glu" for better matching, h5py._hl.dataset.Dataset behaves like a memmap? and returns a numpy array if specific value accessed
-###        self.file_type_allowed = ['nii', 'h5']
-###
-###        if file_type not in self.file_type_allowed:
-###            Console.printf("error", f"Only possible to load formats: {self.file_type_allowed}. But it was given: {file_type}")
-###            sys.exit()
-###
-###    def load_file(self):
-###        """
-###        To load a single map from file. At the moment only h5 is supported. TODO: Implement also nii!
-###
-###        :return:
-###        """
-###
-###        Console.printf("warning", "Maps.load_file ==> by standard h5 is loaded. No nii support yet!")
-###
-###        self.configurator.load()
-###        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
-###
-###        Console.add_lines(f"Loaded h5py {self.map_type_name} map named: {os.path.basename(main_path)}")
-###        with h5py.File(main_path, "r") as file:
-###            for key in file.keys():
-###                item = file[key]
-###
-###                if isinstance(item, h5py.Dataset):
-###                    Console.add_lines(f" => Key: {key:<5} | Type: {'Dataset':<10} | Shape: {item.shape} | Data Type: {item.dtype}")
-###                elif isinstance(item, h5py.Group):
-###                    Console.add_lines(f" => Key: {key:<5} | Type: {'Group':<10}")
-###
-###                Console.add_lines("     Attributes: ")
-###                if len(item.attrs.items()) == 0:
-###                    Console.add_lines(f"      Not available")
-###                else:
-###                    for attr_key, attr_val in item.attrs.items():
-###                        Console.add_lines(f"        Attribute key: {attr_key:<10} | value: {attr_val:<20}")
-###
-###                self.loaded_maps[key] = item
-###
-###            Console.printf_collected_lines("success")
-###
-###    def load_files_from_folder(self, working_name_and_file_name: dict[str, str]):
-###        # TODO
-###
-###        self.loaded_maps = {}
-###
-###        Console.printf("warning", "Maps.load_files_from_folder ==> by standard nii is loaded. No h5 support yet!")
-###        self.configurator.load()
-###        main_path = self.configurator.data["path"]["maps"][self.map_type_name]
-###
-###        Console.add_lines("Loaded maps: ")
-###        for i, (working_name, file_name) in enumerate(working_name_and_file_name.items()):
-###            path_to_map = os.path.join(main_path, file_name)
-###            loaded_map = NeuroImage(path=path_to_map).load_nii(mute=True).data
-###            self.loaded_maps[working_name] = loaded_map
-###
-###            Console.add_lines(
-###                f"  {(i)}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] ")
-###        Console.printf_collected_lines("success")
-###
-###        return self
-###
-###    def interpolate_to_target_size(self, target_size: tuple, order: int = 3):
-###        # TODO Docstring
-###        # TODO tqdm/progressbar for interpolation!
-###
-###        Console.add_lines("Interpolate loaded maps: ")
-###        for i, (working_name, loaded_map) in enumerate(self.loaded_maps.items()):
-###            zoom_factor = np.divide(target_size, loaded_map.shape)
-###            self.loaded_maps[working_name] = zoom(input=loaded_map, zoom=zoom_factor, order=order)
-###            Console.add_lines(f"  {(i)}: {working_name:.<10}: {loaded_map.shape} --> {self.loaded_maps[working_name].shape}")
-###        Console.printf_collected_lines("success")
-###
-###        return self
+
+    def to_working_volume(self, data_type: str = None, verbose: bool = True) -> ParameterVolume:
+        """
+        This transforms the loaded maps directly to a 4D array of (metabolites, X, Y, Z)
+
+        :return: a ParameterVolume (see module spatial_metabolic_distribution)
+        """
+
+        # Create the Parameter Volume
+        volume = ParameterVolume(maps_type=self.map_type_name)
+
+        # Create for each metabolite a Parameter Map and add it to the Parameter Volume
+        for metabolite, data in self.loaded_maps.items():
+            parameter_map = ParameterMap(map_type=self.map_type_name, metabolite_name=metabolite, values=data, unit=self.loaded_maps_unit, affine=None)
+            volume.add_map(map=parameter_map, verbose=False)
+
+        # To create from all the 3D volumes inside the ParameterVolume actually one 4D volume
+        volume.to_volume(verbose=verbose)
+
+        # Change data type if given by the user
+        if data_type is not None:
+            volume.to_data_type(data_type)
+
+        return volume
 
 
 class FID:
@@ -542,7 +622,7 @@ class FID:
         :return: Nothing. Access the list loaded_fid of the object for the signals!
         """
         self.configurator.load()
-        path = self.configurator.data["path"]["fid"][fid_name]
+        path = self.configurator.data["fid"][fid_name]["path"]
         jmrui = JMRUI(path=path, signal_data_type=signal_data_type)
         data = jmrui.load_m_file()
 
@@ -551,6 +631,19 @@ class FID:
 
         signal_complex = self.__transform_signal_complex(signal, time)
         self.__assign_signal_to_compound(signal_complex, time)
+
+        # At this point the FID is already created. Just adding the unit.
+        unit = self.configurator.data["fid"][fid_name]["unit_time"]
+        try:
+            self.loaded_fid.unit_time: pint.Unit = u.Unit(unit)
+            Console.printf("success", f"Assigned unit to the loaded time vector: {self.loaded_fid.unit_time}")
+        except:
+            Console.printf("error", f"Could not assign unit to loaded FID: '{unit}'. No valid unit.")
+
+        if ArrayTools.check_nan(self.loaded_fid.signal, verbose=False):
+            Console.printf("warning", "Loaded signal of FID contains NaNs.")
+        if ArrayTools.check_nan(self.loaded_fid.time, verbose=False):
+            Console.printf("warning", "loaded time vector of FID contains NaNs.")
 
     def __transform_signal_complex(self, amplitude: np.ndarray, conjugate: bool = True) -> np.ndarray:
         """
@@ -606,19 +699,133 @@ class FID:
 
         Console.printf_collected_lines("success")
         # np.set_printoptions() resetting numpy printing options
+        #
+        #
+        #
 
+### DELETE BELOW:
+###class CoilSensitivityMaps:
+###    """
+###    For loading and interpolating the coil sensitivity maps. At the moment, only HDF5 files are supported.
+###    The maps can be interpolated on 'cpu' and desired 'gpu'. It is strongly recommended to use the 'gpu'
+###    regarding computational performance.
+###    An object of the configurator is necessary to get the path to the coil sensitivity maps.
+###    """
+###
+###    def __init__(self, configurator: Configurator):
+###        self.configurator = configurator
+###        self.maps = None
+###        self.shape = None
+###
+###    def load_h5py(self, keys: list = ["imag", "real"], data_type=np.complex64) -> None:
+###        """
+###        For loading coil sensitivity maps of the type HDF5. The default keys are 'real' and 'imag' for loading the complex values.
+###        If different keys are defined in the HDF5 it is necessary to explicitely define them with the argument 'keys'.
+###
+###        :param dtype: desired data type. Since the data is complex ude numpy complex data types.
+###        :return: None.
+###        """
+###
+###        # Load the HDF5 file via h5py
+###        path_maps = self.configurator.data["maps"]["coil_sensitivity"]["path"]
+###        h5py_file = h5py.File(path_maps, "r")
+###        h5py_file_keys_required = keys
+###
+###        # If the default keys or by the user defined keys are not available in the HDF5 file:
+###        if not all(key in h5py_file.keys() for key in h5py_file_keys_required):
+###            Console.add_lines(f"Could not find keys {h5py_file_keys_required} in the HDF5 file")
+###            Console.add_lines(f" => Instead the following keys are available: {h5py_file.keys()}.")
+###            Console.add_lines(f" => Aborting the program.")
+###            Console.printf_collected_lines("error")
+###            sys.exit()
+###
+###        # If the keys are existing in the HDF5 file, load them and convert to complex values:
+###        maps_real = h5py_file["real"][:]
+###        maps_imag = h5py_file["imag"][:]
+###        maps_complex = maps_real + 1j * maps_imag
+###        maps_complex = maps_complex.astype(data_type, copy=False)
+###
+###        Console.add_lines("Coil Sensitivity Maps:")
+###        Console.add_lines(f" => Could find keys {h5py_file_keys_required} in the HDF5 file")
+###        Console.add_lines(f" => Loaded and converted maps to {maps_complex.dtype}")
+###        Console.add_lines(f" => Data shape: {maps_complex.shape}")
+###        Console.add_lines(f" => Space required: {}")
+###        Console.printf_collected_lines("success")
+###
+###        self.maps = maps_complex
+###
+###
+###    def interpolate(self, target_size, order=3, compute_on_device="cpu", gpu_index=0, return_on_device="cpu") -> np.ndarray | cp.ndarray:
+###        """
+###        To interpolate the loaded coil sensitivity maps with the selected order to a target size on the desired device. Possible is the 'cpu' and 'cuda'.
+###        If 'cuda' is selected, with the index the desired device can be chosen. Further, the result can be returned on 'cpu' or 'cuda'.
+###
+###        :param target_size: target size to interpolate the coil sensitivity maps
+###        :param order: desired order (0: Nearest-neighbor, 1: Bilinear interpolation, 2: Quadratic interpolation, 3: Cubic interpolation (default),...). See scipy.ndimage or cupyx.scipy.ndimage for more information.
+###        :param compute_on_device: device where the interpolation takes place ('cuda' is recommended)
+###        :param gpu_index: if 'cuda' is selected in the param compute_on_device, then possible to choose a gpu if multiple gpus are available. The default is 0.
+###        :param return_on_device: After the interpolation, the device where the array should be returned.
+###        :return: Interpolated array
+###        """
+###
+###        # Check if maps are already loaded
+###        if self.maps is None:
+###            Console.printf("error", "No maps data available to interpolate. You might call 'load_h5py' first! Aborting program.")
+###            sys.exit()
+###
+###        self.shape = self.maps.shape
+###
+###        # Get the zoom factor, based on the current maps size and desired size
+###        zoom_factor = np.divide(target_size, self.maps.shape)
+###        Console.printf("info", "Start interpolating coil sensitivity maps")
+###        Console.add_lines("Interpolated the coil sensitivity maps:")
+###        Console.add_lines(f" => From size: {self.maps.shape} --> {target_size}")
+###        Console.add_lines(f" => with interpolation order: {order}")
+###        Console.add_lines(f" => on device {compute_on_device}{':' + str(gpu_index) if compute_on_device == 'cuda' else ''} --> and returned on {return_on_device}")
+###
+###        # Interpolate on CUDA or CPU based on the user decision
+###        maps_complex_interpolated = None
+###        if compute_on_device == "cpu":
+###            maps_complex_interpolated = zoom(input=self.maps, zoom=zoom_factor, order=order)
+###        elif compute_on_device == "cuda":
+###            with cp.cuda.Device(gpu_index):
+###                maps_complex_interpolated = zoom_gpu(input=cp.asarray(self.maps), zoom=zoom_factor, order=order)
+###        else:
+###            Console.printf("error", f"Device {compute_on_device} not supported. Use either 'cpu' or 'cuda'.")
+###
+###        Console.printf_collected_lines("success")
+###
+###        # Return on the desired device after interpolation
+###        if return_on_device == "cpu" and isinstance(maps_complex_interpolated, cp.ndarray):
+###            maps_complex_interpolated = cp.asnumpy(maps_complex_interpolated)
+###        elif return_on_device == "cuda" and isinstance(maps_complex_interpolated, np.ndarray):
+###            maps_complex_interpolated = cp.asarray(maps_complex_interpolated)
+###        elif return_on_device not in ["cpu", "cuda"]:
+###            Console.printf("error", f"Return on device {return_on_device} not supported. Choose either 'cpu' or 'cuda'. Abort program.")
+###            sys.exit()
+###
+###        # Save to object variable
+###        self.maps = maps_complex_interpolated
+###
+###        # Just return the interpolated result..
+###        return maps_complex_interpolated
 
-class CoilSensitivityMaps:
+class CoilSensitivityMaps(WorkingVolume, Plot):
     """
     For loading and interpolating the coil sensitivity maps. At the moment, only HDF5 files are supported.
     The maps can be interpolated on 'cpu' and desired 'gpu'. It is strongly recommended to use the 'gpu'
     regarding computational performance.
     An object of the configurator is necessary to get the path to the coil sensitivity maps.
+
+    Note: Although at the moment only able to load a volume, it could be in future that it will all load
+    some coil sensitivity maps that are separate and not in one 4D array, therefore still the naming
+    CoilSensitivityMaps and not CoilSensitivityVolume!
     """
 
     def __init__(self, configurator: Configurator):
         self.configurator = configurator
-        self.maps = None
+        self.maps: np.ndarray | np.memmap = None
+        self.coils: list[str] = None
         self.shape = None
 
     def load_h5py(self, keys: list = ["imag", "real"], dtype=np.complex64) -> None:
@@ -631,7 +838,7 @@ class CoilSensitivityMaps:
         """
 
         # Load the HDF5 file via h5py
-        path_maps = self.configurator.data["path"]["maps"]["coil_sensitivity"]
+        path_maps = self.configurator.data["maps"]["coil_sensitivity"]["path"]
         h5py_file = h5py.File(path_maps, "r")
         h5py_file_keys_required = keys
 
@@ -647,69 +854,156 @@ class CoilSensitivityMaps:
         maps_real = h5py_file["real"][:]
         maps_imag = h5py_file["imag"][:]
         maps_complex = maps_real + 1j * maps_imag
-        maps_complex = maps_complex.astype(np.complex64)
+        maps_complex = maps_complex.astype(dtype, copy=False)
+
+        self.coils = [f"Coil {i+1}" for i in range(maps_complex.shape[0])]
 
         Console.add_lines("Coil Sensitivity Maps:")
         Console.add_lines(f" => Could find keys {h5py_file_keys_required} in the HDF5 file")
         Console.add_lines(f" => Loaded and converted maps to {maps_complex.dtype}")
+        Console.add_lines(f" => Data shape: {maps_complex.shape}")
+        Console.add_lines(f" => Space required: {SpaceEstimator.for_array(maps_complex, 'MiB'):.5g}")
         Console.printf_collected_lines("success")
 
         self.maps = maps_complex
 
-    def interpolate(self, target_size, order=3, compute_on_device="cpu", gpu_index=0, return_on_device="cpu") -> np.ndarray | cp.ndarray:
+    def to_working_volume(self) -> CoilSensitivityVolume | None:
         """
-        To interpolate the loaded coil sensitivity maps with the selected order to a target size on the desired device. Possible is the 'cpu' and 'cuda'.
-        If 'cuda' is selected, with the index the desired device can be chosen. Further, the result can be returned on 'cpu' or 'cuda'.
+        Converts the from file.CoilSensitivityMaps to sampling.CoilSensitivityVolume.
 
-        :param target_size: target size to interpolate the coil sensitivity maps
-        :param order: desired order (0: Nearest-neighbor, 1: Bilinear interpolation, 2: Quadratic interpolation, 3: Cubic interpolation (default),...). See scipy.ndimage or cupyx.scipy.ndimage for more information.
-        :param compute_on_device: device where the interpolation takes place ('cuda' is recommended)
-        :param gpu_index: if 'cuda' is selected in the param compute_on_device, then possible to choose a gpu if multiple gpus are available. The default is 0.
-        :param return_on_device: After the interpolation, the device where the array should be returned.
-        :return: Interpolated array
+        :return: CoilSensitivityVolume in sampling
         """
+        from sampling import CoilSensitivityVolume
 
-        # Check if maps are already loaded
         if self.maps is None:
-            Console.printf("error", "No maps data available to interpolate. You might call 'load_h5py' first! Aborting program.")
-            sys.exit()
-
-        self.shape = self.maps.shape
-
-        # Get the zoom factor, based on the current maps size and desired size
-        zoom_factor = np.divide(target_size, self.maps.shape)
-        Console.printf("info", "Start interpolating coil sensitivity maps")
-        Console.add_lines("Interpolated the coil sensitivity maps:")
-        Console.add_lines(f" => From size: {self.maps.shape} --> {target_size}")
-        Console.add_lines(f" => with interpolation order: {order}")
-        Console.add_lines(f" => on device {compute_on_device}{':' + str(gpu_index) if compute_on_device == 'cuda' else ''} --> and returned on {return_on_device}")
-
-        # Interpolate on CUDA or CPU based on the user decision
-        maps_complex_interpolated = None
-        if compute_on_device == "cpu":
-            maps_complex_interpolated = zoom(input=self.maps, zoom=zoom_factor, order=order)
-        elif compute_on_device == "cuda":
-            with cp.cuda.Device(gpu_index):
-                maps_complex_interpolated = zoom_gpu(input=cp.asarray(self.maps), zoom=zoom_factor, order=order)
+            Console.printf("error", "Need to load coil sensitivity maps before converting to working volume!")
+            return None
         else:
-            Console.printf("error", f"Device {compute_on_device} not supported. Use either 'cpu' or 'cuda'.")
+            coil_sensitivity_volume = CoilSensitivityVolume()
+            coil_sensitivity_volume.volume: list[str] = self.maps
+            coil_sensitivity_volume.coils: np.ndarray | np.memmap = [f"Coil {i+1}" for i in range(self.maps.shape[0])]
+            Console.printf("success", "Transformed file.CoilSensitivityMaps => sampling.CoilSensitivityVolume")
 
-        Console.printf_collected_lines("success")
+            return coil_sensitivity_volume
 
-        # Return on the desired device after interpolation
-        if return_on_device == "cpu" and isinstance(maps_complex_interpolated, cp.ndarray):
-            maps_complex_interpolated = cp.asnumpy(maps_complex_interpolated)
-        elif return_on_device == "cuda" and isinstance(maps_complex_interpolated, np.ndarray):
-            maps_complex_interpolated = cp.asarray(maps_complex_interpolated)
-        elif return_on_device not in ["cpu", "cuda"]:
-            Console.printf("error", f"Return on device {return_on_device} not supported. Choose either 'cpu' or 'cuda'. Abort program.")
-            sys.exit()
 
-        # Save to object variable
-        self.maps = maps_complex_interpolated
+    def plot_jupyter(self, cmap: str = "viridis"):
+        """
+        To plot the coild sensitivity maps to the notebooker lab. It should be interactive,
 
-        # Just return the interpolated result..
-        return maps_complex_interpolated
+        :param cmap: color map. See matplotlib.
+        :return: Nothing
+        """
+
+        cols = int(np.ceil(len(self.coils)/2))
+        rows = 2
+
+        if self.maps is not None:
+            # self.maps has shape (coil, X,Y,Z) and list(self.maps) cerates list((X,Y,Z), (X,Y,Z), ...)
+            JupyterPlotManager.volume_grid_viewer(vols=list(np.abs(self.maps)), rows=rows, cols=cols, titles=self.coils, cmap=cmap)
+        else:
+            Console.printf("error", "No coil sensitivity maps loaded yet, thus no plotting possible.")
+        pass
+
+    def plot(self, cmap: str = "gray", **kwargs):
+        """
+        Plot one slice per coil.
+        """
+
+        slice_position = kwargs.pop("slice_position", None)
+        axis = kwargs.pop("axis", 3)  # choose a sensible default for your data
+        ax_imshow = kwargs  # remaining kwargs forwarded to imshow
+
+        # Validate axis
+        if axis is None:
+            axis = 3
+            Console.add_lines(f"No axis to plot is specified. Choosing: {axis}")
+
+        # Default slice position to middle
+        if slice_position is None:
+            slice_position = self.maps.shape[axis] // 2
+            Console.add_lines(f"No slice to plot is specified. Choosing: {slice_position}")
+
+        if axis is None or slice_position is None:
+            Console.printf_collected_lines("warning")
+
+        n_coils = self.maps.shape[0]
+        ncols = max(1, n_coils // 2)
+        nrows = 2 if n_coils > 1 else 1
+
+        fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(15, 2 * nrows))
+        axs = np.atleast_1d(axs).ravel()
+
+        for i, ax in enumerate(axs[:n_coils]):
+            # Slice per coil
+            coil_map = self.maps[i]
+            chosen_slice = np.abs(coil_map.take(slice_position, axis=axis - 1))  # axis shifts because coil dim removed
+
+            ax.imshow(chosen_slice, cmap=cmap, **ax_imshow)
+            ax.axis("off")
+            ax.set_title(f"coil {i}")
+
+        # Hide unused axes if any
+        for ax in axs[n_coils:]:
+            ax.axis("off")
+
+        plt.show()
+
+
+###    def interpolate(self, target_size, order=3, compute_on_device="cpu", gpu_index=0, return_on_device="cpu") -> np.ndarray | cp.ndarray:
+###        """
+###        To interpolate the loaded coil sensitivity maps with the selected order to a target size on the desired device. Possible is the 'cpu' and 'cuda'.
+###        If 'cuda' is selected, with the index the desired device can be chosen. Further, the result can be returned on 'cpu' or 'cuda'.
+###
+###        :param target_size: target size to interpolate the coil sensitivity maps
+###        :param order: desired order (0: Nearest-neighbor, 1: Bilinear interpolation, 2: Quadratic interpolation, 3: Cubic interpolation (default),...). See scipy.ndimage or cupyx.scipy.ndimage for more information.
+###        :param compute_on_device: device where the interpolation takes place ('cuda' is recommended)
+###        :param gpu_index: if 'cuda' is selected in the param compute_on_device, then possible to choose a gpu if multiple gpus are available. The default is 0.
+###        :param return_on_device: After the interpolation, the device where the array should be returned.
+###        :return: Interpolated array
+###        """
+###
+###        # Check if maps are already loaded
+###        if self.maps is None:
+###            Console.printf("error", "No maps data available to interpolate. You might call 'load_h5py' first! Aborting program.")
+###            sys.exit()
+###
+###        self.shape = self.maps.shape
+###
+###        # Get the zoom factor, based on the current maps size and desired size
+###        zoom_factor = np.divide(target_size, self.maps.shape)
+###        Console.printf("info", "Start interpolating coil sensitivity maps")
+###        Console.add_lines("Interpolated the coil sensitivity maps:")
+###        Console.add_lines(f" => From size: {self.maps.shape} --> {target_size}")
+###        Console.add_lines(f" => with interpolation order: {order}")
+###        Console.add_lines(f" => on device {compute_on_device}{':' + str(gpu_index) if compute_on_device == 'cuda' else ''} --> and returned on {return_on_device}")
+###
+###        # Interpolate on CUDA or CPU based on the user decision
+###        maps_complex_interpolated = None
+###        if compute_on_device == "cpu":
+###            maps_complex_interpolated = zoom(input=self.maps, zoom=zoom_factor, order=order)
+###        elif compute_on_device == "cuda":
+###            with cp.cuda.Device(gpu_index):
+###                maps_complex_interpolated = zoom_gpu(input=cp.asarray(self.maps), zoom=zoom_factor, order=order)
+###        else:
+###            Console.printf("error", f"Device {compute_on_device} not supported. Use either 'cpu' or 'cuda'.")
+###
+###        Console.printf_collected_lines("success")
+###
+###        # Return on the desired device after interpolation
+###        if return_on_device == "cpu" and isinstance(maps_complex_interpolated, cp.ndarray):
+###            maps_complex_interpolated = cp.asnumpy(maps_complex_interpolated)
+###        elif return_on_device == "cuda" and isinstance(maps_complex_interpolated, np.ndarray):
+###            maps_complex_interpolated = cp.asarray(maps_complex_interpolated)
+###        elif return_on_device not in ["cpu", "cuda"]:
+###            Console.printf("error", f"Return on device {return_on_device} not supported. Choose either 'cpu' or 'cuda'. Abort program.")
+###            sys.exit()
+###
+###        # Save to object variable
+###        self.maps = maps_complex_interpolated
+###
+###        # Just return the interpolated result..
+###        return maps_complex_interpolated
 
 
 class Trajectory:
@@ -830,6 +1124,8 @@ class Trajectory:
         Console.printf_collected_lines("success")
 
         return json_merged_content
+
+
 
 
 @deprecated(reason="This class only supports .mat files. The simulation uses .json files, thus use the class Trajectory.")

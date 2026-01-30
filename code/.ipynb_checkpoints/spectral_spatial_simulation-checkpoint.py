@@ -1,6 +1,8 @@
 from __future__ import annotations      #TODO: due to circular import. Maybe solve different!
 from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
 
+from dask.dataframe.partitionquantiles import dtype_info
+
 if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
     from spatial_metabolic_distribution import MetabolicPropertyMap  #TODO: due to circular import. Maybe solve different!
 
@@ -12,14 +14,16 @@ from datetime import datetime
 from functools import partial
 from tools import CustomArray
 from printer import Console
+from tools import GPUTools
+from pathlib import Path
 import dask.array as da
 import seaborn as sns
 from tqdm import tqdm
 import numpy as np
+import cupy as cp
 # import numba
 # from numba import cuda
 import tools
-import cupy as cp
 import dask
 import sys
 import os
@@ -336,7 +340,7 @@ class FID:
         #  -> Plot all signals
         for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
             ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.8)
-        ax_main.set_title('Absolute Values of the FID Signals')
+        ax_main.set_title('Absolute Values of the FID')
         ax_main.set_xlabel(f"{x_type}")
 
         # 3b) Right subplot: To create the description
@@ -441,9 +445,326 @@ class FID:
         return "\n"
 
 
+###class Model:
+###    """
+###    For creating a model that combines the spectral and spatial information. It combines the FIDs, metabolic property maps and mask.
+###    """
+###
+###    def __init__(self,
+###                 block_size: tuple,
+###                 TE: float,
+###                 TR: float,
+###                 alpha: float,
+###                 path_cache: str = None,
+###                 data_type: str = "complex64",
+###                 compute_on_device: str = "cpu",
+###                 return_on_device: str = "cpu"):
+###        # Define a caching path for dask. Required if RAM is running out of memory.
+###        if path_cache is not None:
+###            if os.path.exists(path_cache):
+###                self.path_cache = path_cache
+###            else:
+###                Console.printf("error", f"Terminating the program. Path does not exist: {path_cache}")
+###                sys.exit()
+###            dask.config.set(temporary_directory=path_cache)
+###
+###        # The block size used for dask to compute
+###        self.block_size = block_size
+###
+###        # Parameters defined by the user
+###        self.TE = TE
+###        self.TR = TR
+###        self.alpha = alpha
+###
+###        self.fid = FID()  # instantiate an empty FID to be able to sum it ;)
+###        self.metabolic_property_maps: dict[str, MetabolicPropertyMap] = {}
+###        self.mask = None
+###
+###        # Define the device for computation and the target device (cuda, cpu)
+###        self.compute_on_device = compute_on_device
+###        self.return_on_device = return_on_device
+###
+###        # Define the data type which should be used
+###        self.data_type = data_type
+###
+###    def model_summary(self):
+###        """
+###        Simpy summary of the whole model.
+###
+###        :return: Nothing
+###        """
+###        # TODO: add units
+###        Console.add_lines("Spectral-Spatial-Model Summary:")
+###        Console.add_lines(f" TE          ... {self.TE}")
+###        Console.add_lines(f" TR          ... {self.TR}")
+###        Console.add_lines(f" alpha       ... {self.alpha}")
+###        Console.add_lines(f" FID length  ... {len(self.fid.signal[0])}")
+###        Console.add_lines(f" Metabolites ... {len(self.metabolic_property_maps)}")
+###        Console.add_lines(f" Model shape ... {self.mask.shape}")
+###        Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
+###        Console.add_lines(f" Compute on  ... {self.compute_on_device}")
+###        Console.add_lines(f" Return on   ... {self.return_on_device}")
+###        Console.add_lines(f" Cache path  ... {Path(*Path(self.path_cache).parts[-2:])} (shortened)")
+###        Console.printf_collected_lines("info")
+###
+###
+###    def add_fid(self, fid: FID) -> None:
+###        """
+###        Add a FID from the class `~FID`, which can contain multiple signals, to the Model. All further added FID will perform the
+###        implemented __add__ in the `~FID` class. Thus, the loaded_fid will be merged. Resulting in just one fid object containing all
+###        signals.
+###
+###        Example usage 1:
+###         => Add FID of metabolites
+###         => Add FID of lipids
+###         => Add FID of water simulation
+###         => Add FID of macromolecules simulation
+###        Example usage 2:
+###         => Add FID metabolite 1
+###         => Add FID metabolite 2
+###
+###        :param fid: fid from the class `~FID`
+###        :return: Nothing
+###        """
+###        try:
+###            self.fid = self.fid + fid  # sum fid according to the __add__ implementation in the FID class
+###            Console.add_lines(f"Added the following FID signals to the spectral spatial model:")
+###            for i, name in enumerate(fid.name):
+###                Console.add_lines(f"{i}: {name}")
+###            Console.printf_collected_lines("success")
+###        except Exception as e:
+###            Console.printf("error", f"Error in adding compound '{fid.name} to the spectral spatial model. Exception: {e}")
+###
+###    def add_mask(self, mask: np.ndarray) -> None:
+###        """
+###        For adding one mask to the model. It is just a numpy array with no further information so far.
+###
+###        :param mask: Numerical values of the mask as numpy array
+###        :return: Nothing
+###        """
+###        self.mask = mask
+###
+###    def add_metabolic_property_map(self, metabolic_property_map: MetabolicPropertyMap):
+###        """
+###        Map for scaling the FID at the respective position in the volume. One map is per metabolite.
+###
+###        :param metabolic_property_map: Values to scale the FID at the respective position in the volume
+###        :return: Nothing
+###        """
+###
+###        Console.printf("info", f"Added the following metabolic a property map to the spectral spatial model: {metabolic_property_map.chemical_compound_name}")
+###        self.metabolic_property_maps[metabolic_property_map.chemical_compound_name] = metabolic_property_map
+###
+###    def add_metabolic_property_maps(self, metabolic_property_maps: dict[str, MetabolicPropertyMap]):
+###        """
+###        Multiple Maps for scaling the FID at the respective position in the volume. Each map is for one metabolite.
+###
+###        :param metabolic_property_maps: A dictionary containing the name as str and the respective metabolic property map
+###        :return: Nothing
+###        """
+###        self.metabolic_property_maps.update(metabolic_property_maps)
+###
+###        Console.add_lines("Adding the following metabolic property maps to the model:")
+###        for i, (names, _) in enumerate(metabolic_property_maps.items()):
+###            Console.add_lines(f"{i}: {names}")
+###
+###        Console.printf_collected_lines("success")
+###
+###
+###    @staticmethod
+###    def _transform_T1(volume: da.Array, alpha, TR, T1):
+###        r"""
+###        Applying a T1 map (ideally masked) to a volume of fid signals. Thus, transforming via the formular below the
+###        input volume V_{in} --> V_{out}:
+###        .. math::
+###
+###            V_{out} = V_{in} \, \sin(\alpha) \, \frac{1 - e^{-TR/T_1}}{1 - \cos(\alpha) \, e^{-TR/T_1}}
+###
+###
+###        For the transformation a flip angle, TR and T1 is used.
+###           * alpha ... scalar value (either numpy or cupy)
+###           * TR    ... scalar value (either numpy or cupy)
+###           * T1    ... matrix       (either numpy or cupy)
+###           * xp    ... either numpy or cupy -> using the whole imported library (np or cp is xp)
+###
+###        (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
+###        """
+###        xp: np|cp = cp.get_array_module(volume) # returns cupy or numpy module itself, based on volume data type
+###
+###        decay = xp.sin(xp.radians(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(xp.radians(alpha)) * xp.exp(-TR / T1)))
+###        volume = xp.where(volume != 0, volume * decay, volume) # only compute where volume is not zero!
+###        return volume
+###
+###    @staticmethod
+###    def _transform_T2(volume, time_vector, TE, T2):
+###        r"""
+###        Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in} --> V_{out}:
+###        .. math::
+###
+###            V_{out} = V_{in} \, e^{-\frac{TE + t}{T_2}}
+###
+###
+###        For the transformation a time vector, TE and T2 is used.
+###           * time vector ... vector (either numpy or cupy)
+###           * TE          ... scalar value (either numpy or cupy)
+###           * T2          ... matrix       (either numpy or cupy)
+###           * xp          ... either numpy or cupy -> using the whole imported library (np or cp is xp)
+###
+###        (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
+###        """
+###        xp: np|cp = cp.get_array_module(volume)  # returns cupy or numpy module itself, based on volume data type
+###
+###        decay = xp.where(T2 != 0, xp.exp(-(TE + time_vector) / T2), 1)
+###        volume = xp.where(volume != 0, volume * decay, volume)
+###        return volume
+###
+###
+###    def assemble_graph(self, all_steps_output=False) -> CustomArray | tuple[CustomArray,CustomArray,CustomArray,CustomArray]:
+###        """
+###        Create a computational dask graph. It can be used to compute it or to add further operations.
+###        Note: all_steps_output=True, it outputs graphs that includes only certain steps:
+###                    -> volume after applying the mask
+###                    -> volume after applying the T1
+###                    -> volume after applying the T2
+###                    -> volume after applying the concentration scaling
+###
+###                    (!) Each of these steps builds on the previous one and is therefore not independent
+###                        of the preceding ones!
+###
+###        :return: CustomArray with numpy or cupy, based on the selected device when created the model. Note: in case of
+###                 all_steps_output=True, a tuple of computational graphs of the respective applied steps is returned.
+###        """
+###
+###        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}:")
+###
+###        volume_after_concentration = None
+###        volume_after_mask = None
+###        volume_after_T1   = None
+###        volume_after_T2   = None
+###
+###
+###        for fid in tqdm(self.fid, total=len(self.fid.signal)):
+###            # (1) Prepare the data & reshape it ########################################################################
+###            #   1a) Get the name of the metabolite (unpack from the list)
+###            metabolite_name = fid.name[0]
+###
+###            #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
+###            fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
+###            fid_signal = da.from_array(fid_signal, chunks=self.block_size[0])
+###            #   1c) Reshape time vector, create dask array with block size defined by the user
+###            time_vector = fid.time[:, None, None, None]
+###            time_vector = da.from_array(time_vector, chunks=(self.block_size[0], 1, 1, 1))
+###            #   1d) Same as for FID and time vector above
+###            mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
+###            mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
+###            #   1f) Get T1 and T2 of respective metabolite with the metabolite name
+###            metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
+###            metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
+###
+###            # (2) Convert arrays in graph to cupy or numpy (depending on computation on cpu or gpu)
+###            fid_signal  = GPUTools.dask_map_blocks(fid_signal,            device=self.compute_on_device)
+###            mask        = GPUTools.dask_map_blocks(mask,                  device=self.compute_on_device)
+###            time_vector = GPUTools.dask_map_blocks(time_vector,           device=self.compute_on_device)
+###            metabolic_map_t1 = GPUTools.dask_map_blocks(metabolic_map_t1, device=self.compute_on_device)
+###            metabolic_map_t2 = GPUTools.dask_map_blocks(metabolic_map_t2, device=self.compute_on_device)
+###
+###
+###            # (3) Combine 3D mask with FID signal to create 4D volume ##################################################
+###            volume_with_mask = fid_signal * mask
+###
+###            if all_steps_output:
+###                if volume_after_mask is None:
+###                    volume_after_mask = volume_with_mask
+###                else:
+###                    volume_after_mask += volume_with_mask
+###
+###
+###            # (4) Apply T1 and T2 ######################################################################################
+###            #   4a) Set datatype in numpy or cupy for dask map blocks afterwards
+###            if self.compute_on_device == "cuda" or self.compute_on_device == "gpu":
+###                dtype = np.dtype(self.data_type)
+###            elif self.compute_on_device == "cpu":
+###                dtype = np.dtype(self.data_type)
+###
+###            #   4b) Include t1 effects
+###            volume_metabolite = da.map_blocks(Model._transform_T1,
+###                                              volume_with_mask,
+###                                              self.alpha,
+###                                              self.TR,
+###                                              metabolic_map_t1,
+###                                              dtype=dtype)
+###
+###            if all_steps_output:
+###                if volume_after_T1 is None:
+###                    volume_after_T1 = volume_metabolite
+###                else:
+###                    volume_after_T1 += volume_metabolite
+###
+###
+###            #   4c) Include T2 effects
+###            volume_metabolite = da.map_blocks(Model._transform_T2,
+###                                              volume_metabolite,
+###                                              time_vector,
+###                                              self.TE,
+###                                              metabolic_map_t2,
+###                                              dtype=dtype)
+###
+###            if all_steps_output:
+###                if volume_after_T2 is None:
+###                    volume_after_T2 = volume_metabolite
+###                else:
+###                    volume_after_T2 += volume_metabolite
+###
+###
+###            # (5) Include 4D volume with spatial concentration, thus FID gets scaled locally ###########################
+###            concentration = self.metabolic_property_maps[metabolite_name].concentration # get respective metabolite map
+###            concentration = GPUTools.dask_map_blocks(concentration, device=self.compute_on_device)
+###            volume_metabolite *= concentration # scale it
+###
+###
+###            # (8) Sum all metabolites & Create CustomArray from dask Array
+###            #volume_sum_all_metabolites += volume_metabolite if volume_sum_all_metabolites is None else (volume_sum_all_metabolites + volume_metabolite)
+###            if volume_after_concentration is None:
+###                volume_after_concentration = volume_metabolite
+###            else:
+###                volume_after_concentration += volume_metabolite
+###
+###        #volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites) TODO TODO need custom array? TODO TODO TODO
+###
+###
+###        # (9) If the computation device and target device does not match then adjust it
+###        if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
+###            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cpu")
+###
+###            if all_steps_output:
+###                volume_after_mask = GPUTools.dask_map_blocks(volume_after_mask, "cpu")
+###                volume_after_T1 = GPUTools.dask_map_blocks(volume_after_T1,"cpu")
+###                volume_after_T2 = GPUTools.dask_map_blocks(volume_after_T2,"cpu")
+###
+###
+###        elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
+###            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cuda")
+###
+###            if all_steps_output:
+###                volume_after_mask =  GPUTools.dask_map_blocks(volume_after_mask, "cuda")
+###                volume_after_T1   = GPUTools.dask_map_blocks(volume_after_T1, "cuda")
+###                volume_after_T2   = GPUTools.dask_map_blocks(volume_after_T2, "cuda")
+###
+###        # (10) Return either one computational graph (includes all steps) or a computational graph for each step
+###        if not all_steps_output:
+###            computational_graph: CustomArray = volume_after_concentration
+###            return computational_graph
+###        else:
+###            computational_graph__after_mask: CustomArray = volume_after_mask
+###            computational_graph__after_T1: CustomArray = volume_after_T1
+###            computational_graph__after_T2: CustomArray = volume_after_T2
+###            computational_graph__after_concentration_scaling: CustomArray = volume_after_concentration
+###            return (computational_graph__after_mask, computational_graph__after_T1, computational_graph__after_T2, computational_graph__after_concentration_scaling)
+
 class Model:
     """
-    For creating a model that combines the spectral and spatial information. It combines the FIDs, metabolic property maps and mask.
+    For creating a model that combines the spectral and spatial information.
+    It combines the FIDs, metabolic property maps and mask.
     """
 
     def __init__(self,
@@ -456,6 +777,7 @@ class Model:
                  compute_on_device: str = "cpu",
                  return_on_device: str = "cpu"):
         # Define a caching path for dask. Required if RAM is running out of memory.
+        self.path_cache = None
         if path_cache is not None:
             if os.path.exists(path_cache):
                 self.path_cache = path_cache
@@ -465,7 +787,7 @@ class Model:
             dask.config.set(temporary_directory=path_cache)
 
         # The block size used for dask to compute
-        self.block_size = block_size
+        self.block_size = block_size  # [t, x, y, z]
 
         # Parameters defined by the user
         self.TE = TE
@@ -486,10 +808,7 @@ class Model:
     def model_summary(self):
         """
         Simpy summary of the whole model.
-
-        :return: Nothing
         """
-        # TODO: add units
         Console.add_lines("Spectral-Spatial-Model Summary:")
         Console.add_lines(f" TE          ... {self.TE}")
         Console.add_lines(f" TR          ... {self.TR}")
@@ -500,31 +819,17 @@ class Model:
         Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
         Console.add_lines(f" Compute on  ... {self.compute_on_device}")
         Console.add_lines(f" Return on   ... {self.return_on_device}")
-        Console.add_lines(f" Cache path  ... {self.path_cache}")
+        if self.path_cache is not None:
+            Console.add_lines(f" Cache path  ... {Path(*Path(self.path_cache).parts[-2:])} (shortened)")
         Console.printf_collected_lines("info")
 
-
-    def add_fid(self, fid: FID) -> None:
+    def add_fid(self, fid: "FID") -> None:
         """
-        Add a FID from the class `~FID`, which can contain multiple signals, to the Model. All further added FID will perform the
-        implemented __add__ in the `~FID` class. Thus, the loaded_fid will be merged. Resulting in just one fid object containing all
-        signals.
-
-        Example usage 1:
-         => Add FID of metabolites
-         => Add FID of lipids
-         => Add FID of water simulation
-         => Add FID of macromolecules simulation
-        Example usage 2:
-         => Add FID metabolite 1
-         => Add FID metabolite 2
-
-        :param fid: fid from the class `~FID`
-        :return: Nothing
+        Add a FID from class `FID`. All further added FID will perform the implemented __add__ in `FID`.
         """
         try:
-            self.fid = self.fid + fid  # sum fid according to the __add__ implementation in the FID class
-            Console.add_lines(f"Added the following FID signals to the spectral spatial model:")
+            self.fid = self.fid + fid
+            Console.add_lines("Added the following FID signals to the spectral spatial model:")
             for i, name in enumerate(fid.name):
                 Console.add_lines(f"{i}: {name}")
             Console.printf_collected_lines("success")
@@ -533,213 +838,208 @@ class Model:
 
     def add_mask(self, mask: np.ndarray) -> None:
         """
-        For adding one mask to the model. It is just a numpy array with no further information so far.
-
-        :param mask: Numerical values of the mask as numpy array
-        :return: Nothing
+        Add one mask to the model.
         """
         self.mask = mask
 
-    def add_metabolic_property_map(self, metabolic_property_map: MetabolicPropertyMap):
+    def add_metabolic_property_map(self, metabolic_property_map: "MetabolicPropertyMap"):
         """
-        Map for scaling the FID at the respective position in the volume. One map is per metabolite.
-
-        :param metabolic_property_map: Values to scale the FID at the respective position in the volume
-        :return: Nothing
+        One map per metabolite.
         """
-
-        Console.printf("info", f"Added the following metabolic a property map to the spectral spatial model: {metabolic_property_map.chemical_compound_name}")
+        Console.printf(
+            "info",
+            "Added the following metabolic a property map to the spectral spatial model: "
+            f"{metabolic_property_map.chemical_compound_name}"
+        )
         self.metabolic_property_maps[metabolic_property_map.chemical_compound_name] = metabolic_property_map
 
-    def add_metabolic_property_maps(self, metabolic_property_maps: dict[str, MetabolicPropertyMap]):
+    def add_metabolic_property_maps(self, metabolic_property_maps: dict[str, "MetabolicPropertyMap"]):
         """
-        Multiple Maps for scaling the FID at the respective position in the volume. Each map is for one metabolite.
-
-        :param metabolic_property_maps: A dictionary containing the name as str and the respective metabolic property map
-        :return: Nothing
+        Multiple maps.
         """
         self.metabolic_property_maps.update(metabolic_property_maps)
 
         Console.add_lines("Adding the following metabolic property maps to the model:")
         for i, (names, _) in enumerate(metabolic_property_maps.items()):
             Console.add_lines(f"{i}: {names}")
-
         Console.printf_collected_lines("success")
 
-
-###    @staticmethod
-###    def _transform_T1_T2(xp: np|cp, volume: da.Array, time_vector, TE, T2, alpha, TR, T1):
-###        # TODO: DOCSTRING!
-###
-###        volume = Model._transform_T1(xp, volume, alpha, TR, T1)
-###        volume = Model._transform_T2(xp, volume, time_vector, TE, T2)
-###
-###
-###        return volume
-
-    @staticmethod
-    def _transform_T1(xp: np|cp, volume: da.Array, alpha, TR, T1):
-        r"""
-
-        Applying a T1 map (ideally masked) to a volume of fid signals. Thus, transforming via the formular below the
-        input volume V_{in} --> V_{out}:
-        .. math::
-
-            V_{out} = V_{in} \, \sin(\alpha) \, \frac{1 - e^{-TR/T_1}}{1 - \cos(\alpha) \, e^{-TR/T_1}}
-
-
-        For the transformation a flip angle, TR and T1 is used.
-           * alpha ... scalar value (either numpy or cupy)
-           * TR    ... scalar value (either numpy or cupy)
-           * T1    ... matrix       (either numpy or cupy)
-           * xp    ... either numpy or cupy -> using the whole imported library (np or cp is xp)
-
-        (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
+    def assemble_graph(self, all_steps_output: bool = False):
         """
-        decay = xp.sin(xp.radians(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(xp.radians(alpha)) * xp.exp(-TR / T1)))
-        volume = xp.where(volume != 0, volume * decay, volume) # only compute where volume is not zero!
-        return volume
+        Faster graph assembly:
+          - builds mask and (typically) a shared time vector once
+          - still uses GPUTools.dask_map_blocks for device placement
+          - applies T1/T2 using elementwise dask ops (fuses better than per-metabolite map_blocks)
+          - sums metabolites via a reduction tree (avoids long += chains)
 
-    @staticmethod
-    def _transform_T2(xp: np|cp, volume, time_vector, TE, T2):
-        r"""
-        Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in} --> V_{out}:
-        .. math::
-
-            V_{out} = V_{in} \, e^{-\frac{TE + t}{T_2}}
-
-
-        For the transformation a time vector, TE and T2 is used.
-           * time vector ... vector (either numpy or cupy)
-           * TE          ... scalar value (either numpy or cupy)
-           * T2          ... matrix       (either numpy or cupy)
-           * xp          ... either numpy or cupy -> using the whole imported library (np or cp is xp)
-
-        It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
-        """
-        decay = xp.where(T2 != 0, xp.exp(-(TE + time_vector) / T2), 1)
-        volume = xp.where(volume != 0, volume * decay, volume)
-        return volume
-
-    def assemble_graph(self, split_large_chunks=False) -> CustomArray:
-        """
-        Create a computational dask graph. It can be used to compute it or to add further operations.
-
-        :return: CustomArray with numpy or cupy, based on the selected device when created the model.
+        Fixes your CuPy error by ensuring da.where never receives NumPy ndarrays as branches.
         """
 
         Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}:")
-        Console.printf("info", f"Slicing large chunks is set to {split_large_chunks}")
 
-        # To split dask large chunks automatically. Note: If set to "false" to silence warning if large chunks are used.
-        dask.config.set({"array.slicing.split_large_chunks": split_large_chunks})
-
-        # Defining based on the selected device if cupy or numpy should be used
-        xp = None
-        if self.compute_on_device == "cuda":
-            xp = cp  # use cupy
-        elif self.compute_on_device == "cpu":
-            xp = np  # use numpy
+        # ---- dtype selection ----
+        vol_dtype = np.dtype(self.data_type)
+        if vol_dtype in (np.complex64, np.float32):
+            real_dtype = np.float32
         else:
-            Console.printf("error", f"Compute on device can be either 'cpu' or 'cuda' but you set {self.compute_on_device}. Terminate program!")
-            sys.exit()
+            real_dtype = np.float64
 
-        metabolites_volume_list = []
-        for fid in tqdm(self.fid, total=len(self.fid.signal)):
-            # (1) Prepare the data & reshape it
-            #   1a) Get the name of the metabolite (unpack from the list)
+        # ---- mask constant once ----
+        if self.mask is None:
+            raise ValueError("Mask is not set. Call add_mask(...) before assemble_graph().")
+
+        if isinstance(self.mask, da.Array):
+            mask = self.mask
+        else:
+            mask = da.from_array(self.mask, chunks=self.block_size[1:])
+
+        mask = mask.astype(real_dtype, copy=False)[None, ...]  # (1, x, y, z)
+        mask = mask.rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
+        mask = GPUTools.dask_map_blocks(mask, device=self.compute_on_device)
+
+        # ---- prepare fid iteration ----
+        fid_iter = iter(self.fid)
+        try:
+            first_fid = next(fid_iter)
+        except StopIteration:
+            raise ValueError("No FIDs added to the model. Call add_fid(...) before assemble_graph().")
+
+        # ---- time vector constant once (fallback per-fid if different) ----
+        base_time_1d = np.asarray(first_fid.time, dtype=real_dtype)
+        time_vector = da.from_array(base_time_1d, chunks=(self.block_size[0],))[:, None, None, None]  # (t,1,1,1)
+        time_vector = time_vector.rechunk((self.block_size[0], 1, 1, 1))
+        time_vector = GPUTools.dask_map_blocks(time_vector, device=self.compute_on_device)
+
+        # ---- scalar constants (numpy scalars are OK; avoid 0-d ndarrays) ----
+        alpha_rad = real_dtype(np.deg2rad(self.alpha))
+        sin_a = real_dtype(np.sin(alpha_rad))
+        cos_a = real_dtype(np.cos(alpha_rad))
+        TR = real_dtype(self.TR)
+        TE = real_dtype(self.TE)
+
+        # ---- accumulate per-metabolite graphs for tree reduction ----
+        vols_after_mask = []
+        vols_after_T1 = []
+        vols_after_T2 = []
+        vols_after_conc = []
+
+        total = len(self.fid.signal) if hasattr(self.fid, "signal") else None
+
+        import itertools
+        all_fids = itertools.chain([first_fid], fid_iter)
+
+        for fid in tqdm(all_fids, total=total):
             metabolite_name = fid.name[0]
-            #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
-            fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
-            fid_signal = xp.asarray(fid_signal)
-            fid_signal = da.from_array(fid_signal, chunks=self.block_size[0])
-            #   1c) Reshape time vector, create dask array with block size defined by the user
-            time_vector = fid.time[:, xp.newaxis, xp.newaxis, xp.newaxis]
-            time_vector = da.from_array(time_vector, chunks=(self.block_size[0], 1, 1, 1))
-            #   1d) Same as for FID and time vector above
-            mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
-            mask = xp.asarray(mask)
-            mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
-            #   1f) Get T1 and T2 of respective metabolite with the metabolite name
-            metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
-            metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
 
-            # (2) FID with 3D mask volume yields 4d volume
-            volume_with_mask = fid_signal * mask
+            # FID signal -> (t,1,1,1)
+            sig_1d = np.asarray(fid.signal, dtype=vol_dtype)
+            fid_signal = da.from_array(sig_1d, chunks=(self.block_size[0],))[:, None, None, None]
+            fid_signal = fid_signal.rechunk((self.block_size[0], 1, 1, 1))
+            fid_signal = GPUTools.dask_map_blocks(fid_signal, device=self.compute_on_device)
 
-            # (3) Based on selected device prepare data
-            dtype = eval("xp." + self.data_type) # yields in e.g., xp.complex64 which can be np.complex64 or cp.complex64
-            if self.compute_on_device == "cpu":
-                # Creates numpy arrays with xp
-                TE = xp.asarray([self.TE])
-                alpha = xp.asarray([self.alpha])
-                TR = xp.asarray([self.TR])
-                #dtype = xp.complex64  # TODO
-            elif self.compute_on_device == "cuda":
-                # Creates cupy arrays with xp
-                volume_with_mask = volume_with_mask.map_blocks(xp.asarray, dtype=xp.complex64)
-                time_vector = time_vector.map_blocks(xp.asarray, dtype=xp.complex64)
-                TE = xp.asarray([self.TE])
-                metabolic_map_t2 = metabolic_map_t2.map_blocks(xp.asarray, dtype=xp.complex64)
-                metabolic_map_t1 = metabolic_map_t1.map_blocks(xp.asarray, dtype=xp.complex64)
-                alpha = xp.asarray([self.alpha])
-                TR = xp.asarray([self.TR])
-                #dtype = xp.complex64
+            # time vector fallback if needed
+            tv = time_vector
+            if np.asarray(fid.time).shape != base_time_1d.shape:
+                local_time_1d = np.asarray(fid.time, dtype=real_dtype)
+                tv = da.from_array(local_time_1d, chunks=(self.block_size[0],))[:, None, None, None]
+                tv = tv.rechunk((self.block_size[0], 1, 1, 1))
+                tv = GPUTools.dask_map_blocks(tv, device=self.compute_on_device)
 
+            # maps (already dask arrays per your note, but accept numpy too)
+            t1 = self.metabolic_property_maps[metabolite_name].t1
+            t2 = self.metabolic_property_maps[metabolite_name].t2
+            conc = self.metabolic_property_maps[metabolite_name].concentration
 
-            # (3) Include T1 effects
-            volume_metabolite = da.map_blocks(Model._transform_T1,
-                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
-                                              volume_with_mask,
-                                              alpha,
-                                              TR,
-                                              metabolic_map_t1,
-                                             dtype=dtype)
+            if not isinstance(t1, da.Array):
+                t1 = da.from_array(t1, chunks=self.block_size[1:])
+            if not isinstance(t2, da.Array):
+                t2 = da.from_array(t2, chunks=self.block_size[1:])
+            if not isinstance(conc, da.Array):
+                conc = da.from_array(conc, chunks=self.block_size[1:])
 
-            # (4) Include T2 effects
-            volume_metabolite = da.map_blocks(Model._transform_T2,
-                                              xp,  # xp is either numpy (np) or cupy (cp) based on the selected device
-                                              volume_metabolite,
-                                              time_vector,
-                                              TE,
-                                              metabolic_map_t2,
-                                              dtype=dtype)
+            t1 = t1.astype(real_dtype, copy=False)
+            t2 = t2.astype(real_dtype, copy=False)
+            conc = conc.astype(real_dtype, copy=False)
 
-            # (4) Include spatial concentration
-            if self.compute_on_device == "cuda":
-                volume_metabolite *= (self.metabolic_property_maps[metabolite_name].concentration).map_blocks(cp.asarray, dtype='c8')
-            elif self.compute_on_device == "cpu":
-                volume_metabolite *= self.metabolic_property_maps[metabolite_name].concentration
+            # add singleton time axis: (1,x,y,z)
+            t1 = t1[None, ...].rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
+            t2 = t2[None, ...].rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
+            conc = conc[None, ...].rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
 
-            # (5) Expand dims, since it is only for one metabolite and concatenate
-            volume_metabolite = da.expand_dims(volume_metabolite, axis=0)
-            metabolites_volume_list.append(volume_metabolite)
+            # move maps to compute device
+            t1 = GPUTools.dask_map_blocks(t1, device=self.compute_on_device)
+            t2 = GPUTools.dask_map_blocks(t2, device=self.compute_on_device)
+            conc = GPUTools.dask_map_blocks(conc, device=self.compute_on_device)
 
-        # (6) Put all arrays together -> 1,100_000,150,150,150 + ... + 1,100_000,150,150,150 = 11,100_000,150,150,150
-        volume_all_metabolites = da.concatenate(metabolites_volume_list, axis=0)
+            # (1) apply mask
+            v_mask = fid_signal * mask
+            if all_steps_output:
+                vols_after_mask.append(v_mask)
 
-        # (7) Sum all metabolites & Create CustomArray from dask Array
-        volume_sum_all_metabolites = da.sum(volume_all_metabolites, axis=0)
-        volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites)
+            # (2) apply T1
+            # factor = sin(a) * (1 - e^{-TR/T1}) / (1 - cos(a) * e^{-TR/T1})
+            # with semantics: if T1==0 -> factor = 1
+            e1 = da.exp(-TR / t1)
+            t1_factor = sin_a * (1 - e1) / (1 - cos_a * e1)
 
-        # (8) If the computation device and target device does not match then adjust it
-        if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
-            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asnumpy)
-        elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
-            volume_sum_all_metabolites = volume_sum_all_metabolites.map_blocks(cp.asarray)
+            # IMPORTANT: avoid scalar in da.where branch on GPU -> use ones_like(...)
+            t1_factor = da.where(t1 != 0, t1_factor, da.ones_like(t1_factor))
 
-        # (9) Just clarify a computational graph is returned
-        computational_graph: CustomArray = volume_sum_all_metabolites
+            v_t1 = v_mask * t1_factor
+            if all_steps_output:
+                vols_after_T1.append(v_t1)
 
-        return computational_graph
+            # (3) apply T2
+            # factor = exp(-(TE + t)/T2), with semantics: if T2==0 -> factor = 1
+            decay = da.exp(-(TE + tv) / t2)
+            t2_factor = da.where(t2 != 0, decay, da.ones_like(decay))
 
-    def build(self):
-        """
-        Do we need this? I guess not! Would give whole computed model, which would be very big!
+            v_t2 = v_t1 * t2_factor
+            if all_steps_output:
+                vols_after_T2.append(v_t2)
 
-        :return:
-        """
-        raise NotImplementedError
+            # (4) concentration scaling
+            v_conc = v_t2 * conc
+            vols_after_conc.append(v_conc)
+
+        if len(vols_after_conc) == 0:
+            raise ValueError("No metabolite volumes were generated. Check FIDs and metabolic_property_maps alignment.")
+
+        # ---- reduction tree (faster than repeated +=) ----
+        split_every = 8
+        volume_after_concentration = da.stack(vols_after_conc, axis=0).sum(axis=0, split_every=split_every)
+
+        volume_after_mask = None
+        volume_after_T1 = None
+        volume_after_T2 = None
+        if all_steps_output:
+            volume_after_mask = da.stack(vols_after_mask, axis=0).sum(axis=0, split_every=split_every)
+            volume_after_T1 = da.stack(vols_after_T1, axis=0).sum(axis=0, split_every=split_every)
+            volume_after_T2 = da.stack(vols_after_T2, axis=0).sum(axis=0, split_every=split_every)
+
+        # ---- return device adjustment (keep your mechanism) ----
+        comp = (self.compute_on_device or "cpu").lower()
+        ret = (self.return_on_device or "cpu").lower()
+
+        if comp in ("cuda", "gpu") and ret == "cpu":
+            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cpu")
+            if all_steps_output:
+                volume_after_mask = GPUTools.dask_map_blocks(volume_after_mask, "cpu")
+                volume_after_T1 = GPUTools.dask_map_blocks(volume_after_T1, "cpu")
+                volume_after_T2 = GPUTools.dask_map_blocks(volume_after_T2, "cpu")
+
+        elif comp == "cpu" and ret in ("cuda", "gpu"):
+            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cuda")
+            if all_steps_output:
+                volume_after_mask = GPUTools.dask_map_blocks(volume_after_mask, "cuda")
+                volume_after_T1 = GPUTools.dask_map_blocks(volume_after_T1, "cuda")
+                volume_after_T2 = GPUTools.dask_map_blocks(volume_after_T2, "cuda")
+
+        if not all_steps_output:
+            return volume_after_concentration
+
+        return (volume_after_mask, volume_after_T1, volume_after_T2, volume_after_concentration)
+
 
 
 class Simulator:
@@ -1522,16 +1822,16 @@ if __name__ == '__main__':
                                      file_name="paths_14032025.json")
     configurator.load()
 
-    loaded_B1_map = file.Maps(configurator=configurator, map_type_name="B1").load_file()
+    loaded_B1_map = file.ParameterMaps(configurator=configurator, map_type_name="B1").load_file()
     loaded_B1_map_shape = loaded_B1_map.loaded_maps.shape
 
-    loaded_B0_map = file.Maps(configurator=configurator, map_type_name="B0").load_file()
+    loaded_B0_map = file.ParameterMaps(configurator=configurator, map_type_name="B0").load_file()
     loaded_B0_map = loaded_B0_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
 
 
-    loaded_GM_map = file.Maps(configurator=configurator, map_type_name="GM_segmentation").load_file()
-    loaded_WM_map = file.Maps(configurator=configurator, map_type_name="WM_segmentation").load_file()
-    loaded_CSF_map = file.Maps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
+    loaded_GM_map = file.ParameterMaps(configurator=configurator, map_type_name="GM_segmentation").load_file()
+    loaded_WM_map = file.ParameterMaps(configurator=configurator, map_type_name="WM_segmentation").load_file()
+    loaded_CSF_map = file.ParameterMaps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
 
     loaded_GM_map = loaded_GM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
     loaded_WM_map = loaded_WM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)

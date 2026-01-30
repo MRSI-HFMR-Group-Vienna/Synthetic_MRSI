@@ -1,0 +1,79 @@
+{
+    "Author": "Markus Schuster",
+    "Description": "The paths file containing the paths from Stanislav Motyka, Bernhard Strasser and Alireza Vasfi and additional paths. It also contains the units.",
+    "version": "2025-03-14",
+
+    "cache": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mschuster/Synthetic_MRSI_PhD/cache/",
+    "pulse": {
+        "gauss_wet": "/home/mschuster/Synthetic_MRSI_PhD/Synthetic_MRSI/data/GaussPulseFreqProfile_v1.mat",
+        "unit": "unknown"
+    },
+    "fid": {
+        "metabolites": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/FID_simulated/NoApodization/FID_7_noApo.m",
+            "unit": "unknown"
+        },
+        "lipids": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/FID_simulated/NoApodization/Lipids/FID_7_noApo_lip.m",
+            "unit": "unknown"
+        }
+    },
+    "mask": {
+        "metabolites": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/B0maps/Manualy_unwrapped_all_vol/Vol_004_mask_slab.nii",
+            "unit": "unknown"
+        },
+        "lipids": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/mos/P1_B0_inhomo/B0maps/Manualy_unwrapped_all_vol/Vol_004_fatmask_slab.nii",
+            "unit": "unknown"
+        }
+    },
+    "maps": {
+        "B0": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/B0Map_TargetRes.nii",
+            "unit": "unknown"
+        },
+        "B1": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/B1Map_TargetRes.nii",
+            "unit": "unknown"
+        },
+        "T1": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/T1_TargetRes_HiRes.nii",
+            "unit": "milliseconds"
+        },
+        "metabolites_concentration": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii",
+            "unit": "mmol"
+        },
+	    "coil_sensitivity": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/public/docker-sm/data/tensorflow/AUTOMAP_main_folder/SensMaps_smoothed_7T/SensMap_7t_ver1.h5",
+            "unit": "unknown"
+        },
+        "CSF_segmentation": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/Segmentation_CSF_TargetRes_HiRes.nii",
+            "unit": "unknown"
+        },
+        "GM_segmentation": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/Segmentation_GM_TargetRes_HiRes.nii",
+            "unit": "unknown"
+        },
+
+        "WM_segmentation": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/bstrasser/Projects/Projectx16_MRSISimulationForBostonWorkshop/Step4_GetReaslisticB0B1MetT1Maps/Results/nii/Segmentation_WM_TargetRes_HiRes.nii",
+            "unit": "unknown"
+        }
+    },
+    "trajectories": {
+        "crt": {
+            "path": "/home/mschuster/Synthetic_MRSI_PhD/Synthetic_MRSI/data/trajectories_gradients.json",
+            "unit": "unknown"
+        }
+    },
+    "girf": {
+        "crt": {
+            "path": "/ceph/mri.meduniwien.ac.at/departments/radiology/mrsbrain/home/aliv/GIRF_Tony/GIRF_Update/girf_calc/pythonfreqHundred.mat",
+            "unit": "unknown"
+        }
+    },
+    "simulation_parameters": "/home/mschuster/Synthetic_MRSI_PhD/Synthetic_MRSI/data/simulation_parameters.json"
+}

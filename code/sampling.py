@@ -14,10 +14,145 @@ import pint
 import dask
 import file
 import sys
+from tools import InterpolationTools, DaskTools, GPUTools, FourierTools
+from interfaces import Interpolation
+import os
 
 
 
 class Model:
+
+    def __init__(self,
+                 block_size: tuple[int, int, int, int, int] = None,
+                 path_cache: str = None,
+                 data_type: np.dtype = None,
+                 coil_sensitivity_volume: da.Array | np.ndarray | cp.ndarray = None,
+                 spectral_spatial_volume: da.Array | np.ndarray | cp.ndarray = None):
+
+
+        self.path_cache = None
+        if path_cache is not None:
+            if os.path.exists(path_cache):
+                self.path_cache = path_cache
+            else:
+                Console.printf("error", f"Terminating the program. Path does not exist: {path_cache}")
+                sys.exit()
+            dask.config.set(temporary_directory=path_cache)
+
+
+        self.block_size = block_size # (coil, time, X, Y, Z)
+        self.data_type = data_type
+
+        self.coil_sensitivity_volume = coil_sensitivity_volume.volume # will be a numpy array typically
+        self.spectral_spatial_volume = spectral_spatial_volume # volume/graph from previous Spectral Spatial Model
+
+        self.prepared_volume_dask = None # The volume which is already (coil, time, X, Y, Z)
+
+        if not isinstance(self.coil_sensitivity_volume, da.Array):
+            chunksize = (self.block_size[0], *self.block_size[2:])
+            self.coil_sensitivity_volume = DaskTools.to_dask(self.coil_sensitivity_volume, chunksize=chunksize) # chunksize=(coils,X,Y,Z)
+            Console.add_lines(f"Transformed coil sensitivity volume of type '{type(coil_sensitivity_volume)}' => dask array with chunksize: {chunksize}") # TODO: maybe print shape too
+        if not isinstance(self.spectral_spatial_volume, da.Array):
+            chunksize = self.block_size[1:]
+            self.spectral_spatial_volume = DaskTools.to_dask(self.spectral_spatial_volume, chunksize=chunksize) # chunksize=(time, X, Y, Z)
+            Console.add_lines(f"Transformed spectral spatial volume of type '{type(coil_sensitivity_volume)}' => dask array with chunksize: {chunksize}") # TODO: maybe print shape too
+
+        Console.printf_collected_lines("info")
+        # TODO: DATA type conversation!!!
+
+
+    def apply_coil_sensitivity(self, compute_on_device: str = 'gpu', return_on_device: str = 'cpu') -> da.Array:
+        # first bring to respective device!
+        coil_sensitivity_volume, spectral_spatial_volume = GPUTools.dask_map_blocks_many(
+            self.coil_sensitivity_volume, self.spectral_spatial_volume,
+            device=compute_on_device)
+
+        # Broadcasting to be able to multiply at once:
+        #    coil sensitivity maps shape   : e.g., (coil, X, Y, Z) --> (coil, 1,    X, Y, Z)
+        #    spectral spatial volume shape : e.g., (time, X, Y, Z) --> (coil, time, X, Y, Z)
+        volume = (coil_sensitivity_volume[:, None, ...]  *     # (coils, 1,    X, Y, Z)
+        spectral_spatial_volume[None, ...])
+        # (1,     time, X, Y, Z)
+
+        self.prepared_volume_dask = GPUTools.dask_map_blocks(volume, device=return_on_device)
+        Console.printf("success", "Added to apply coil sensitivity maps computational graph.")
+
+        return self.prepared_volume_dask
+
+    def apply_cartesian_FFT(self, compute_on_device: str = 'gpu', return_on_device: str = 'cpu', apply_fftshift:bool = True, crop_center_k_space_xyz: tuple = None, rechunking: bool = False) -> da.Array | None:
+        """
+        Applies a FFT along X,Y,Z of volume (coil, time, X,Y,Z).
+
+        :return: dask.array
+        """
+        if self.prepared_volume_dask is None:
+            Console.printf("error", "Apply first the function 'apply_coil_sensitivity', then re-run this function.")
+            return None
+        else:
+            # Bring to the desired device to compute
+            i_space_volume = GPUTools.dask_map_blocks(self.prepared_volume_dask, device=compute_on_device)
+            # Re-chunk for performance reasons
+            chunks_before = i_space_volume.chunksize
+            if rechunking:
+                i_space_volume = i_space_volume.rechunk(("auto", "auto", -1,-1,-1)) # to ensure that coil and time is chunked, but X;Y;Z is a single chunk
+                Console.printf("success", f"Re-chunked for better performance from {chunks_before} => {i_space_volume.chunksize}")
+
+            # Perform FFT on desired axes
+            k_space_volume = FourierTools.dask_fftn(
+                array=i_space_volume,
+                axes=(2,3,4),
+                compute_on_device=compute_on_device,
+                return_on_device=compute_on_device, # still use compute on device, since further operations might be possible afterward on desired device
+                fftshift=apply_fftshift,
+                verbose=True)
+
+            # Cropping of k-space center if desired
+            if crop_center_k_space_xyz is not None:
+                if len(crop_center_k_space_xyz) != 3:
+                    Console.printf("error", f"Required tuple of length 3 for k-space center cropping. But was given: {len(crop_center_k_space_xyz)}")
+                else:
+                    k_space_volume_shape_before = k_space_volume.shape
+                    k_space_volume = self.crop_center_volume(array=k_space_volume, output_shape_xyz=crop_center_k_space_xyz)
+                    Console.printf("success", f"Cropping k-space (X,Y,Z) in (coil, time, X, Y, Z): {k_space_volume_shape_before} => {k_space_volume.shape}")
+
+            # Bring FFT-volume to desired target device (output)
+            k_space_volume = GPUTools.dask_map_blocks(k_space_volume, device=return_on_device)
+            #Console.printf("success", f"Added FFT to the graph.")
+
+            return k_space_volume
+
+    def crop_center_volume(self, array: da.Array, output_shape_xyz):
+        """
+        To crop a given volume of shape (coil, time, X, Y, Z) in a way that only (X,Y,Z) is cropped. This is useful to crop e.g.,
+        fourier transformed volume. Note: It only crops the center!
+
+        :param output_shape_xyz: (X, Y, Z), thus only the spatial dimensions
+        :return: Nothing
+        """
+
+        X, Y, Z = array.shape[2], array.shape[3], array.shape[4]    # the actual shape of the volume
+        Xc, Yc, Zc = output_shape_xyz                   # the desired cropping shape volume
+        if Xc > X or Yc > Y or Zc > Z:
+            Console.printf("error",f"Crop size must be <= original size on each axis. Original size xyz: {self.prepared_volume_dask[2:]}; Desired shape xyz: {output_shape_xyz}")
+
+        sx = (X - Xc) // 2
+        ex = sx + Xc
+        sy = (Y - Yc) // 2
+        ey = sy + Yc
+        sz = (Z - Zc) // 2
+        ez = sz + Zc
+
+        return array[:, :, sx:ex, sy:ey, sz:ez]
+
+
+    def appy_cartesian_IFFT(self):
+        pass
+
+    def apply_gaussian_noise(self):
+        pass
+
+
+class ModelOLD:
     # TODO docstring
 
     def __init__(self,
@@ -26,9 +161,11 @@ class Model:
                  coil_sensitivity_maps: np.ndarray | cp.ndarray | da.Array = None,
                  block_size_coil_sensitivity_maps: tuple = None,
                  path_cache: str = None,
-                 data_type: str = "complex64",
-                 persist_computational_graph_spectral_spatial_model: bool = False,  # Uses more space, but speeds up computation
-                 ):
+                 data_type: str = "complex64", persist_computational_graph_spectral_spatial_model=False):
+
+
+        # only dask array is allowed as input? -> yes at moment!
+        # re-chunk only if desired chunks do not match
 
         self.coil_sensitivity_maps = coil_sensitivity_maps
         if isinstance(coil_sensitivity_maps, da.Array):
@@ -325,6 +462,47 @@ class Model:
 ###        volume_with_coil_sensitivity = self._to_device(volume_with_coil_sensitivity, device=return_on_device)
 ###        return volume_with_coil_sensitivity
 
+
+class CoilSensitivityVolume(Interpolation):
+
+    def __init__(self):
+        self.coils: list[str] = None
+        self.volume: np.ndarray | np.memmap = None
+
+    def interpolate(self, target_size: tuple, order: int = 3, compute_on_device: str = "gpu", return_on_device: str="cpu", target_gpu: int= 0, verbose= True):
+        """
+        To interpolate the coil sensitivity maps to a target shape. Note, typically a 3D shape is provided and the coil axis is still preserved during interpolation.
+        Thus, target shape (X,Y,Z) dos not include coil dimension; coil sensitivity data shape is typically (coil, X, Y, Z).
+
+        :param target_size: tuple (X,Y,Z)
+        :param order: see scipy documentation for interpolation order
+        :param compute_on_device: either "cpu" or "gpu"/"cuda"
+        :param return_on_device: either "cpu" or "gpu"/"cuda"
+        :param target_gpu: if gpu is used for interpolation the index of the device
+        :param verbose: If True then print infos about results
+        :return: Nothing
+        """
+        if len(target_size) == 3:
+            target_size = (self.volume.shape[0], *target_size)
+            Console.printf("info", "Preserving coil dimension during interpolation.")
+            #Console.printf("info", f"3D target shape is given. However, preserving coil axis during interpolation, therefore will still get 4D result: {target_size}.")
+
+        self.volume = InterpolationTools.interpolate(array=self.volume,
+                                                     target_size=target_size,
+                                                     order=order,
+                                                     compute_on_device=compute_on_device,
+                                                     return_on_device=return_on_device,
+                                                     target_gpu=target_gpu,
+                                                     verbose=verbose)
+
+    def conjugate(self):
+        """
+        The complex conjugate of a complex number is obtained by changing the sign of its imaginary part.
+
+        :return: Nothing
+        """
+        self.volume = np.conjugate(self.volume)
+        Console.printf("success", "Complex Conjugated the Coil Sensitivity Volume.")
 
 
 class Trajectory:
