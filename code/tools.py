@@ -1,3 +1,4 @@
+from matplotlib.pyplot import axes
 from rmm import rmm_cupy_allocator
 from dask.distributed import Client, LocalCluster
 from dask_cuda import LocalCUDACluster
@@ -1229,7 +1230,7 @@ class MyLocalCluster:
         self.cluster_type = "cpu"
         self.__start_client()
 
-    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", rmm_pool_size="28", use_rmm_cupy_allocator: bool = False, protocol="tpc"): # protocol="ucx"
+    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", rmm_pool_size="28", use_rmm_cupy_allocator: bool = False, protocol="tpc", **kwargs): # protocol="ucx"
         """
         Protocols like tcp possible, or ucx. "ucx" is best for GPU to GPU, GPU to host communication: https://ucx-py.readthedocs.io/en/latest/install.html
         """
@@ -1253,8 +1254,8 @@ class MyLocalCluster:
                                         jit_unspill=True,
                                         CUDA_VISIBLE_DEVICES=device_numbers,
                                         protocol=protocol,
-                                        dashboard_address=":55000")
-                                        #nanny=False)
+                                        dashboard_address=":55000",
+                                        **kwargs)#nanny=False)
         self.cluster_type = "cuda"
         self.__start_client()
 
@@ -1305,8 +1306,9 @@ class MyLocalCluster:
         # self.client = self.cluster.get_client()
         dashboard_url = self.client.dashboard_link
 
-        Console.printf("success", f"Started {self.cluster_type} Cluster \n"
-                               f" Link to dashboard: {dashboard_url}")
+        Console.printf("success",
+                       f"Started {self.cluster_type} Cluster \n"
+                       f" Link to dashboard: {dashboard_url} ")
 
 
 
@@ -1979,106 +1981,127 @@ class DaskTools:
         return array.to_zarr(os.path.join(path, checkpoint_folder_name), overwrite=overwrite, compute=not lazy)
 
 
-
 class FourierTools:
     """
-    For any kind of Fourier Transformation
+    For any kind of Fourier Transformation. In future should also contain non cartesian Fourier Transformation.
     """
-
     @staticmethod
-    def dask_fftn(array: da.Array,
-                  axes: tuple = None,
-                  compute_on_device: str = "gpu",
-                  return_on_device: str = "cpu",
-                  fftshift: bool = True,
-                  data_type: str = None,
-                  auto_rechunk_fft_axes: bool = False,
-                  verbose: bool = True) -> da.Array:
-        """
-        Performs via dask a FFT on cpu or gpu. Also, if desired performs fftshift afterward to bring low frequencies
-        to the k-space center. It is possible to specify the axes where the FFT should be applied.
+    def cartesian_FT_dask(array: da.Array, direction: str, fft_shift: bool = True, axes: tuple = None, device: str = 'cpu', data_type_output=None, verbose: bool=True):
 
-        :param array: dask array
-        :param axes: tuple of axes where FFT should be applied to
-        :param compute_on_device: "cpu" or "gpu"/"cuda"
-        :param return_on_device: "cpu" or "gpu"/"cuda"
-        :param fftshift: if True performs it on respective device
-        :param data_type: chanegs data type if desired
-        :param auto_rechunk_fft_axes: if True the auto re-chunks it based on dask auto rechunking
-        :param verbose: if True the prints to console
-        :return: dask Array
-        """
-
-        Console.add_lines("Schedule FFT:")
-
-        if axes is None:  # Then use all axes
+        if axes is None:
             axes = tuple(range(array.ndim))
-            Console.add_lines(f" => Performing FFT to all axes {array.shape}")
+            Console.printf("warning", "No axes were provided. Therefore, performing FT to all axes!")
 
-        # Case A: try preserve data type if none is provided (if float input then anyway complex output, see below)
-        if data_type is None:
-            in_dtype = array.dtype
-        # Case B: change data type if desired one is provided
+        # (1) Check if possible options are selected
+        possible_directions = ("forward", "inverse")
+        if direction not in possible_directions:
+            Console.printf("error", f"Can only apply FT in the following directions: {possible_directions}. But it was given: {direction}.")
+            return
+
+        # (2) Define the right numpy and cupy functions
+        if device in ("gpu", "cuda"):
+            fftn = cp.fft.fftn
+            fftshift = cp.fft.fftshift
+            ifftshift = cp.fft.ifftshift
+            ifftn = cp.fft.ifftn
+        elif device == "cpu":
+            fftn = np.fft.fftn
+            fftshift = np.fft.fftshift
+            ifftshift = np.fft.ifftshift
+            ifftn = np.fft.ifftn
         else:
-            in_dtype = np.dtype(data_type)
-            if array.dtype != in_dtype:
-                Console.add_lines(f" => Changing data type: {array.dtype} => {in_dtype}")
-                array = array.astype(in_dtype)
+            Console.printf("error", f"Only possible to select device 'cpu' or 'gpu'/'cuda'. But it was given: {device}")
+            return
 
-        ### since FFT output is complex (e.g., float32->complex64, float64->complex128); Dask needs the correct output dtype for map_blocks/meta.
-        ##out_dtype = np.result_type(in_dtype, np.complex64) # minimal complex64 as output, if input has mor significant digits (e.g. complex 128, then automatically changes)
-        if np.dtype(in_dtype).kind == "c":
-            out_dtype = np.dtype(in_dtype)  # complex in -> same complex out
-        elif np.dtype(in_dtype) == np.float32:
-            out_dtype = np.complex64
-        elif np.dtype(in_dtype) == np.float64:
-            out_dtype = np.complex128
-        else:
-            out_dtype = np.result_type(in_dtype, np.complex64)
+        # (3) Rechunking
+        # Make axes which should be FFT to one chunk (via -1) and keep chunksize for other dimensions
+        chunksize = np.array(array.chunksize)
+        axes = np.array(axes) # (!) only convert to numpy array to enable specific numpy indexing policy. Later need to re-convert to tuple.
+        chunksize[axes] = -1
+        axes = tuple(axes) # back to tuple for map_blocks
 
-        # if auto re-chunking is activated
-        if auto_rechunk_fft_axes:
-            chunks = ["auto"] * array.ndim
-            for ax in axes:
-                chunks[ax] = -1
-            array_chunksize_before = array.chunksize
-            array = array.rechunk(tuple(chunks))
-            Console.add_lines(
-                f" => Auto re-chunking is activated. Thus from {array_chunksize_before} => {array.chunksize}")
+        chunksize_old = array.chunksize
+        array = array.rechunk(chunksize) # <- keep dimensions that will not be affected by the FFT. Rechunking is a data-movement operation, therefore doing on old device.
 
-        # to bring to target device for computation
-        array = GPUTools.dask_map_blocks(array, device=compute_on_device)
-        Console.add_lines(f" => Compute on {compute_on_device}")
+        # (4) Bring array to desired device
+        array = GPUTools.dask_map_blocks(array, device=device)
 
-        if fftshift:
-            Console.add_lines(f" => Applying fftshift after FFT.")
+        # (5) To ensure to get the right data type for the output
+        array_dtype_old = array.dtype
+        data_type_output = FourierTools._ensure_complex_dtype(array_dtype=array.dtype, data_type=data_type_output)
 
-        # Perform FFT on cpu
-        if compute_on_device == "cpu":
-            meta = np.empty((0,) * array.ndim, dtype=out_dtype)
-            k_space = array.map_blocks(fftn_cpu, dtype=out_dtype, axes=axes, meta=meta)
 
-            if fftshift:
-                k_space = k_space.map_blocks(fftshift_cpu, dtype=out_dtype, axes=axes, meta=meta)
+        # (6) Perform fftshift and fft or ifft
+        if direction == "inverse":
+            if fft_shift:
+                array = array.map_blocks(ifftshift, axes=axes, dtype=data_type_output)
+            array = array.map_blocks(ifftn, axes=axes, dtype=data_type_output)
+        elif direction == "forward":
+            array = array.map_blocks(fftn, axes=axes, dtype=data_type_output)
+            if fft_shift:
+                array = array.map_blocks(fftshift, axes=axes, dtype=data_type_output)
 
-        # Perform FFT on gpu
-        elif compute_on_device in ("gpu", "cuda"):
-            meta = cp.empty((0,) * array.ndim, dtype=cp.dtype(out_dtype))
-            k_space = array.map_blocks(fftn_gpu, dtype=out_dtype, axes=axes, meta=meta)
 
-            if fftshift:
-                k_space = k_space.map_blocks(fftshift_gpu, dtype=out_dtype, axes=axes, meta=meta)
-        else:
-            Console.printf("error", f"Can only compute on 'cpu' or 'gpu'/'cuda'. But it was given: {compute_on_device}")
-            sys.exit()
-
-        # After computation bring to desired device
-        if return_on_device != compute_on_device:
-            k_space = GPUTools.dask_map_blocks(k_space, device=return_on_device)
-
+        Console.add_lines(f"Adding Fourier Transformation to Dask Graph:")
+        Console.add_lines(f" => {'Direction:':.<25} {direction}")
+        Console.add_lines(f" => {'Applying (i)FFT-shift:':.<25} {fft_shift}")
+        Console.add_lines(f" => {'Affected axes:':.<25} {axes} of {len(array.shape)} total axes")
+        Console.add_lines(f" => {'Rechunking:':.<25} {chunksize_old} => {tuple(array.chunksize)}")
+        Console.add_lines(f" => {'Data type:':.<25} {array_dtype_old} => {data_type_output}")
+        Console.add_lines(f" => {'Performing on device:':.<25} {device}")
         Console.printf_collected_lines("success", mute=not verbose)
 
-        return k_space
+        return array
+
+    @staticmethod
+    def _ensure_complex_dtype(array_dtype, data_type=None):
+        """
+        Ensure the FT output dtype is complex.
+
+        Cases:
+            If data_type is None:
+                -> If input os complex: then keep the same complex precision (e.g., complex64)
+                -> If input is float32: promote to complex64
+                -> Otherwise (e.g., float64, int, ...): promote to complex 128.
+            If data_type is provided but not complex: force complex64
+            If data_type is already complex: then keep it
+        """
+        input_dtype = np.dtype(array_dtype)
+
+        # Case: No data type is explicitly provided. Infer it from the input.
+        if data_type is None:
+            # Preserve the complex precision of provided array if the input is already complex
+            if np.issubdtype(input_dtype, np.complexfloating):
+                return input_dtype
+
+            # Promote real input to an appropriate complex dtype
+            if input_dtype == np.float32:
+                return np.complex64
+
+            # The default is complex128 (e.g., for float64 and most other real dtypes)
+            return np.complex128
+
+        # Case: A desired data type is provided by the user
+        else:
+            requested_dtype = np.dtype(data_type)
+
+            # But if the requested dtype is not complex, force a complex data type...
+            if not np.issubdtype(requested_dtype, np.complexfloating):
+                return np.complex64
+
+            # Requested dtype is already complex, then it is simply returned
+            return requested_dtype
+
+
+
+
+
+
+
+
+
+
+
 
 class SortingTools:
 

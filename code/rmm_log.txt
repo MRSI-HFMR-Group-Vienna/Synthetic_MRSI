@@ -1,3 +1,10 @@
-[  3511][10:58:01:941814][info  ] ----- RMM LOG BEGIN [PTDS DISABLED] -----
-[  3511][10:58:01:941856][error ] [A][Stream 0x1][Upstream 1284505600B][FAILURE maximum pool size exceeded]
-[  3511][10:58:02:736015][error ] [A][Stream 0x1][Upstream 1284505600B][FAILURE maximum pool size exceeded]
+[   725][10:02:58:126774][info  ] ----- RMM LOG BEGIN [PTDS DISABLED] -----
+[   725][10:02:58:126805][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   725][10:03:00:254515][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   725][10:07:05:748433][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   725][10:07:08:033306][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   727][10:09:07:660173][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   725][10:09:27:960414][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   725][10:09:29:993359][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   725][10:09:30:991501][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]
+[   725][10:09:31:372589][error ] [A][Stream 0x1][Upstream 4954521600B][FAILURE maximum pool size exceeded]

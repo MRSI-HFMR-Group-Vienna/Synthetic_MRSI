@@ -1,9 +1,14 @@
+from numba.np.arrayobj import array_shape
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.spatial import Voronoi, voronoi_plot_2d
 from shapely.geometry import Polygon, Point
 from scipy.interpolate import CubicSpline
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
+
+from Synthetic_MRSI.code.OLD.main_notebook__BACKUP2 import coil_sensitivity_maps
+
+from Synthetic_MRSI.code.main_notebook___BACKUP2 import target_size
 from file import Configurator
 from printer import Console
 import dask.array as da
@@ -17,6 +22,8 @@ import sys
 from tools import InterpolationTools, DaskTools, GPUTools, FourierTools
 from interfaces import Interpolation
 import os
+from pathlib import Path
+from sampling import CoilSensitivityVolume
 
 
 
@@ -24,10 +31,11 @@ class Model:
 
     def __init__(self,
                  block_size: tuple[int, int, int, int, int] = None,
+                 target_gpu_smaller_tasks: int = None,
                  path_cache: str = None,
                  data_type: np.dtype = None,
-                 coil_sensitivity_volume: da.Array | np.ndarray | cp.ndarray = None,
-                 spectral_spatial_volume: da.Array | np.ndarray | cp.ndarray = None):
+                 coil_sensitivity_volume: CoilSensitivityVolume = None,
+                 spectral_spatial_volume: da.Array = None):
 
 
         self.path_cache = None
@@ -43,28 +51,78 @@ class Model:
         self.block_size = block_size # (coil, time, X, Y, Z)
         self.data_type = data_type
 
-        self.coil_sensitivity_volume = coil_sensitivity_volume.volume # will be a numpy array typically
-        self.spectral_spatial_volume = spectral_spatial_volume # volume/graph from previous Spectral Spatial Model
-
-        self.prepared_volume_dask = None # The volume which is already (coil, time, X, Y, Z)
-
-        if not isinstance(self.coil_sensitivity_volume, da.Array):
-            chunksize = (self.block_size[0], *self.block_size[2:])
-            self.coil_sensitivity_volume = DaskTools.to_dask(self.coil_sensitivity_volume, chunksize=chunksize) # chunksize=(coils,X,Y,Z)
-            Console.add_lines(f"Transformed coil sensitivity volume of type '{type(coil_sensitivity_volume)}' => dask array with chunksize: {chunksize}") # TODO: maybe print shape too
-        if not isinstance(self.spectral_spatial_volume, da.Array):
+        # Need the coil sensitivity maps not as dask array for performance reasons
+        if not isinstance(coil_sensitivity_volume.volume, CoilSensitivityVolume):
+            Console.printf("error", f"coil sensitivity volume must be of class sampling.CoilSensitivityVolume, but got: {type(coil_sensitivity_volume.volume)}")
+            sys.exit()
+        # Need the spectral spatial model as dask array. Automatically converts it to dask array if not already one.
+        if not isinstance(spectral_spatial_volume, da.Array):
             chunksize = self.block_size[1:]
-            self.spectral_spatial_volume = DaskTools.to_dask(self.spectral_spatial_volume, chunksize=chunksize) # chunksize=(time, X, Y, Z)
-            Console.add_lines(f"Transformed spectral spatial volume of type '{type(coil_sensitivity_volume)}' => dask array with chunksize: {chunksize}") # TODO: maybe print shape too
+            Console.printf("warning", f"spectral spatial volume is of type {type(spectral_spatial_volume)} and will be converted to dask array with blocksize {chunksize}")
+            spectral_spatial_volume = DaskTools.to_dask(self.spectral_spatial_volume, chunksize=chunksize) # chunksize=(time, X, Y, Z)
 
+        # Assigning to the two main volume to object variables
+        self.coil_sensitivity_volume: CoilSensitivityVolume = coil_sensitivity_volume
+        self.spectral_spatial_volume_dask: da.Array = spectral_spatial_volume # volume/graph from previous Spectral Spatial Model
+
+        # This volume is for intermediate steps (e.g., coil combination, FFT, iFFT, cropping, ... and so on and will be dynamically updated!)
+        self.working_volume = None # The volume which is already (coil, time, X, Y, Z), nd where also other functions may be already applied
+        Console.printf("info", "Please note that the 'working_volume' of the Sampling Model will be updated with each operation!\n")
+
+        # Target GPU index for smaller tasks if GPU is used
+        self.target_gpu_smaller_tasks = target_gpu_smaller_tasks
+
+        self.model_summary()
+
+
+
+    def model_summary(self):
+        Console.add_lines("Sampling Model:")
+        Console.add_lines(f" => Got spectral spatial volume:")
+        Console.add_lines(f"    class type: .......... {type(self.spectral_spatial_volume_dask)}")
+        Console.add_lines(f"    data type: ........... {self.spectral_spatial_volume_dask.dtype}")
+        Console.add_lines(f"    shape: ............... {self.spectral_spatial_volume_dask.shape}\n")
+
+        Console.add_lines(f" => Got coil sensitivity volume:")
+        Console.add_lines(f"    class type: .......... {type(self.coil_sensitivity_volume)}")
+        Console.add_lines(f"    volume data type: .... {self.coil_sensitivity_volume.volume.dtype}")
+        Console.add_lines(f"    volume shape: ........ {self.coil_sensitivity_volume.volume.shape}\n")
+
+        Console.add_lines(f" => Desired overall block size for dask: ... {self.block_size}")
+        Console.add_lines(f" => Cache path  ............................ {Path(*Path(self.path_cache).parts[-2:])} (shortened)")
+        Console.add_lines(f" => Target GPU smaller tasks: .............. {self.target_gpu_smaller_tasks}")
         Console.printf_collected_lines("info")
-        # TODO: DATA type conversation!!!
+
+        ###if not isinstance(self.coil_sensitivity_volume, da.Array):
+        ###    chunksize = (self.block_size[0], *self.block_size[2:])
+        ###    self.coil_sensitivity_volume = DaskTools.to_dask(self.coil_sensitivity_volume, chunksize=chunksize) # chunksize=(coils,X,Y,Z)
+        ###    Console.add_lines(f"Transformed coil sensitivity volume of type '{type(coil_sensitivity_volume)}' => dask array with chunksize: {chunksize}") # TODO: maybe print shape too
+        ###if not isinstance(self.spectral_spatial_volume, da.Array):
+        ###    chunksize = self.block_size[1:]
+        ###    self.spectral_spatial_volume = DaskTools.to_dask(self.spectral_spatial_volume, chunksize=chunksize) # chunksize=(time, X, Y, Z)
+        ###    Console.add_lines(f"Transformed spectral spatial volume of type '{type(coil_sensitivity_volume)}' => dask array with chunksize: {chunksize}") # TODO: maybe print shape too
+        ###
+        ###Console.printf_collected_lines("info")
 
 
     def apply_coil_sensitivity(self, compute_on_device: str = 'gpu', return_on_device: str = 'cpu') -> da.Array:
+        """
+        To apply the coil sensitivity maps (= B1- maps) to the volume in this sampling model.
+
+        Basically, it is just:
+            result = volume[1, time, X, Y, Z] * coil_sensitivity_volume[coils, 1, X, Y, Z]
+
+        :param compute_on_device: either 'cpu' or 'gpu'/'cuda'
+        :param return_on_device: either 'cpu' or 'gpu'/'cuda'
+        :return: dask array with cupy or numpy inside
+        """
+        # convert coil sensitivity volume to dask array
+        chunksize = (self.block_size[0], *self.block_size[2:])
+        coil_sensitivity_volume_dask = DaskTools.to_dask(self.coil_sensitivity_volume.volume, chunksize=chunksize) # chunksize=(coils,X,Y,Z)
+
         # first bring to respective device!
         coil_sensitivity_volume, spectral_spatial_volume = GPUTools.dask_map_blocks_many(
-            self.coil_sensitivity_volume, self.spectral_spatial_volume,
+            coil_sensitivity_volume_dask, self.spectral_spatial_volume_dask,
             device=compute_on_device)
 
         # Broadcasting to be able to multiply at once:
@@ -74,81 +132,169 @@ class Model:
         spectral_spatial_volume[None, ...])
         # (1,     time, X, Y, Z)
 
-        self.prepared_volume_dask = GPUTools.dask_map_blocks(volume, device=return_on_device)
+        self.working_volume = GPUTools.dask_map_blocks(volume, device=return_on_device)
         Console.printf("success", "Added to apply coil sensitivity maps computational graph.")
 
-        return self.prepared_volume_dask
-
-    def apply_cartesian_FFT(self, compute_on_device: str = 'gpu', return_on_device: str = 'cpu', apply_fftshift:bool = True, crop_center_k_space_xyz: tuple = None, rechunking: bool = False) -> da.Array | None:
+        return self.working_volume
+    
+    
+    def apply_cartesian_FT(self, direction: str = "forward", fft_shift: bool = True, compute_on_device: str ='gpu', return_on_device: str ='cpu') -> da.Array:
         """
-        Applies a FFT along X,Y,Z of volume (coil, time, X,Y,Z).
+        This method serves as forward and backward fourier transformation and also includes the fft-shift and ifftshift. This method is only for cartesian fourier
+        transformation and should not be extended to a non-cartesian fourier transformation.
 
-        :return: dask.array
-        """
-        if self.prepared_volume_dask is None:
-            Console.printf("error", "Apply first the function 'apply_coil_sensitivity', then re-run this function.")
-            return None
-        else:
-            # Bring to the desired device to compute
-            i_space_volume = GPUTools.dask_map_blocks(self.prepared_volume_dask, device=compute_on_device)
-            # Re-chunk for performance reasons
-            chunks_before = i_space_volume.chunksize
-            if rechunking:
-                i_space_volume = i_space_volume.rechunk(("auto", "auto", -1,-1,-1)) # to ensure that coil and time is chunked, but X;Y;Z is a single chunk
-                Console.printf("success", f"Re-chunked for better performance from {chunks_before} => {i_space_volume.chunksize}")
-
-            # Perform FFT on desired axes
-            k_space_volume = FourierTools.dask_fftn(
-                array=i_space_volume,
-                axes=(2,3,4),
-                compute_on_device=compute_on_device,
-                return_on_device=compute_on_device, # still use compute on device, since further operations might be possible afterward on desired device
-                fftshift=apply_fftshift,
-                verbose=True)
-
-            # Cropping of k-space center if desired
-            if crop_center_k_space_xyz is not None:
-                if len(crop_center_k_space_xyz) != 3:
-                    Console.printf("error", f"Required tuple of length 3 for k-space center cropping. But was given: {len(crop_center_k_space_xyz)}")
-                else:
-                    k_space_volume_shape_before = k_space_volume.shape
-                    k_space_volume = self.crop_center_volume(array=k_space_volume, output_shape_xyz=crop_center_k_space_xyz)
-                    Console.printf("success", f"Cropping k-space (X,Y,Z) in (coil, time, X, Y, Z): {k_space_volume_shape_before} => {k_space_volume.shape}")
-
-            # Bring FFT-volume to desired target device (output)
-            k_space_volume = GPUTools.dask_map_blocks(k_space_volume, device=return_on_device)
-            #Console.printf("success", f"Added FFT to the graph.")
-
-            return k_space_volume
-
-    def crop_center_volume(self, array: da.Array, output_shape_xyz):
-        """
-        To crop a given volume of shape (coil, time, X, Y, Z) in a way that only (X,Y,Z) is cropped. This is useful to crop e.g.,
-        fourier transformed volume. Note: It only crops the center!
-
-        :param output_shape_xyz: (X, Y, Z), thus only the spatial dimensions
-        :return: Nothing
+        :param direction: "forward" and "inverse" is allowed
+        :param fft_shift: if True and "forward" is selected then it performs fftshift and if True and "inverse" ifftshift is performed
+        :param compute_on_device: either 'cpu' or 'gpu'/'cuda'
+        :param return_on_device: either 'cpu' or 'gpu'/'cuda'
+        :return: dask array
         """
 
-        X, Y, Z = array.shape[2], array.shape[3], array.shape[4]    # the actual shape of the volume
-        Xc, Yc, Zc = output_shape_xyz                   # the desired cropping shape volume
-        if Xc > X or Yc > Y or Zc > Z:
-            Console.printf("error",f"Crop size must be <= original size on each axis. Original size xyz: {self.prepared_volume_dask[2:]}; Desired shape xyz: {output_shape_xyz}")
-
-        sx = (X - Xc) // 2
-        ex = sx + Xc
-        sy = (Y - Yc) // 2
-        ey = sy + Yc
-        sz = (Z - Zc) // 2
-        ez = sz + Zc
-
-        return array[:, :, sx:ex, sy:ey, sz:ez]
+        self.working_volume = FourierTools.cartesian_FT_dask(array=self.working_volume, direction=direction, axes=(2,3,4), fft_shift=fft_shift, device=compute_on_device)
+        self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=return_on_device)
+        return self.working_volume
 
 
-    def appy_cartesian_IFFT(self):
-        pass
+    def crop_k_space_center(self, crop_center_shape=(64, 64, 40), verbose:bool = True) -> da.Array:
+        """
+        This requires an array of input shape (coil, time, X, Y, Z), and the axes X, Y, Z of this array should be also in the k-space.
+        Further, also the low frequencies should be shifted to the center (e.g., fftshift) after the fourier transformation.
 
-    def apply_gaussian_noise(self):
+        Then, the cropping will create from (coil, time, X1, Y1, Z1) ==> (coil, time, X2, Y2, Z2)
+
+        :param crop_center_shape: the spatial shape of the volume which should be cropped (X, Y, Z)
+        :param verbose: if True then print to console
+        :return: dask Array
+        """
+
+        array = self.working_volume
+        array_shape_before = array.shape
+
+        # TODO: Check that shape is really (coil, time, X, Y, Z)
+        if len(array.shape) != 5:
+            Console.printf("error", f"Cannot crop k-space center in this case. Require shape (coil, time, X, Y, Z). Given was: {array.shape}")
+            return
+
+        cx, cy, cz = crop_center_shape
+        X, Y, Z = array.shape[-3:]
+
+        if None in (X, Y, Z):
+            Console.printf("error", "Center crop needs known X/Y/Z sizes (shape can't contain None).")
+            return
+
+        if cx > X or cy > Y or cz > Z:
+            Console.printf("error", f"Crop {crop_center_shape} larger than spatial shape {(X, Y, Z)}")
+            return
+
+        sx = (X - cx) // 2
+        sy = (Y - cy) // 2
+        sz = (Z - cz) // 2
+
+        array = array[..., sx:sx + cx, sy:sy + cy, sz:sz + cz]
+        array_shape_after = array.shape
+
+        Console.printf("success", f"Cropping k-space center (..., X,Y,Z) from {array_shape_before} => {array_shape_after}", mute=not verbose)
+
+        self.working_volume = array
+
+        return array
+
+            # maybe here gpu tools? numpy or cupy
+
+        #self.working_volume
+
+###    def apply_cartesian_FFT(self, compute_on_device: str = 'gpu', return_on_device: str = 'cpu', apply_fftshift:bool = True, crop_center_k_space_xyz: tuple = None, rechunking: bool = False) -> da.Array | None:
+###        """
+###        Applies a FFT along X,Y,Z of volume (coil, time, X,Y,Z).
+###
+###        :return: dask.array
+###        """
+###        if self.working_volume is None:
+###            Console.printf("error", "Apply first the function 'apply_coil_sensitivity', then re-run this function.")
+###            return None
+###        else:
+###            # Bring to the desired device to compute
+###            i_space_volume = GPUTools.dask_map_blocks(self.working_volume, device=compute_on_device)
+###            # Re-chunk for performance reasons
+###            chunks_before = i_space_volume.chunksize
+###            if rechunking:
+###                i_space_volume = i_space_volume.rechunk(("auto", "auto", -1,-1,-1)) # to ensure that coil and time is chunked, but X;Y;Z is a single chunk
+###                Console.printf("success", f"Re-chunked for better performance from {chunks_before} => {i_space_volume.chunksize}")
+###
+###            # Perform FFT on desired axes
+###            k_space_volume = FourierTools.dask_fftn(
+###                array=i_space_volume,
+###                axes=(2,3,4),
+###                compute_on_device=compute_on_device,
+###                return_on_device=compute_on_device, # still use compute on device, since further operations might be possible afterward on desired device
+###                fftshift=apply_fftshift,
+###                verbose=True)
+###
+###            # Cropping of k-space center if desired
+###            if crop_center_k_space_xyz is not None:
+###                if len(crop_center_k_space_xyz) != 3:
+###                    Console.printf("error", f"Required tuple of length 3 for k-space center cropping. But was given: {len(crop_center_k_space_xyz)}")
+###                else:
+###                    k_space_volume_shape_before = k_space_volume.shape
+###                    k_space_volume = self.crop_center_volume(array=k_space_volume, output_shape_xyz=crop_center_k_space_xyz)
+###                    Console.printf("success", f"Cropping k-space (X,Y,Z) in (coil, time, X, Y, Z): {k_space_volume_shape_before} => {k_space_volume.shape}")
+###
+###            # Bring FFT-volume to desired target device (output)
+###            k_space_volume = GPUTools.dask_map_blocks(k_space_volume, device=return_on_device)
+###            #Console.printf("success", f"Added FFT to the graph.")
+###
+###            return k_space_volume
+
+###    def crop_center_volume(self, array: da.Array, output_shape_xyz):
+###        """
+###        To crop a given volume of shape (coil, time, X, Y, Z) in a way that only (X,Y,Z) is cropped. This is useful to crop e.g.,
+###        fourier transformed volume. Note: It only crops the center!
+###
+###        :param output_shape_xyz: (X, Y, Z), thus only the spatial dimensions
+###        :return: Nothing
+###        """
+###
+###        X, Y, Z = array.shape[2], array.shape[3], array.shape[4]    # the actual shape of the volume
+###        Xc, Yc, Zc = output_shape_xyz                   # the desired cropping shape volume
+###        if Xc > X or Yc > Y or Zc > Z:
+###            Console.printf("error",f"Crop size must be <= original size on each axis. Original size xyz: {self.working_volume[2:]}; Desired shape xyz: {output_shape_xyz}")
+###
+###        sx = (X - Xc) // 2
+###        ex = sx + Xc
+###        sy = (Y - Yc) // 2
+###        ey = sy + Yc
+###        sz = (Z - Zc) // 2
+###        ez = sz + Zc
+###
+###        return array[:, :, sx:ex, sy:ey, sz:ez]
+
+    def coil_combination(self, compute_on_device: str, return_on_device: str):
+
+        # (1) Interpolate to target size (of other volume). No task yet required!
+        working_volume = self.working_volume.shape
+        coil_sensitivity_volume_shape_before = self.coil_sensitivity_volume.volume.shape
+        #     The following: compute_on_device, return_on_device => both compute_on_device input argument since not lst operation in this method!
+        coil_sensitivity_volume = self.coil_sensitivity_volume.interpolate_volume(compute_on_device=compute_on_device, return_on_device=compute_on_device, target_size=working_volume.shape[2:], target_gpu=self.target_gpu_smaller_tasks, verbose=False)
+        Console.printf("success", f"Interpolated coil sensitivity volume: {coil_sensitivity_volume_shape_before} => {coil_sensitivity_volume.volume.shape}")
+        # (2) Need complex conjugated coil sensitivity volume
+        coil_sensitivity_volume_conjugated = coil_sensitivity_volume.conjugate()
+        # (3) Create dask arrays (+ good junks regarding performance)
+        coil_sensitivity_volume_dask = da.asarray(coil_sensitivity_volume.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO, not already right chunksize? Dont need -1,-1,-1???
+        coil_sensitivity_volume_conjugated_dask = da.asarray(coil_sensitivity_volume_conjugated.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO: same aso one line before?!
+        # (4) Bring to right device via map blocks (thus if GPU does not allocate in advance)
+        coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask = GPUTools.dask_map_blocks_many(coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask, device=compute_on_device)
+
+        # (5) Need to broadcast conjugated array (from (coil, X, Y, Z) --> (coil, time, X, Y, Z))
+        coil_sensitivity_volume_conjugated_dask = coil_sensitivity_volume_conjugated_dask[:,None, ...]
+
+        # (6) Now, this (MRSI volume * coil_sensitivity_complex_conj) / |sum(coil_sensitivity, axis=0)|^2. Note: The working volume is here MRSI volume.
+        numerator = da.sum(working_volume * coil_sensitivity_volume_conjugated_dask, axis=0)
+
+
+        # TODO: This line is an issue!
+        #coil_sensitivity_volume.volume
+        #denominator = (cp.sum(cp.abs(GPUTools.to_device(coil_sensitivity_volume2.volume, device="gpu"))**2, axis=0))
+
         pass
 
 
