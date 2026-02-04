@@ -1830,14 +1830,15 @@ class GPUTools:
         return mapped[0] if len(mapped) == 1 else mapped
 
     @staticmethod
-    def to_device(x: np.ndarray|cp.ndarray|pint.Quantity, device) -> np.ndarray|cp.ndarray:
+    def to_device(x: np.ndarray|cp.ndarray|pint.Quantity, device, target_gpu:int | None = None) -> np.ndarray|cp.ndarray:
         """
         To convert between cupy and numpy array and thus between gpu and cpu.
 
         Note: if pint Quantity is inserted it will be converted back to the base array (e.g., numpy or cupy)
 
         :param x: either cupy or numpy array
-        :param device: a string with the possible options 'cpu' and 'gpu'
+        :param device: a string with the possible options 'cpu' and 'gpu'/'cuda'
+        :param target_gpu: if 'gpu'/'cuda' is selected then an index for the desired GPU can be specified
         """
         if isinstance(x, pint.Quantity):
             x = UnitTools.remove_unit(x)
@@ -1845,26 +1846,36 @@ class GPUTools:
         if device == "cpu":
             return GPUTools.to_numpy(x)
         elif device in ("gpu", "cuda"):
-            return GPUTools.to_cupy(x)
+            return GPUTools.to_cupy(x, target_gpu=target_gpu)
         else:
             raise ValueError(f"Chosen device must be either 'cpu' or 'gpu' or 'cuda', got '{device}'")
 
 
     @staticmethod
-    def to_cupy(x: np.ndarray) -> cp.ndarray:
+    def to_cupy(x: np.ndarray | cp.ndarray, target_gpu: int = None) -> cp.ndarray:
         """
         To convert numpy to cupy array. This is mainly to lazy convert numpy array to cupy array
-        via dask, to not allocate memory in advance.
+        via dask, to not allocate memory in advance. However, can also be used without dask in combination.
 
-        :param x: a numpy array that should be converted to a cupy array.
+        :param x: a numpy or cupy array that should be converted to a cupy array.
+        :param target_gpu: optional gpu index; if set, allocate/copy on the GPU with desired index
         """
 
-        if isinstance(x, cp.ndarray):   # already right data type, do nothing
-            return x
-        elif isinstance(x, np.ndarray): # convert
-            return cp.asarray(x)
-        else:                           # wrong datatype
-            raise TypeError(f"Input must be a numpy array, got {type(x).__name__}")
+        if target_gpu is None:
+            if isinstance(x, cp.ndarray):  # already right data type, do nothing
+                return x
+            elif isinstance(x, np.ndarray):  # convert
+                return cp.asarray(x)
+            else:  # wrong datatype
+                raise TypeError(f"Input must be a numpy or cupy array, got {type(x).__name__}")
+
+        else:
+            with cp.cuda.Device(target_gpu):
+                # if already on desired GPU
+                if isinstance(x, cp.ndarray) and x.device.id == target_gpu:
+                    return x
+                else:
+                    return cp.asarray(x)
 
     @staticmethod
     def to_numpy(x: cp.ndarray) -> np.ndarray:
@@ -1890,6 +1901,32 @@ class GPUTools:
 
 
 class DaskTools:
+
+    @staticmethod
+    def meta_for_map_blocks(array: da.Array, device: str):
+        """
+        To let dask know with which data type it is dealing. Since and array with a zero for each axis is created it does
+        not pre-allocate - especially important for GPU VRAM - in advance memory.
+        This solves the issue, that although 'dask map blocks' is lazy executed it pre-allocates in advance GPU memory on
+        the default GPU, which is typically the GPU with index 0. This behavior is unwanted in most cases.
+
+        (!) Only use together with: dask.map_blocks(..., meta=meta_from_here)
+
+        :param array: dask array
+        :param device: either 'cpu' or 'gpu'/'cuda'
+        :return: the 'meta data', an array with zero for each axis.
+        """
+
+        if device in ("gpu", "cuda"):
+            meta = cp.empty((0,) * array.ndim, dtype=array.dtype)
+            return meta
+        elif device == "cpu":
+            meta = np.empty((0,) * array.ndim, dtype=array.dtype)
+            return meta
+        else:
+            Console.printf("error", f"Cannot provide meta for array. Chosen device must be either 'cpu' or 'gpu'/'cuda', got '{device}'.")
+            return
+
 
     @staticmethod
     def rechunk(array, chunksize: tuple[int, ...]|str) -> da.Array:
@@ -2031,15 +2068,19 @@ class FourierTools:
         data_type_output = FourierTools._ensure_complex_dtype(array_dtype=array.dtype, data_type=data_type_output)
 
 
+        # (6) (!) Important to provide the meta if map.blocks is used in dask, otherise if device gpu and no meta then it allocates already cuda memory in advance!!!
+        meta = DaskTools.meta_for_map_blocks(array=array, device=device)
+
         # (6) Perform fftshift and fft or ifft
         if direction == "inverse":
             if fft_shift:
-                array = array.map_blocks(ifftshift, axes=axes, dtype=data_type_output)
-            array = array.map_blocks(ifftn, axes=axes, dtype=data_type_output)
+                array = array.map_blocks(ifftshift, axes=axes, dtype=data_type_output, meta=meta)
+            array = array.map_blocks(ifftn, axes=axes, dtype=data_type_output, meta=meta)
         elif direction == "forward":
-            array = array.map_blocks(fftn, axes=axes, dtype=data_type_output)
+            array = array.map_blocks(fftn, axes=axes, dtype=data_type_output, meta=meta)
             if fft_shift:
-                array = array.map_blocks(fftshift, axes=axes, dtype=data_type_output)
+                array = array.map_blocks(fftshift, axes=axes, dtype=data_type_output, meta=meta)
+
 
 
         Console.add_lines(f"Adding Fourier Transformation to Dask Graph:")
@@ -2473,6 +2514,7 @@ class InterpolationTools:
             mute=not verbose
         )
         return array
+
 
 
 class JupyterPlotManager:

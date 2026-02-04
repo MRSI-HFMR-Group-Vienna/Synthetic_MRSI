@@ -1,3 +1,4 @@
+from bokeh.core.property.container import Array
 from numba.np.arrayobj import array_shape
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.spatial import Voronoi, voronoi_plot_2d
@@ -5,10 +6,6 @@ from shapely.geometry import Polygon, Point
 from scipy.interpolate import CubicSpline
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
-
-from Synthetic_MRSI.code.OLD.main_notebook__BACKUP2 import coil_sensitivity_maps
-
-from Synthetic_MRSI.code.main_notebook___BACKUP2 import target_size
 from file import Configurator
 from printer import Console
 import dask.array as da
@@ -19,12 +16,55 @@ import pint
 import dask
 import file
 import sys
-from tools import InterpolationTools, DaskTools, GPUTools, FourierTools
+from tools import InterpolationTools, DaskTools, GPUTools, FourierTools, ArrayTools
 from interfaces import Interpolation
 import os
 from pathlib import Path
-from sampling import CoilSensitivityVolume
+import copy
 
+
+
+class CoilSensitivityVolume(Interpolation):
+
+    def __init__(self):
+        self.coils: list[str] = None
+        self.volume: np.ndarray | np.memmap = None
+
+    def interpolate(self, target_size: tuple, order: int = 3, compute_on_device: str = "gpu", return_on_device: str="cpu", target_gpu: int= None, verbose= True):
+        """
+        To interpolate the coil sensitivity maps to a target shape. Note, typically a 3D shape is provided and the coil axis is still preserved during interpolation.
+        Thus, target shape (X,Y,Z) dos not include coil dimension; coil sensitivity data shape is typically (coil, X, Y, Z).
+
+        :param target_size: tuple (X,Y,Z)
+        :param order: see scipy documentation for interpolation order
+        :param compute_on_device: either "cpu" or "gpu"/"cuda"
+        :param return_on_device: either "cpu" or "gpu"/"cuda"
+        :param target_gpu: if gpu is used for interpolation the index of the device
+        :param verbose: If True then print infos about results
+        :return: Nothing
+        """
+        if len(target_size) == 3:
+            target_size = (self.volume.shape[0], *target_size)
+            Console.printf("info", "Preserving coil dimension during interpolation.")
+            #Console.printf("info", f"3D target shape is given. However, preserving coil axis during interpolation, therefore will still get 4D result: {target_size}.")
+
+        self.volume = InterpolationTools.interpolate(array=self.volume,
+                                                     target_size=target_size,
+                                                     order=order,
+                                                     compute_on_device=compute_on_device,
+                                                     return_on_device=return_on_device,
+                                                     target_gpu=target_gpu,
+                                                     verbose=verbose)
+
+    def conjugate(self):
+        """
+        The complex conjugate of a complex number is obtained by changing the sign of its imaginary part.
+
+        :return: Nothing
+        """
+        xp = ArrayTools.get_backend(self.volume)
+        self.volume = xp.conjugate(self.volume)
+        Console.printf("success", "Complex Conjugated the Coil Sensitivity Volume.")
 
 
 class Model:
@@ -52,7 +92,7 @@ class Model:
         self.data_type = data_type
 
         # Need the coil sensitivity maps not as dask array for performance reasons
-        if not isinstance(coil_sensitivity_volume.volume, CoilSensitivityVolume):
+        if not isinstance(coil_sensitivity_volume, CoilSensitivityVolume):
             Console.printf("error", f"coil sensitivity volume must be of class sampling.CoilSensitivityVolume, but got: {type(coil_sensitivity_volume.volume)}")
             sys.exit()
         # Need the spectral spatial model as dask array. Automatically converts it to dask array if not already one.
@@ -269,15 +309,45 @@ class Model:
 ###        return array[:, :, sx:ex, sy:ey, sz:ez]
 
     def coil_combination(self, compute_on_device: str, return_on_device: str):
+        """
+        This performs a coil combination with equation:
+
+        result = Σ S_i * conj(C_i) / Σ |C_i|^2, where "S" is the already created MRSI volume, incorporated the coil sensitivity
+                                                volume, and the "C" with the coil volumes. S_i is the respective coil volume of
+                                                (time, X, Y, Z) and C_i the respective coil sensitivity map (X, Y, Z) of one coil.
+
+                Already created MRSI volume: ... S_i ∈ ℂ^(coils x time x X x Y x Z)
+                Coil volume: ................... C_i ∈ ℂ^(coils x X x Y x Z)
+
+        Note: This is applied in the image space and therefore needs a volume in the image space of (..., X,Y,Z) and which also
+              has before applied the coil sensitivity maps to the spectral spatial volume. Otherwise, it may make no sense.
+
+        :param compute_on_device: either 'cpu' or 'gpu'/'cuda'/'cuda'
+        :param return_on_device: either 'cpu' or 'gpu'/'cuda'/'cuda'
+        :return: dask Array
+        """
+
+        # (0) Check if working volume is already cerated and if the number of axes is correct
+        #     a) Check if working volume is already created.
+        if self.working_volume is None:
+            Console.printf("error", "Working volume is None. Have you applied 'apply_coil_sensitivity' before?")
+            return
+        #     b) Check if working volume has already desired number of axes. This indirectly checks if coil sensitivity maps
+        #     were already applied.
+        elif len(self.working_volume.shape) != 5:
+            Console.printf("error", f"Working volume shape is not 5. It is instead: {self.working_volume.shape}. Cannot perform coil combination!")
+            return
 
         # (1) Interpolate to target size (of other volume). No task yet required!
-        working_volume = self.working_volume.shape
+        working_volume = self.working_volume
         coil_sensitivity_volume_shape_before = self.coil_sensitivity_volume.volume.shape
         #     The following: compute_on_device, return_on_device => both compute_on_device input argument since not lst operation in this method!
-        coil_sensitivity_volume = self.coil_sensitivity_volume.interpolate_volume(compute_on_device=compute_on_device, return_on_device=compute_on_device, target_size=working_volume.shape[2:], target_gpu=self.target_gpu_smaller_tasks, verbose=False)
+        coil_sensitivity_volume = copy.deepcopy(self.coil_sensitivity_volume)
+        coil_sensitivity_volume.interpolate_volume(compute_on_device=compute_on_device, return_on_device=compute_on_device, target_size=working_volume.shape[2:], target_gpu=self.target_gpu_smaller_tasks, verbose=False)
         Console.printf("success", f"Interpolated coil sensitivity volume: {coil_sensitivity_volume_shape_before} => {coil_sensitivity_volume.volume.shape}")
         # (2) Need complex conjugated coil sensitivity volume
-        coil_sensitivity_volume_conjugated = coil_sensitivity_volume.conjugate()
+        coil_sensitivity_volume_conjugated = copy.deepcopy(coil_sensitivity_volume)
+        coil_sensitivity_volume_conjugated.conjugate()
         # (3) Create dask arrays (+ good junks regarding performance)
         coil_sensitivity_volume_dask = da.asarray(coil_sensitivity_volume.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO, not already right chunksize? Dont need -1,-1,-1???
         coil_sensitivity_volume_conjugated_dask = da.asarray(coil_sensitivity_volume_conjugated.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO: same aso one line before?!
@@ -288,14 +358,25 @@ class Model:
         coil_sensitivity_volume_conjugated_dask = coil_sensitivity_volume_conjugated_dask[:,None, ...]
 
         # (6) Now, this (MRSI volume * coil_sensitivity_complex_conj) / |sum(coil_sensitivity, axis=0)|^2. Note: The working volume is here MRSI volume.
+        #    a) Schedule nominator via dask (heavy computation part)
         numerator = da.sum(working_volume * coil_sensitivity_volume_conjugated_dask, axis=0)
+        #    b) Compute denominator directly on desired device (light computation part)
+        #       To bring to the respective device. Target GPU has only an effect if it will be computed on the GPU!:
+        coil_sensitivity_volume_device = GPUTools.to_device(coil_sensitivity_volume.volume, device=compute_on_device, target_gpu=self.target_gpu_smaller_tasks)
+        xp = ArrayTools.get_backend(coil_sensitivity_volume_device) # to get the numpy or cupy module
+        denominator = (xp.sum(xp.abs(coil_sensitivity_volume_device)**2, axis=0))
+        #       Also check for NaNs or zeros in denominator
+        ArrayTools.count_zeros(denominator)
+        ArrayTools.check_nan(denominator)
+        #       Create dask array of result: whole array should be one chunk for performance reasons
+        denominator = da.from_array(denominator, chunks=(-1,-1,-1))
+        #       Perform division, see description in this section
+        result = numerator / denominator
 
+        # (7) Return on desired device
+        result = GPUTools.dask_map_blocks(result, device=return_on_device)
 
-        # TODO: This line is an issue!
-        #coil_sensitivity_volume.volume
-        #denominator = (cp.sum(cp.abs(GPUTools.to_device(coil_sensitivity_volume2.volume, device="gpu"))**2, axis=0))
-
-        pass
+        return result
 
 
 class ModelOLD:
@@ -609,46 +690,6 @@ class ModelOLD:
 ###        return volume_with_coil_sensitivity
 
 
-class CoilSensitivityVolume(Interpolation):
-
-    def __init__(self):
-        self.coils: list[str] = None
-        self.volume: np.ndarray | np.memmap = None
-
-    def interpolate(self, target_size: tuple, order: int = 3, compute_on_device: str = "gpu", return_on_device: str="cpu", target_gpu: int= 0, verbose= True):
-        """
-        To interpolate the coil sensitivity maps to a target shape. Note, typically a 3D shape is provided and the coil axis is still preserved during interpolation.
-        Thus, target shape (X,Y,Z) dos not include coil dimension; coil sensitivity data shape is typically (coil, X, Y, Z).
-
-        :param target_size: tuple (X,Y,Z)
-        :param order: see scipy documentation for interpolation order
-        :param compute_on_device: either "cpu" or "gpu"/"cuda"
-        :param return_on_device: either "cpu" or "gpu"/"cuda"
-        :param target_gpu: if gpu is used for interpolation the index of the device
-        :param verbose: If True then print infos about results
-        :return: Nothing
-        """
-        if len(target_size) == 3:
-            target_size = (self.volume.shape[0], *target_size)
-            Console.printf("info", "Preserving coil dimension during interpolation.")
-            #Console.printf("info", f"3D target shape is given. However, preserving coil axis during interpolation, therefore will still get 4D result: {target_size}.")
-
-        self.volume = InterpolationTools.interpolate(array=self.volume,
-                                                     target_size=target_size,
-                                                     order=order,
-                                                     compute_on_device=compute_on_device,
-                                                     return_on_device=return_on_device,
-                                                     target_gpu=target_gpu,
-                                                     verbose=verbose)
-
-    def conjugate(self):
-        """
-        The complex conjugate of a complex number is obtained by changing the sign of its imaginary part.
-
-        :return: Nothing
-        """
-        self.volume = np.conjugate(self.volume)
-        Console.printf("success", "Complex Conjugated the Coil Sensitivity Volume.")
 
 
 class Trajectory:
