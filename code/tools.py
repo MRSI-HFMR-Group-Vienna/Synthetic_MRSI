@@ -1732,34 +1732,44 @@ def deprecated(reason, replacement=None) -> Callable:
 class GPUTools:
 
 ###    @staticmethod
-###    def run_cupy_local_pool(working_function, target_gpu: int=None, return_device:str = 'cpu') -> np.ndarray | cp.ndarray:
+###    def run_cupy_local_pool(working_function, target_gpu: int = None, return_device: str = 'cpu') -> np.ndarray | cp.ndarray:
 ###        """
-###        For inserting a cupy function that runs on a specific cupy pool.
-###        IMPORTANT: Pass the function with the arguments a lambda, e.g.: lambda: function, so
-###        this creates an anonymous function that can be called later!
+###        Run a cupy function under a local memory pool on a specific GPU.
+###        NOTE: If returning a GPU array, we must NOT free the pool blocks here because the returned
+###        array may still reference pooled memory.
 ###
-###        :param return_device: if 'cpu' the converted to numpy array and thus returned on cpu, otherwise stays on gpu
+###        IMPORTANT: Pass the function with the arguments a lambda, e.g.: lambda: function, so this creates an anonymous
+###        function that can be called later!
+###
+###        :param return_device: if 'cpu' the converted to numpy array and thus returned on
 ###        :param target_gpu: the index of the target gpu
-###        :param working_function: a anonymous function, created with: lambda: my_function
+###        :param working_function: an anonymous function, created with: lambda: my_function
+###        :return: numpy or cupy array
 ###        """
 ###        with cp.cuda.Device(target_gpu):
 ###            pool = cp.cuda.MemoryPool()
 ###            with cp.cuda.using_allocator(pool.malloc):
 ###                result = working_function()
+###                cp.cuda.get_current_stream().synchronize()
 ###
 ###                if return_device == "cpu":
-###                    return cp.asnumpy(result)
+###                    out = cp.asnumpy(result)
+###                    # Ensure result is released before freeing the pool
+###                    del result
+###                    cp.cuda.get_current_stream().synchronize()
+###                    pool.free_all_blocks()
+###                    return out
+###
 ###                elif return_device in ("gpu", "cuda"):
+###                    # Do NOT free pool blocks here; returned array may depend on them.
 ###                    return result
+###
 ###                else:
 ###                    Console.printf("error", f"return_device must be 'cpu' or 'gpu'/'cuda', but got '{return_device}'")
-###
-###                cp.cuda.get_current_stream().synchronize()
-###            pool.free_all_blocks()
-###            return result
+###                    return
 
     @staticmethod
-    def run_cupy_local_pool(working_function, target_gpu: int = None, return_device: str = 'cpu') -> np.ndarray | cp.ndarray:
+    def run_cupy_local_pool(working_function, target_gpu=None, return_device="cpu"):
         """
         Run a cupy function under a local memory pool on a specific GPU.
         NOTE: If returning a GPU array, we must NOT free the pool blocks here because the returned
@@ -1770,28 +1780,30 @@ class GPUTools:
 
         :param return_device: if 'cpu' the converted to numpy array and thus returned on
         :param target_gpu: the index of the target gpu
-        :param working_function: a anonymous function, created with: lambda: my_function
+        :param working_function: an anonymous function, created with: lambda: my_function
+        :return: numpy or cupy array
         """
         with cp.cuda.Device(target_gpu):
-            pool = cp.cuda.MemoryPool()
-            with cp.cuda.using_allocator(pool.malloc):
-                result = working_function()
-                cp.cuda.get_current_stream().synchronize()
-
-                if return_device == "cpu":
+            if return_device == "cpu":
+                pool = cp.cuda.MemoryPool()
+                with cp.cuda.using_allocator(pool.malloc):
+                    result = working_function()
+                    cp.cuda.get_current_stream().synchronize()
                     out = cp.asnumpy(result)
-                    # Ensure result is released before freeing the pool
                     del result
                     cp.cuda.get_current_stream().synchronize()
                     pool.free_all_blocks()
                     return out
 
-                elif return_device in ("gpu", "cuda"):
-                    # Do NOT free pool blocks here; returned array may depend on them.
-                    return result
+            elif return_device in ("gpu", "cuda"):
+                # Do not use local pool, otherwise lifetime-problem (e.g. when transferring to other GPU)
+                result = working_function()
+                cp.cuda.get_current_stream().synchronize()
+                return result
 
-                else:
-                    Console.printf("error", f"return_device must be 'cpu' or 'gpu'/'cuda', but got '{return_device}'")
+            else:
+                raise ValueError(...)
+
 
 
     @staticmethod
@@ -1844,7 +1856,17 @@ class GPUTools:
             x = UnitTools.remove_unit(x)
 
         if device == "cpu":
-            return GPUTools.to_numpy(x)
+
+            # TODO TODO TODO TODO TODO TODO TODO:
+            # Clean up if it was before on GPU
+            #if isinstance(x, cp.ndarray):
+                #x_device_id = x.device.id
+                #del x
+                #GPUTools._free_cuda_memory(x_device_id)
+
+            x_cpu = GPUTools.to_numpy(x)
+
+            return x_cpu
         elif device in ("gpu", "cuda"):
             return GPUTools.to_cupy(x, target_gpu=target_gpu)
         else:
@@ -1870,12 +1892,36 @@ class GPUTools:
                 raise TypeError(f"Input must be a numpy or cupy array, got {type(x).__name__}")
 
         else:
+            x_gpu_idx = x.device.id
+
             with cp.cuda.Device(target_gpu):
                 # if already on desired GPU
                 if isinstance(x, cp.ndarray) and x.device.id == target_gpu:
                     return x
+                # if not on desired GPU, need GPU <-> GPU transfer
                 else:
-                    return cp.asarray(x)
+                    x_new = cp.asarray(x)
+
+                    # just cleanup on OL GPU ####
+                    del x
+                    GPUTools._free_cuda_memory(x_gpu_idx)
+                    #############################
+
+                    return x_new
+
+    @staticmethod
+    def _free_cuda_memory(device_idx: int):
+        """
+        Also make sure that the respective variable that holds the cupy array is deleted before
+
+        :param device_idx: GPU device index
+        :return: Nothing
+        """
+        with cp.cuda.Device(device_idx):
+            cp.cuda.get_current_stream().synchronize()
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()  # optional, for host-pinned buffers
+
 
     @staticmethod
     def to_numpy(x: cp.ndarray) -> np.ndarray:
