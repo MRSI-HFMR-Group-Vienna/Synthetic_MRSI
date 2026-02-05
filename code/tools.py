@@ -1842,7 +1842,7 @@ class GPUTools:
         return mapped[0] if len(mapped) == 1 else mapped
 
     @staticmethod
-    def to_device(x: np.ndarray|cp.ndarray|pint.Quantity, device, target_gpu:int | None = None) -> np.ndarray|cp.ndarray:
+    def to_device(x: np.ndarray|cp.ndarray|pint.Quantity, device, target_gpu:int | None = None, verbose: bool=True) -> np.ndarray|cp.ndarray:
         """
         To convert between cupy and numpy array and thus between gpu and cpu.
 
@@ -1856,25 +1856,16 @@ class GPUTools:
             x = UnitTools.remove_unit(x)
 
         if device == "cpu":
-
-            # TODO TODO TODO TODO TODO TODO TODO:
-            # Clean up if it was before on GPU
-            #if isinstance(x, cp.ndarray):
-                #x_device_id = x.device.id
-                #del x
-                #GPUTools._free_cuda_memory(x_device_id)
-
-            x_cpu = GPUTools.to_numpy(x)
-
+            x_cpu = GPUTools.to_numpy(x, verbose=verbose)
             return x_cpu
         elif device in ("gpu", "cuda"):
-            return GPUTools.to_cupy(x, target_gpu=target_gpu)
+            return GPUTools.to_cupy(x, target_gpu=target_gpu, verbose=verbose)
         else:
             raise ValueError(f"Chosen device must be either 'cpu' or 'gpu' or 'cuda', got '{device}'")
 
 
     @staticmethod
-    def to_cupy(x: np.ndarray | cp.ndarray, target_gpu: int = None) -> cp.ndarray:
+    def to_cupy(x: np.ndarray | cp.ndarray, target_gpu: int = None, verbose: bool = True) -> cp.ndarray:
         """
         To convert numpy to cupy array. This is mainly to lazy convert numpy array to cupy array
         via dask, to not allocate memory in advance. However, can also be used without dask in combination.
@@ -1892,25 +1883,18 @@ class GPUTools:
                 raise TypeError(f"Input must be a numpy or cupy array, got {type(x).__name__}")
 
         else:
-            x_gpu_idx = x.device.id
-
             with cp.cuda.Device(target_gpu):
                 # if already on desired GPU
                 if isinstance(x, cp.ndarray) and x.device.id == target_gpu:
                     return x
                 # if not on desired GPU, need GPU <-> GPU transfer
                 else:
+                    Console.printf("warning", f"Moved cupy array from GPU {x.device.id} to GPU {target_gpu}. Delete with 'del' old variable and call 'GPUTools.free_cuda_after_del_cupy' to free up unused cuda memory of old variable.", mute=not verbose)
                     x_new = cp.asarray(x)
-
-                    # just cleanup on OL GPU ####
-                    del x
-                    GPUTools._free_cuda_memory(x_gpu_idx)
-                    #############################
-
                     return x_new
 
     @staticmethod
-    def _free_cuda_memory(device_idx: int):
+    def free_cuda_after_del_cupy(device_idx: int):
         """
         Also make sure that the respective variable that holds the cupy array is deleted before
 
@@ -1924,7 +1908,7 @@ class GPUTools:
 
 
     @staticmethod
-    def to_numpy(x: cp.ndarray) -> np.ndarray:
+    def to_numpy(x: cp.ndarray, verbose:bool=True) -> np.ndarray:
         """
         To convert a cupy to a numpy array. This is mainly to lazy convert a cupy array to a numpy
         array via dask, to not allocate memory in advance.
@@ -1932,9 +1916,11 @@ class GPUTools:
         :param x: a cupy array that should be converted to a numpy array.
         """
 
-        if isinstance(x, cp.ndarray):   # already right data type, do nothing
+        if isinstance(x, cp.ndarray):   # convert to cupy array and make user know that GPU memory is still allocated
+            Console.printf("warning",
+                           f"Cupy array transferred from GPU {x.device.id} to CPU. Delete old cupy variable if not longer used and call 'GPUTools.free_cuda_after_del_cupy(device_idx={x.device.id})'", mute=not verbose)
             return x.get()
-        elif isinstance(x, np.ndarray): # convert
+        elif isinstance(x, np.ndarray): # already of type numpy array, do nothing
             return x
         else:                           # wrong datatype
             raise TypeError(f"Input must be a cupy array, got {type(x).__name__}")
