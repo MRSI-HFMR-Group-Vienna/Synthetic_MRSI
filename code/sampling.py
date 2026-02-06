@@ -346,18 +346,17 @@ class Model:
         coil_sensitivity_volume_shape_before = self.coil_sensitivity_volume.volume.shape
         #     The following: compute_on_device, return_on_device => both compute_on_device input argument since not lst operation in this method!
         coil_sensitivity_volume = copy.deepcopy(self.coil_sensitivity_volume)
-
-        # TODO: Maybe issue when doing compute_on_device == return_on_device == "gpu"
+        #     Interpolat on GPU if compute on device is gpu/cuda and return on cpu to avoid gpu allocation issues
         coil_sensitivity_volume.interpolate_volume(compute_on_device=compute_on_device, return_on_device="cpu", target_size=working_volume.shape[2:], target_gpu=self.target_gpu_smaller_tasks, verbose=False)
         Console.printf("success", f"Interpolated coil sensitivity volume: {coil_sensitivity_volume_shape_before} => {coil_sensitivity_volume.volume.shape}")
+
         # (2) Need complex conjugated coil sensitivity volume
         coil_sensitivity_volume_conjugated = copy.deepcopy(coil_sensitivity_volume)
         coil_sensitivity_volume_conjugated.conjugate()
+
         # (3) Create dask arrays (+ good junks regarding performance)
-        coil_sensitivity_volume_dask = da.asarray(coil_sensitivity_volume.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO, not already right chunksize? Dont need -1,-1,-1???
-        coil_sensitivity_volume_conjugated_dask = da.asarray(coil_sensitivity_volume_conjugated.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO: same aso one line before?!
-        print(f"CHUNKSIZE OF COIL SENSITIVITY VOLUME AND CONJUGATED: {(self.working_volume.chunksize[0], -1, -1, -1)}")
-        print(f"SHAPE OF BOTH: {coil_sensitivity_volume_dask.shape}; {coil_sensitivity_volume_conjugated_dask.shape}")
+        coil_sensitivity_volume_dask = da.asarray(coil_sensitivity_volume.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO: can make no issue?
+        coil_sensitivity_volume_conjugated_dask = da.asarray(coil_sensitivity_volume_conjugated.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO: can make no issue?
 
         # (4) Bring to right device via map blocks (thus if GPU does not allocate in advance)
         coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask = GPUTools.dask_map_blocks_many(coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask, device=compute_on_device)
@@ -369,7 +368,7 @@ class Model:
         #    a) Schedule numerator via dask (heavy computation part)
         numerator = da.sum(working_volume * coil_sensitivity_volume_conjugated_dask, axis=0)
 
-        ###### NEW PART: compute denominator in the CPU and then map via dask to GPU if desired
+        # (7) Compute denominator in the CPU and then map via dask to GPU if desired
         coil_sensitivity_volume_cpu = GPUTools.to_device(coil_sensitivity_volume.volume, device="cpu")
         denominator_cpu = (np.sum(np.abs(coil_sensitivity_volume_cpu) ** 2, axis=0))
         ArrayTools.count_zeros(denominator_cpu)
@@ -378,55 +377,16 @@ class Model:
         denominator = da.from_array(denominator_cpu, chunks=(-1, -1, -1))
         denominator = GPUTools.dask_map_blocks(denominator, device=compute_on_device)
 
-        #denominator = da.from_array(denominator_cpu, chunks=(-1, -1, -1))
-        #denominator = GPUTools.to_device(denominator_cpu, device="gpu")
-        #denominator = da.from_array(denominator, chunks=(-1,-1,-1))
-
-        #       Perform division, see description in this section
+        # (8) Perform division
         result = numerator / denominator
 
-        # (7) Return on desired device
+        # (9) Return on desired device
         result = GPUTools.dask_map_blocks(result, device=return_on_device)
 
         return result
 
 
 
-###        ###### OLD PART: denominator is computed on the GPU
-###        #    b) Compute denominator directly on desired device (light computation part)
-###        #       To bring to the respective device. Target GPU has only an effect if it will be computed on the GPU!:
-###        coil_sensitivity_volume_device = GPUTools.to_device(coil_sensitivity_volume.volume, device=compute_on_device, target_gpu=self.target_gpu_smaller_tasks)
-###        xp = ArrayTools.get_backend(coil_sensitivity_volume_device) # to get the numpy or cupy module
-###
-###        if compute_on_device in ("gpu", "cuda"):
-###            with cp.cuda.Device(self.target_gpu_smaller_tasks):
-###                denominator_xp = (xp.sum(xp.abs(coil_sensitivity_volume_device)**2, axis=0))
-###        else:
-###            denominator_xp = (xp.sum(xp.abs(coil_sensitivity_volume_device) ** 2, axis=0))
-###
-###        #       Also check for NaNs or zeros in denominator
-###        ArrayTools.count_zeros(denominator_xp)
-###        ArrayTools.check_nan(denominator_xp)
-###
-###        #       (!) Bring denominator to CPU after computation and then push with dask to GPU.
-###        #           Otherwise, it resides on the GPU since dask needs a reference to the array
-###        #           which would be on the GPU --> issue is allocation of GPU memory.
-###        denominator_xp_cpu_id = denominator_xp.device.id
-###        denominator_xp_cpu = GPUTools.to_device(denominator_xp, device="cpu")
-###        del denominator_xp
-###        GPUTools.free_cuda_after_del_cupy(denominator_xp_cpu_id)
-###
-###        #       Create dask array of result: whole array should be one chunk for performance reasons, and push to gpu
-###        denominator = da.from_array(denominator_xp_cpu, chunks=(-1, -1, -1))
-###        denominator = GPUTools.dask_map_blocks(denominator, device=compute_on_device)
-###
-###        #       Perform division, see description in this section
-###        result = numerator / denominator
-###
-###        # (7) Return on desired device
-###        result = GPUTools.dask_map_blocks(result, device=return_on_device)
-###
-###        return result
 
 
 class ModelOLD:
@@ -1216,4 +1176,3 @@ if __name__ == "__main__":
 
     print(trajectory.sampling_density_voronoi(data.magnitude, plot=False)[0:10])
     print(trajectory.sampling_density_voronoi_new(data.magnitude, plot=True)[0:10])
-

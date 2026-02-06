@@ -343,6 +343,7 @@ class Model:
 
         # (1) Interpolate to target size (of other volume). No task yet required!
         working_volume = self.working_volume
+        print(f"working_volume chunksize: {working_volume.chunksize}")
         coil_sensitivity_volume_shape_before = self.coil_sensitivity_volume.volume.shape
         #     The following: compute_on_device, return_on_device => both compute_on_device input argument since not lst operation in this method!
         coil_sensitivity_volume = copy.deepcopy(self.coil_sensitivity_volume)
@@ -356,27 +357,38 @@ class Model:
         # (3) Create dask arrays (+ good junks regarding performance)
         coil_sensitivity_volume_dask = da.asarray(coil_sensitivity_volume.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO, not already right chunksize? Dont need -1,-1,-1???
         coil_sensitivity_volume_conjugated_dask = da.asarray(coil_sensitivity_volume_conjugated.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO: same aso one line before?!
-        print(f"CHUNKSIZE OF COIL SENSITIVITY VOLUME AND CONJUGATED: {(self.working_volume.chunksize[0], -1, -1, -1)}")
-        print(f"SHAPE OF BOTH: {coil_sensitivity_volume_dask.shape}; {coil_sensitivity_volume_conjugated_dask.shape}")
+        print(f"coil_sensitivity_volume_dask chunksize: {coil_sensitivity_volume_dask.chunksize}")
+        print(f"coil_sensitivity_volume_conjugated_dask chunksize: {coil_sensitivity_volume_conjugated_dask.chunksize}")
 
         # (4) Bring to right device via map blocks (thus if GPU does not allocate in advance)
         coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask = GPUTools.dask_map_blocks_many(coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask, device=compute_on_device)
 
         # (5) Need to broadcast conjugated array (from (coil, X, Y, Z) --> (coil, time, X, Y, Z))
         coil_sensitivity_volume_conjugated_dask = coil_sensitivity_volume_conjugated_dask[:,None, ...]
+        print(f"coil_sensitivity_volume_conjugated_dask chunksize: {coil_sensitivity_volume_conjugated_dask.chunksize}")
 
         # (6) Now, this (MRSI volume * coil_sensitivity_complex_conj) / |sum(coil_sensitivity, axis=0)|^2. Note: The working volume is here MRSI volume.
         #    a) Schedule numerator via dask (heavy computation part)
         numerator = da.sum(working_volume * coil_sensitivity_volume_conjugated_dask, axis=0)
+        print(f"working_volume * coil_sensitivity_volume_conjugated_dask: {working_volume.chunksize} * {coil_sensitivity_volume_conjugated_dask.chunksize}")
 
-        ###### NEW PART: compute denominator in the CPU and then map via dask to GPU if desired
-        coil_sensitivity_volume_cpu = GPUTools.to_device(coil_sensitivity_volume.volume, device="cpu")
-        denominator_cpu = (np.sum(np.abs(coil_sensitivity_volume_cpu) ** 2, axis=0))
-        ArrayTools.count_zeros(denominator_cpu)
-        ArrayTools.check_nan(denominator_cpu)
+###        # WORKING! ###### NEW PART: compute denominator in the CPU and then map via dask to GPU if desired
+###        coil_sensitivity_volume_cpu = GPUTools.to_device(coil_sensitivity_volume.volume, device="cpu")
+###        denominator_cpu = (np.sum(np.abs(coil_sensitivity_volume_cpu) ** 2, axis=0))
+###        ArrayTools.count_zeros(denominator_cpu)
+###        ArrayTools.check_nan(denominator_cpu)
+###        #       Create dask array of result: whole array should be one chunk for performance reasons, and push to gpu
+###        denominator = da.from_array(denominator_cpu, chunks=(-1, -1, -1))
+###        denominator = GPUTools.dask_map_blocks(denominator, device=compute_on_device)
+
+        coil_sensitivity_volume_gpu = GPUTools.to_device(coil_sensitivity_volume.volume, device="gpu")
+        denominator_gpu = (cp.sum(cp.abs(coil_sensitivity_volume_gpu) ** 2, axis=0))
+        ArrayTools.count_zeros(denominator_gpu)
+        ArrayTools.check_nan(denominator_gpu)
         #       Create dask array of result: whole array should be one chunk for performance reasons, and push to gpu
-        denominator = da.from_array(denominator_cpu, chunks=(-1, -1, -1))
-        denominator = GPUTools.dask_map_blocks(denominator, device=compute_on_device)
+        denominator = da.from_array(denominator_gpu, chunks=(-1, -1, -1))
+        #denominator = GPUTools.dask_map_blocks(denominator, device=compute_on_device)
+
 
         #denominator = da.from_array(denominator_cpu, chunks=(-1, -1, -1))
         #denominator = GPUTools.to_device(denominator_cpu, device="gpu")
@@ -384,6 +396,8 @@ class Model:
 
         #       Perform division, see description in this section
         result = numerator / denominator
+
+        print(f"numerator / denominator: {numerator.chunksize} / {denominator.chunksize}")
 
         # (7) Return on desired device
         result = GPUTools.dask_map_blocks(result, device=return_on_device)
@@ -1216,4 +1230,3 @@ if __name__ == "__main__":
 
     print(trajectory.sampling_density_voronoi(data.magnitude, plot=False)[0:10])
     print(trajectory.sampling_density_voronoi_new(data.magnitude, plot=True)[0:10])
-
