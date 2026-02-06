@@ -1231,7 +1231,7 @@ class MyLocalCluster:
         self.cluster_type = "cpu"
         self.__start_client()
 
-    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", rmm_pool_size=0.7, use_rmm_cupy_allocator: bool = False, protocol="tpc", **kwargs): # protocol="ucx"
+    def start_cuda(self, device_numbers: list[int], device_memory_limit: str = "30GB", rmm_pool_size="28", use_rmm_cupy_allocator: bool = False, protocol="tpc", **kwargs): # protocol="ucx"
         """
         Protocols like tcp possible, or ucx. "ucx" is best for GPU to GPU, GPU to host communication: https://ucx-py.readthedocs.io/en/latest/install.html
         """
@@ -1732,6 +1732,43 @@ def deprecated(reason, replacement=None) -> Callable:
 
 class GPUTools:
 
+###    @staticmethod
+###    def run_cupy_local_pool(working_function, target_gpu: int = None, return_device: str = 'cpu') -> np.ndarray | cp.ndarray:
+###        """
+###        Run a cupy function under a local memory pool on a specific GPU.
+###        NOTE: If returning a GPU array, we must NOT free the pool blocks here because the returned
+###        array may still reference pooled memory.
+###
+###        IMPORTANT: Pass the function with the arguments a lambda, e.g.: lambda: function, so this creates an anonymous
+###        function that can be called later!
+###
+###        :param return_device: if 'cpu' the converted to numpy array and thus returned on
+###        :param target_gpu: the index of the target gpu
+###        :param working_function: an anonymous function, created with: lambda: my_function
+###        :return: numpy or cupy array
+###        """
+###        with cp.cuda.Device(target_gpu):
+###            pool = cp.cuda.MemoryPool()
+###            with cp.cuda.using_allocator(pool.malloc):
+###                result = working_function()
+###                cp.cuda.get_current_stream().synchronize()
+###
+###                if return_device == "cpu":
+###                    out = cp.asnumpy(result)
+###                    # Ensure result is released before freeing the pool
+###                    del result
+###                    cp.cuda.get_current_stream().synchronize()
+###                    pool.free_all_blocks()
+###                    return out
+###
+###                elif return_device in ("gpu", "cuda"):
+###                    # Do NOT free pool blocks here; returned array may depend on them.
+###                    return result
+###
+###                else:
+###                    Console.printf("error", f"return_device must be 'cpu' or 'gpu'/'cuda', but got '{return_device}'")
+###                    return
+
     @staticmethod
     def run_cupy_local_pool(working_function, target_gpu=None, return_device="cpu"):
         """
@@ -1781,13 +1818,6 @@ class GPUTools:
         :return: dask array with numpy or cupy inside
         """
 
-        # Case A: Already on desired device (numpy, cupy), then do nothing
-        if device in ("gpu", "cuda") and isinstance(dask_array._meta, cp.ndarray):
-            return dask_array
-        if device == "cpu" and isinstance(dask_array._meta, np.ndarray):
-            return dask_array
-
-        # Case B: Map to respective device
         meta = cp.empty((0,) * dask_array.ndim, dtype=dask_array.dtype) if device in ("gpu", "cuda") \
             else np.empty((0,) * dask_array.ndim, dtype=dask_array.dtype)
 
@@ -1809,34 +1839,11 @@ class GPUTools:
         :return: a) one dask array or b) a tuple of many dask arrays
         """
 
-        mapped_list = []
-
-        for array in arrays:
-
-            if device == "cpu":
-                # Already correct backed (on correct device)
-                if isinstance(array._meta, np.ndarray):
-                    mapped_list.append(array)
-                # Not correct backed (need to map to desired device)
-                else:
-                    mapped_list.append(GPUTools.dask_map_blocks(array, device=device))
-
-            elif device in ("gpu", "cuda"):
-                # Already correct backed (on correct device)
-                if isinstance(array._meta, cp.ndarray):
-                    mapped_list.append(array)
-                # Not correct backed (need to map to desired device)
-                else:
-                    mapped_list.append(GPUTools.dask_map_blocks(array, device=device))
-            else:
-                Console.printf("error", f"Chosen device must be either 'cpu' or 'gpu'/'cuda', but got '{device}")
-
-        mapped = tuple(mapped_list)
-        return mapped[0] if len(mapped) == 1 else mapped # case of only one element or multiple elements
-
+        mapped = tuple(GPUTools.dask_map_blocks(a, device=device) for a in arrays)
+        return mapped[0] if len(mapped) == 1 else mapped
 
     @staticmethod
-    def to_device(x: np.ndarray|cp.ndarray|pint.Quantity, device, target_gpu:int | None = None, verbose: bool=False) -> np.ndarray|cp.ndarray:
+    def to_device(x: np.ndarray|cp.ndarray|pint.Quantity, device, target_gpu:int | None = None, verbose: bool=True) -> np.ndarray|cp.ndarray:
         """
         To convert between cupy and numpy array and thus between gpu and cpu.
 
@@ -1859,7 +1866,7 @@ class GPUTools:
 
 
     @staticmethod
-    def to_cupy(x: np.ndarray | cp.ndarray, target_gpu: int = None, verbose: bool = False) -> cp.ndarray:
+    def to_cupy(x: np.ndarray | cp.ndarray, target_gpu: int = None, verbose: bool = True) -> cp.ndarray:
         """
         To convert numpy to cupy array. This is mainly to lazy convert numpy array to cupy array
         via dask, to not allocate memory in advance. However, can also be used without dask in combination.
@@ -1893,9 +1900,22 @@ class GPUTools:
                     x_new = cp.asarray(x)
                     return x_new
 
+    @staticmethod
+    def free_cuda_after_del_cupy(device_idx: int):
+        """
+        Also make sure that the respective variable that holds the cupy array is deleted before
+
+        :param device_idx: GPU device index
+        :return: Nothing
+        """
+        with cp.cuda.Device(device_idx):
+            cp.cuda.get_current_stream().synchronize()
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()  # optional, for host-pinned buffers
+
 
     @staticmethod
-    def to_numpy(x: cp.ndarray, verbose:bool=False) -> np.ndarray:
+    def to_numpy(x: cp.ndarray, verbose:bool=True) -> np.ndarray:
         """
         To convert a cupy to a numpy array. This is mainly to lazy convert a cupy array to a numpy
         array via dask, to not allocate memory in advance.
@@ -1916,20 +1936,6 @@ class GPUTools:
     def meta_like(array):
         # zero-size numpy array with correct ndim/dtype
         return np.empty((0,) * array.ndim, dtype=array.dtype)
-
-    @staticmethod
-    def free_cuda_after_del_cupy(device_idx: int):
-        """
-        Also make sure that the respective variable that holds the cupy array is deleted before
-
-        :param device_idx: GPU device index
-        :return: Nothing
-        """
-        with cp.cuda.Device(device_idx):
-            cp.cuda.get_current_stream().synchronize()
-            cp.get_default_memory_pool().free_all_blocks()
-            cp.get_default_pinned_memory_pool().free_all_blocks()  # optional, for host-pinned buffers
-
 
 
 

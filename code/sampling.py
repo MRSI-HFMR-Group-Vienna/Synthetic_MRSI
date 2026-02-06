@@ -356,6 +356,9 @@ class Model:
         # (3) Create dask arrays (+ good junks regarding performance)
         coil_sensitivity_volume_dask = da.asarray(coil_sensitivity_volume.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO, not already right chunksize? Dont need -1,-1,-1???
         coil_sensitivity_volume_conjugated_dask = da.asarray(coil_sensitivity_volume_conjugated.volume, chunks=(self.working_volume.chunksize[0], -1, -1, -1)) # TODO: same aso one line before?!
+        print(f"CHUNKSIZE OF COIL SENSITIVITY VOLUME AND CONJUGATED: {(self.working_volume.chunksize[0], -1, -1, -1)}")
+        print(f"SHAPE OF BOTH: {coil_sensitivity_volume_dask.shape}; {coil_sensitivity_volume_conjugated_dask.shape}")
+
         # (4) Bring to right device via map blocks (thus if GPU does not allocate in advance)
         coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask = GPUTools.dask_map_blocks_many(coil_sensitivity_volume_dask, coil_sensitivity_volume_conjugated_dask, device=compute_on_device)
 
@@ -374,6 +377,10 @@ class Model:
         #       Create dask array of result: whole array should be one chunk for performance reasons, and push to gpu
         denominator = da.from_array(denominator_cpu, chunks=(-1, -1, -1))
         denominator = GPUTools.dask_map_blocks(denominator, device=compute_on_device)
+
+        #denominator = da.from_array(denominator_cpu, chunks=(-1, -1, -1))
+        #denominator = GPUTools.to_device(denominator_cpu, device="gpu")
+        #denominator = da.from_array(denominator, chunks=(-1,-1,-1))
 
         #       Perform division, see description in this section
         result = numerator / denominator
