@@ -1,4 +1,5 @@
 from matplotlib.pyplot import axes
+from numba.cuda.cudadrv.driver import Device
 from rmm import rmm_cupy_allocator
 from dask.distributed import Client, LocalCluster
 from dask_cuda import LocalCUDACluster
@@ -1874,6 +1875,8 @@ class GPUTools:
         :param target_gpu: optional gpu index; if set, allocate/copy on the GPU with desired index
         """
 
+        # TODO: if numpy then issue!
+
         if target_gpu is None:
             if isinstance(x, cp.ndarray):  # already right data type, do nothing
                 return x
@@ -1884,8 +1887,12 @@ class GPUTools:
 
         else:
             with cp.cuda.Device(target_gpu):
+                # is on cpu and need ton specific GPU
+                if isinstance(x, np.ndarray):
+                    return cp.asarray(x)
+
                 # if already on desired GPU
-                if isinstance(x, cp.ndarray) and x.device.id == target_gpu:
+                elif isinstance(x, cp.ndarray) and x.device.id == target_gpu:
                     return x
                 # if not on desired GPU, need GPU <-> GPU transfer
                 else:
@@ -2429,14 +2436,32 @@ class ArrayTools:
         :return: True if NaNs are present
         """
 
+        nan_count, size_array = None, None
+
         xp = ArrayTools.get_backend(array)
 
-        size_array = int(array.size)
+        # if cupy array anyway perform on NaN count on GPU with respective index, but then convert result to numpy
+        # also free up unused cuda memory afterward
+        if isinstance(array, cp.ndarray):
+            gpu_idx = array.device.id
+            with cp.cuda.Device(gpu_idx):
+                size_array_cp = array.size
+                nan_count_cp = xp.isnan(array).sum()
+                has_nan_cp = xp.isnan(array).any()
 
-        nan_count = xp.isnan(array).sum()
-        has_nan = xp.isnan(array).any()
+                nan_percent_cp = (nan_count_cp / size_array_cp * 100.0) if size_array_cp else 0.0
 
-        nan_percent = (nan_count / size_array * 100.0) if size_array else 0.0
+                nan_percent = nan_percent_cp.get()
+                has_nan = has_nan_cp.get()
+
+                del size_array_cp, nan_count_cp, has_nan_cp, nan_percent_cp
+                GPUTools.free_cuda_after_del_cupy(gpu_idx)
+        else:
+            size_array = int(array.size)
+            nan_count = xp.isnan(array).sum()
+            has_nan = xp.isnan(array).any()
+
+            nan_percent = (nan_count / size_array * 100.0) if size_array else 0.0
 
         if has_nan:
             if verbose:
@@ -2454,12 +2479,23 @@ class ArrayTools:
         :param verbose: Print number of found zeros to console
         :return: number of zeros found
         """
+        xp = ArrayTools.get_backend(array)
 
-        number_zeros = ArrayTools.get_backend(array).sum(array == 0)
+        if isinstance(array, cp.ndarray):
+            # If cuda to run on right device and also clear cuda memory after this operation
+            gpu_idx = array.device.id
+            with cp.cuda.Device(gpu_idx):
+                number_zeros_cp = xp.sum(array == 0)
+                number_zeros = number_zeros_cp.get()
+                del number_zeros_cp
+                GPUTools.free_cuda_after_del_cupy(gpu_idx)
+
+        else:
+            number_zeros = xp.sum(array == 0)
 
         Console.printf("info", f"Found number of zeros: {number_zeros}", mute=not verbose)
 
-        return number_zeros
+        return int(number_zeros)
 
 class InterpolationTools:
     ## TODO: here also add fft interpolation (e.g., which used for the FID?)

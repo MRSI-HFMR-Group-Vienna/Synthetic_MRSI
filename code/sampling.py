@@ -343,7 +343,9 @@ class Model:
         coil_sensitivity_volume_shape_before = self.coil_sensitivity_volume.volume.shape
         #     The following: compute_on_device, return_on_device => both compute_on_device input argument since not lst operation in this method!
         coil_sensitivity_volume = copy.deepcopy(self.coil_sensitivity_volume)
-        coil_sensitivity_volume.interpolate_volume(compute_on_device=compute_on_device, return_on_device=compute_on_device, target_size=working_volume.shape[2:], target_gpu=self.target_gpu_smaller_tasks, verbose=False)
+
+        # TODO: Maybe issue when doing compute_on_device == return_on_device == "gpu"
+        coil_sensitivity_volume.interpolate_volume(compute_on_device=compute_on_device, return_on_device="cpu", target_size=working_volume.shape[2:], target_gpu=self.target_gpu_smaller_tasks, verbose=False)
         Console.printf("success", f"Interpolated coil sensitivity volume: {coil_sensitivity_volume_shape_before} => {coil_sensitivity_volume.volume.shape}")
         # (2) Need complex conjugated coil sensitivity volume
         coil_sensitivity_volume_conjugated = copy.deepcopy(coil_sensitivity_volume)
@@ -358,18 +360,36 @@ class Model:
         coil_sensitivity_volume_conjugated_dask = coil_sensitivity_volume_conjugated_dask[:,None, ...]
 
         # (6) Now, this (MRSI volume * coil_sensitivity_complex_conj) / |sum(coil_sensitivity, axis=0)|^2. Note: The working volume is here MRSI volume.
-        #    a) Schedule nominator via dask (heavy computation part)
+        #    a) Schedule numerator via dask (heavy computation part)
         numerator = da.sum(working_volume * coil_sensitivity_volume_conjugated_dask, axis=0)
+
         #    b) Compute denominator directly on desired device (light computation part)
         #       To bring to the respective device. Target GPU has only an effect if it will be computed on the GPU!:
         coil_sensitivity_volume_device = GPUTools.to_device(coil_sensitivity_volume.volume, device=compute_on_device, target_gpu=self.target_gpu_smaller_tasks)
         xp = ArrayTools.get_backend(coil_sensitivity_volume_device) # to get the numpy or cupy module
-        denominator = (xp.sum(xp.abs(coil_sensitivity_volume_device)**2, axis=0))
+
+        if compute_on_device in ("gpu", "cuda"):
+            with cp.cuda.Device(self.target_gpu_smaller_tasks):
+                denominator_xp = (xp.sum(xp.abs(coil_sensitivity_volume_device)**2, axis=0))
+        else:
+            denominator_xp = (xp.sum(xp.abs(coil_sensitivity_volume_device) ** 2, axis=0))
+
         #       Also check for NaNs or zeros in denominator
-        ArrayTools.count_zeros(denominator)
-        ArrayTools.check_nan(denominator)
-        #       Create dask array of result: whole array should be one chunk for performance reasons
-        denominator = da.from_array(denominator, chunks=(-1,-1,-1))
+        ArrayTools.count_zeros(denominator_xp)
+        ArrayTools.check_nan(denominator_xp)
+
+        #       (!) Bring denominator to CPU after computation and then push with dask to GPU.
+        #           Otherwise, it resides on the GPU since dask needs a reference to the array
+        #           which would be on the GPU --> issue is allocation of GPU memory.
+        denominator_xp_cpu_id = denominator_xp.device.id
+        denominator_xp_cpu = GPUTools.to_device(denominator_xp, device="cpu")
+        del denominator_xp
+        GPUTools.free_cuda_after_del_cupy(denominator_xp_cpu_id)
+
+        #       Create dask array of result: whole array should be one chunk for performance reasons, and push to gpu
+        denominator = da.from_array(denominator_xp_cpu, chunks=(-1, -1, -1))
+        denominator = GPUTools.dask_map_blocks(denominator, device=compute_on_device)
+
         #       Perform division, see description in this section
         result = numerator / denominator
 
