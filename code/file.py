@@ -385,7 +385,8 @@ class ParameterMaps(WorkingVolume, Plot):
         if self.main_path.is_file():
             # Case 1: the main_path points to just one file
             Console.printf("info", "Maps object: The provided path points to a file")
-            self.file_type = self.main_path.suffix
+            name = self.main_path.name.lower()
+            self.file_type = ".nii.gz" if name.endswith(".nii.gz") else self.main_path.suffix.lower()
 
         elif self.main_path.is_dir():
             # Case 2: the main_path points to a folder containing multiple files
@@ -443,17 +444,17 @@ class ParameterMaps(WorkingVolume, Plot):
 
         elif self.file_type == '.nii' or self.file_type == '.nii.gz':
             """
-            Case 2: To handle nii files: Results NOT in dictionary ->  self.loaded_maps = values
+            Case 2: To handle nii files: Results in dictionary -> self.loaded_maps[map_type_name] = values
             """
             Console.printf("info", f"Loading nii file for map type {self.map_type_name}")
-            # Using NeuroImage to load nii file
             loaded_map = NeuroImage(path=self.main_path).load_nii(mute=True, report_nan=True).data
-            # Use map_type_name as the key, or choose an appropriate one
-            self.loaded_maps = loaded_map
+
+            # store as dict for consistent downstream API
+            self.loaded_maps[self.map_type_name] = loaded_map
             Console.add_lines(
                 f"Loaded nii map: {os.path.basename(self.main_path)} | Shape: {loaded_map.shape} | "
                 f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] | "
-                f"Unit: {self.loaded_maps_unit} | " 
+                f"Unit: {self.loaded_maps_unit} | "
                 f"Unique values: {len(np.unique(loaded_map))}"
             )
             Console.printf_collected_lines("success")

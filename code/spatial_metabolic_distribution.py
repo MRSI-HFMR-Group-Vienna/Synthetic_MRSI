@@ -384,7 +384,9 @@ class ParameterVolume(Interpolation):
             volumes = []     # list of the volumes
 
             # 2 check all objects same shape
-            shapes = set([m.values.shape for m in self.maps])
+            #shapes = set([m.values.shape for m in self.maps])
+            shapes = set([(next(iter(m.values.values())) if isinstance(m.values, dict) else m.values).shape for m in self.maps])
+
             units = set([m.unit for m in self.maps])
             if len(shapes) > 1:
                 Console.printf("error", f"Cannot create 4D array of the 3D arrays since they exhibiting different shapes: {shapes}")
@@ -396,7 +398,8 @@ class ParameterVolume(Interpolation):
             else:
                 for m in self.maps:
                     metabolites.append(m.metabolite_name)
-                    volumes.append(m.values)  # shape (X,Y,Z)
+                    #volumes.append(m.values)  # shape (X,Y,Z)
+                    volumes.append(next(iter(m.values.values())) if isinstance(m.values, dict) else m.values)  # shape (X,Y,Z)
 
                 self.metabolites = metabolites
                 self.volume = np.stack(volumes, axis=0)       # shape (metabolite, X,Y,Z)
