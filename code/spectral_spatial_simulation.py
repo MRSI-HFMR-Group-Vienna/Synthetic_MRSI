@@ -290,7 +290,7 @@ class FID:
             Console.printf("error", f"Cannot assign unit '{self.unit_time}' to the time vector.")
 
 
-    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=1_500, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=4.65, additional_description:str="", legend_position='upper left', figsize=(15,8)) -> None:
+    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=1_500, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=4.7, additional_description:str="", legend_position='upper left', figsize=(15,8)) -> None:
         """
         To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
 
