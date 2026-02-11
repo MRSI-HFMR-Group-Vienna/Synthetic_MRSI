@@ -218,21 +218,6 @@ class Configurator:
         Console.printf("info", f"Content of the config file: {self.file_name} \n"
                                f"{json.dumps(self.data, indent=4)}")
 
-### DELETE -> Moved to interfaces module
-###class WorkingVolume(ABC):
-###    """
-###    For other classes to be inherited. The need of implementing the working equivalent to the loader class.
-###    For example: file.ParameterMaps is only for loading the volume, then another class in another module
-###    implements the other functionalities to 'work' with this volume.
-###    """
-###
-###    @abstractmethod
-###    def to_working_volume(self):
-###        """Defines an abstract (interface) method. Subclasses must implement it to transform their data into
-###        a target class in another module."""
-###        ...
-
-
 
 
 
@@ -321,12 +306,6 @@ class Mask(Plot):
         cbar.set_label("Value")
 
         plt.show()
-
-#    def change_data_type(self, data_type, verbose: bool=True):
-#        data_type_before = self.values.dtype
-#        data_type_after = data_type
-#        self.values = self.values.astype(data_type_after)
-#        Console.printf("success", f"Changed data type from '{data_type_before}' => '{data_type_after}'", mute=not verbose)
 
 
 class MetabolicAtlas:
@@ -699,117 +678,7 @@ class FID:
             Console.add_lines(f"Key: {key}, Value: {value}")
 
         Console.printf_collected_lines("success")
-        # np.set_printoptions() resetting numpy printing options
-        #
-        #
-        #
 
-### DELETE BELOW:
-###class CoilSensitivityMaps:
-###    """
-###    For loading and interpolating the coil sensitivity maps. At the moment, only HDF5 files are supported.
-###    The maps can be interpolated on 'cpu' and desired 'gpu'. It is strongly recommended to use the 'gpu'
-###    regarding computational performance.
-###    An object of the configurator is necessary to get the path to the coil sensitivity maps.
-###    """
-###
-###    def __init__(self, configurator: Configurator):
-###        self.configurator = configurator
-###        self.maps = None
-###        self.shape = None
-###
-###    def load_h5py(self, keys: list = ["imag", "real"], data_type=np.complex64) -> None:
-###        """
-###        For loading coil sensitivity maps of the type HDF5. The default keys are 'real' and 'imag' for loading the complex values.
-###        If different keys are defined in the HDF5 it is necessary to explicitely define them with the argument 'keys'.
-###
-###        :param dtype: desired data type. Since the data is complex ude numpy complex data types.
-###        :return: None.
-###        """
-###
-###        # Load the HDF5 file via h5py
-###        path_maps = self.configurator.data["maps"]["coil_sensitivity"]["path"]
-###        h5py_file = h5py.File(path_maps, "r")
-###        h5py_file_keys_required = keys
-###
-###        # If the default keys or by the user defined keys are not available in the HDF5 file:
-###        if not all(key in h5py_file.keys() for key in h5py_file_keys_required):
-###            Console.add_lines(f"Could not find keys {h5py_file_keys_required} in the HDF5 file")
-###            Console.add_lines(f" => Instead the following keys are available: {h5py_file.keys()}.")
-###            Console.add_lines(f" => Aborting the program.")
-###            Console.printf_collected_lines("error")
-###            sys.exit()
-###
-###        # If the keys are existing in the HDF5 file, load them and convert to complex values:
-###        maps_real = h5py_file["real"][:]
-###        maps_imag = h5py_file["imag"][:]
-###        maps_complex = maps_real + 1j * maps_imag
-###        maps_complex = maps_complex.astype(data_type, copy=False)
-###
-###        Console.add_lines("Coil Sensitivity Maps:")
-###        Console.add_lines(f" => Could find keys {h5py_file_keys_required} in the HDF5 file")
-###        Console.add_lines(f" => Loaded and converted maps to {maps_complex.dtype}")
-###        Console.add_lines(f" => Data shape: {maps_complex.shape}")
-###        Console.add_lines(f" => Space required: {}")
-###        Console.printf_collected_lines("success")
-###
-###        self.maps = maps_complex
-###
-###
-###    def interpolate(self, target_size, order=3, compute_on_device="cpu", gpu_index=0, return_on_device="cpu") -> np.ndarray | cp.ndarray:
-###        """
-###        To interpolate the loaded coil sensitivity maps with the selected order to a target size on the desired device. Possible is the 'cpu' and 'cuda'.
-###        If 'cuda' is selected, with the index the desired device can be chosen. Further, the result can be returned on 'cpu' or 'cuda'.
-###
-###        :param target_size: target size to interpolate the coil sensitivity maps
-###        :param order: desired order (0: Nearest-neighbor, 1: Bilinear interpolation, 2: Quadratic interpolation, 3: Cubic interpolation (default),...). See scipy.ndimage or cupyx.scipy.ndimage for more information.
-###        :param compute_on_device: device where the interpolation takes place ('cuda' is recommended)
-###        :param gpu_index: if 'cuda' is selected in the param compute_on_device, then possible to choose a gpu if multiple gpus are available. The default is 0.
-###        :param return_on_device: After the interpolation, the device where the array should be returned.
-###        :return: Interpolated array
-###        """
-###
-###        # Check if maps are already loaded
-###        if self.maps is None:
-###            Console.printf("error", "No maps data available to interpolate. You might call 'load_h5py' first! Aborting program.")
-###            sys.exit()
-###
-###        self.shape = self.maps.shape
-###
-###        # Get the zoom factor, based on the current maps size and desired size
-###        zoom_factor = np.divide(target_size, self.maps.shape)
-###        Console.printf("info", "Start interpolating coil sensitivity maps")
-###        Console.add_lines("Interpolated the coil sensitivity maps:")
-###        Console.add_lines(f" => From size: {self.maps.shape} --> {target_size}")
-###        Console.add_lines(f" => with interpolation order: {order}")
-###        Console.add_lines(f" => on device {compute_on_device}{':' + str(gpu_index) if compute_on_device == 'cuda' else ''} --> and returned on {return_on_device}")
-###
-###        # Interpolate on CUDA or CPU based on the user decision
-###        maps_complex_interpolated = None
-###        if compute_on_device == "cpu":
-###            maps_complex_interpolated = zoom(input=self.maps, zoom=zoom_factor, order=order)
-###        elif compute_on_device == "cuda":
-###            with cp.cuda.Device(gpu_index):
-###                maps_complex_interpolated = zoom_gpu(input=cp.asarray(self.maps), zoom=zoom_factor, order=order)
-###        else:
-###            Console.printf("error", f"Device {compute_on_device} not supported. Use either 'cpu' or 'cuda'.")
-###
-###        Console.printf_collected_lines("success")
-###
-###        # Return on the desired device after interpolation
-###        if return_on_device == "cpu" and isinstance(maps_complex_interpolated, cp.ndarray):
-###            maps_complex_interpolated = cp.asnumpy(maps_complex_interpolated)
-###        elif return_on_device == "cuda" and isinstance(maps_complex_interpolated, np.ndarray):
-###            maps_complex_interpolated = cp.asarray(maps_complex_interpolated)
-###        elif return_on_device not in ["cpu", "cuda"]:
-###            Console.printf("error", f"Return on device {return_on_device} not supported. Choose either 'cpu' or 'cuda'. Abort program.")
-###            sys.exit()
-###
-###        # Save to object variable
-###        self.maps = maps_complex_interpolated
-###
-###        # Just return the interpolated result..
-###        return maps_complex_interpolated
 
 class CoilSensitivityMaps(WorkingVolume, Plot):
     """
@@ -949,62 +818,6 @@ class CoilSensitivityMaps(WorkingVolume, Plot):
             ax.axis("off")
 
         plt.show()
-
-
-###    def interpolate(self, target_size, order=3, compute_on_device="cpu", gpu_index=0, return_on_device="cpu") -> np.ndarray | cp.ndarray:
-###        """
-###        To interpolate the loaded coil sensitivity maps with the selected order to a target size on the desired device. Possible is the 'cpu' and 'cuda'.
-###        If 'cuda' is selected, with the index the desired device can be chosen. Further, the result can be returned on 'cpu' or 'cuda'.
-###
-###        :param target_size: target size to interpolate the coil sensitivity maps
-###        :param order: desired order (0: Nearest-neighbor, 1: Bilinear interpolation, 2: Quadratic interpolation, 3: Cubic interpolation (default),...). See scipy.ndimage or cupyx.scipy.ndimage for more information.
-###        :param compute_on_device: device where the interpolation takes place ('cuda' is recommended)
-###        :param gpu_index: if 'cuda' is selected in the param compute_on_device, then possible to choose a gpu if multiple gpus are available. The default is 0.
-###        :param return_on_device: After the interpolation, the device where the array should be returned.
-###        :return: Interpolated array
-###        """
-###
-###        # Check if maps are already loaded
-###        if self.maps is None:
-###            Console.printf("error", "No maps data available to interpolate. You might call 'load_h5py' first! Aborting program.")
-###            sys.exit()
-###
-###        self.shape = self.maps.shape
-###
-###        # Get the zoom factor, based on the current maps size and desired size
-###        zoom_factor = np.divide(target_size, self.maps.shape)
-###        Console.printf("info", "Start interpolating coil sensitivity maps")
-###        Console.add_lines("Interpolated the coil sensitivity maps:")
-###        Console.add_lines(f" => From size: {self.maps.shape} --> {target_size}")
-###        Console.add_lines(f" => with interpolation order: {order}")
-###        Console.add_lines(f" => on device {compute_on_device}{':' + str(gpu_index) if compute_on_device == 'cuda' else ''} --> and returned on {return_on_device}")
-###
-###        # Interpolate on CUDA or CPU based on the user decision
-###        maps_complex_interpolated = None
-###        if compute_on_device == "cpu":
-###            maps_complex_interpolated = zoom(input=self.maps, zoom=zoom_factor, order=order)
-###        elif compute_on_device == "cuda":
-###            with cp.cuda.Device(gpu_index):
-###                maps_complex_interpolated = zoom_gpu(input=cp.asarray(self.maps), zoom=zoom_factor, order=order)
-###        else:
-###            Console.printf("error", f"Device {compute_on_device} not supported. Use either 'cpu' or 'cuda'.")
-###
-###        Console.printf_collected_lines("success")
-###
-###        # Return on the desired device after interpolation
-###        if return_on_device == "cpu" and isinstance(maps_complex_interpolated, cp.ndarray):
-###            maps_complex_interpolated = cp.asnumpy(maps_complex_interpolated)
-###        elif return_on_device == "cuda" and isinstance(maps_complex_interpolated, np.ndarray):
-###            maps_complex_interpolated = cp.asarray(maps_complex_interpolated)
-###        elif return_on_device not in ["cpu", "cuda"]:
-###            Console.printf("error", f"Return on device {return_on_device} not supported. Choose either 'cpu' or 'cuda'. Abort program.")
-###            sys.exit()
-###
-###        # Save to object variable
-###        self.maps = maps_complex_interpolated
-###
-###        # Just return the interpolated result..
-###        return maps_complex_interpolated
 
 
 class Trajectory:

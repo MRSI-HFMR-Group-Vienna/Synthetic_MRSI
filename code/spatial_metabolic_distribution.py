@@ -54,107 +54,13 @@ class MetabolicAtlas:
         # TODO
         raise NotImplementedError("This method is not yet implemented")
 
-####class MetabolicPropertyMap:
-####    def __init__(self,
-####        map_type_name: str = None,
-####        metabolite: list[str] | str = None,
-####        values: list[np.ndarray | cp.ndarray] | (np.ndarray | cp.ndarray)= None,
-####        unit: list[pint.Unit] | pint.Unit = None):
-####
-####        self.map_type_name = map_type_name
-####        self.metabolite = metabolite
-####        self.values = values
-####        self.unit = unit
-####
-####    def __add__(self, other):
-####        pass
-####
-####    def get_map_by_name(self):
-####        pass
 
-#### TODO: Maybe create small Map object
-####  -> field name
-####  -> data
-####  -> unit
-####
-###@dataclass(frozen=True)
-###class MetabolicPropertyMap:
-###    map_type: str   # the type of the map (e.g., T1, T2, B0, ...)
-###    metabolite: str # the name of the metabolite
-###    array: str      # the 3D array (e.g., numpy array)
-###    unit: pint.Unit # The unit of the map type
-###
-###### ==> von file.maps ---> bekomme dict mit keys() als metabolites und values als maps ===> jedes hat (name, data, unit)
-###### [ ] TODO: generiere: in file.maps etwas das enthält: {keys, values, units}
-###
-###class MetabolicPropertyMaps:
-###
-###    def __init__(self):
-###        name: list[str] = [],
-###        maps: list[MetabolicPropertyMap] = []
-###
-###        self.name = name
-###        self.maps = maps
-###
-###    def __iter__(self):
-###        # to return one?
-###        pass
-###
-###    def __next__(self):
-###        pass
-###
-###    def __add__(self, other):
-###        # generally check if shape of each map matches
-###        shapes_self = set([m.data.shape for m in self.maps])
-###        if len(shapes_self) > 1:
-###            Console.printf("error",
-###                           f"In the current object not all arrays have the same shape. Have: {shapes_self}. Thus, cannot start to add new arrays. Solve this issue first.")
-###
-###        # Case 1: add map to maps
-###        if isinstance(MetabolicPropertyMap):
-###            # Check if shape fits
-###            pass
-###        # Case 2: add maps to maps
-###        elif isinstance(MetabolicPropertyMaps):
-###            Console.printf("error",
-###                           f"In the other object to add not all arrays have the same shape. Have: {shapes_self}. Thus, cannot merge maps.")
-###            shapes_other = set([m.data.shape for m in self.maps])
-###
-###            # Check if shape fits
-###            pass
-###
-###
-###
-###    def plot(self):
-###        #cross-sectional plot of center of each metabolite?
-###        pass
-
-
-#   See idea below...:
-#@dataclass(frozen=True)
-#class Map:
-#    name: str
-#    data: numpy array
-#    unit: pint unit = None
-#
-#   and define get
-#    def __init__(self, maps: Optional[dict[str, ArrayLike]] = None):
-#        self._maps: dict[str, Map] = {}
-#        if maps:
-#            for name, data in maps.items():
-#                self._maps[name] = Map(name=name, data=data, unit=None)
-#
-#    # For backward compatibility -> dict-like behavior (Mapping):
-#    def __getitem__(self, name: str) -> ArrayLike:
-#        return self._maps[name].data
-#
-#    def __iter__(self) -> Iterator[str]:
-#        return iter(self._maps)
-#
-#    def __len__(self) -> int:
-#        return len(self._maps)
-
-class ParameterMap(Interpolation): # TODO: ParameterMap
+class ParameterMap(Interpolation):
+    """
+    This holds a map of a certain type (e.g., T1) of a certain metabolite (e.g., NAA). It's possible to interpolate
+    the map to a certain target shape and to push it to the respective device (GPU <-> CPU). Ist also possible to
+    change the unit and the data type.
+    """
     def __init__(self, map_type: str, metabolite_name: str, values: np.ndarray | np.memmap, unit: pint.Unit, affine: np.ndarray=None):
         self.map_type: str = map_type                 # e.g., T1
         self.metabolite_name: str = metabolite_name   # e.g., NAA
@@ -194,31 +100,6 @@ class ParameterMap(Interpolation): # TODO: ParameterMap
                                                      verbose=verbose)
         return self
 
-        #### OLD: Remove: Now located in tools.InterpolationTools
-        #### calculate the zoom factor for interpolation
-        ###shape_old = self.values.shape
-        ###zoom_factor = np.divide(target_size, shape_old)
-        ###
-        #### Case 1: compute on the cpu (no need for specifying the device index)
-        ###if device == 'cpu':
-        ###    zoom = zoom_cpu
-        ###    self.values = zoom(input=self.values, zoom=zoom_factor, order=order)
-        #### Case 2: compute on gpu (need to specify the gpu index in multi-gpu setting)
-        ###elif device == 'cuda' or device == 'gpu':
-        ###    zoom = zoom_gpu
-        ###    Console.printf("info", f"Interpolate on GPU: {target_gpu}")
-        ###    # Call the following function to interpolate on specific GPU
-        ###    self.values = GPUTools.run_cupy_local_pool(
-        ###        working_function=lambda: zoom(input=cp.asarray(self.values),
-        ###                                      zoom=zoom_factor,
-        ###                                      order=order), target_gpu=target_gpu)
-        ###else:
-        ###    Console.printf("error", f"Invalid target device: {device}. it must be either 'cpu' or 'cuda'/'gpu'.")
-        ###    sys.exit()
-        ###
-        ###Console.printf("success", f"Interpolated shape {shape_old} -> {self.values.shape}", mute=not verbose)
-        ###return self
-
 
     def change_unit(self, target_unit: str, verbose: bool=True):
         """
@@ -231,6 +112,13 @@ class ParameterMap(Interpolation): # TODO: ParameterMap
 
 
     def change_data_type(self, data_type, verbose: bool=True):
+        """
+        To change the values to a desired data type. Possible for numpy and cupy.
+
+        :param data_type: data type as string (e.g. float32)
+        :param verbose: if True, then print to console
+        :return: Nothing
+        """
         data_type_before = self.values.dtype
         data_type_after = data_type
         self.values = self.values.astype(data_type_after)
@@ -334,33 +222,6 @@ class ParameterVolume(Interpolation):
                 target_gpu=target_gpu,
                 verbose=verbose
             )
-
-            #### OLD: Remove: Now located in tools.InterpolationTools
-            #### calculate the zoom factor for interpolation
-            ###shape_old = self.volume.shape
-            ###target_size = (shape_old[0], *target_size) # to get 4D tuple
-            ###zoom_factor = np.array(target_size, dtype=float) / np.array(shape_old, dtype=float)
-            ###
-            #### Case 1: compute on the cpu (no need for specifying the device index)
-            ###if device == 'cpu':
-            ###    zoom = zoom_cpu
-            ###    self.volume = zoom(input=self.volume, zoom=zoom_factor, order=order)
-            ###    gpu = f""  # just for the console afterward
-            #### Case 2: compute on gpu (need to specify the gpu index in multi-gpu setting)
-            ###elif device == 'cuda' or device == 'gpu':
-            ###    zoom = zoom_gpu
-            ###    # Call the following function to interpolate on specific GPU
-            ###    self.volume = GPUTools.run_cupy_local_pool(
-            ###        working_function=lambda: zoom(input=cp.asarray(self.volume),
-            ###                                      zoom=zoom_factor,
-            ###                                      order=order), device=target_gpu)
-            ###    gpu = f":{target_gpu}" # just for the console afterward
-            ###else:
-            ###    Console.printf("error", f"Invalid target device: {device}. it must be either 'cpu' or 'cuda'/'gpu'.")
-            ###    sys.exit()
-
-            ###Console.printf("success", f"Interpolated on {device}{gpu} from '{shape_old}' => '{self.volume.shape}'", mute=not verbose)
-
 
 
     def to_volume(self, verbose=True):
@@ -548,74 +409,6 @@ class ParameterVolume(Interpolation):
             JupyterPlotManager.volume_grid_viewer(vols=maps_volumes_list, rows=1, cols=len(maps_names_list), titles=maps_names_list)
 
 
-###class MapsOLD:
-###    """
-###    For managing a bunch of metabolic maps. The intention is to manage a bundle based on the category,
-###    for example, all concentration maps, or all T1 maps, or T2 maps, and so on.
-###    """
-###
-###    def __init__(self, maps: dict[str, np.ndarray | np.memmap] = None):
-###        """
-###        Either instantiate a Maps object empty or already with maps.
-###
-###        :param maps: dictionary with maps and name.
-###        """
-###        if maps is None:
-###            self.maps: dict[str, np.ndarray | np.memmap] = {}
-###        else:
-###            self.maps: dict[str, np.ndarray | np.memmap] = maps
-###
-###
-###    def interpolate_to_target_size(self, target_size: tuple, order: int = 3, target_device: str = 'cpu', target_gpu: int = 0):
-###        """
-###        To interpolate all maps that the Maps object contains to a desired target size. The order of interpolation
-###        can also be set. For more details see zoom of scipy.ndimage (CPU) or cupyx.scipy.ndimage (CUDA).
-###
-###        It is further possible to perform the interpolation of CPU or CUDA.
-###
-###        :param target_size: Interpolation to desired size. Insert dimensions as tuple.
-###        :param order: Desired interpolation (e.g., bilinear). Thus set according number.
-###        :param target_device: CPU (cpu) or CUDA (cuda)
-###        :param target_gpu: Desired GPU device
-###        :return: the Maps object
-###        """
-###
-###        Console.printf("info", f"Start interpolating metabolic maps on {target_device}")
-###        Console.add_lines("Interpolate maps: ")
-###
-###        # Select method based on the desired device
-###        if target_device == 'cpu':
-###            zoom = zoom_cpu
-###        elif target_device == 'cuda':
-###            zoom = zoom_gpu
-###            Console.printf("info", f"Selected GPU: {target_gpu}")
-###        else:
-###            Console.printf("error", f"Invalid target device: {target_device}. it must be either 'cpu' or 'cuda'.")
-###            sys.exit()
-###
-###        # Interpolate each map in the dictionary
-###        for i, (working_name, loaded_map) in tqdm(enumerate(self.maps.items()), total=len(self.maps)):
-###            # Calculate the zoom factor required by the interpolation method
-###            zoom_factor = np.divide(target_size, loaded_map.shape)
-###            # When cuda is selected, convert numpy array to a cupy array
-###
-###            if target_device == 'cuda':
-###                # Compute on desired GPU, and then bring back to CPU
-###                interpolated = GPUTools.run_cupy_local_pool(working_function=lambda: zoom(input=cp.asarray(loaded_map), zoom=zoom_factor, order=order), device=target_gpu)
-###            else:
-###                # Interpolate with selected method
-###                interpolated = zoom(input=loaded_map, zoom=zoom_factor, order=order)
-###
-###
-###            self.maps[working_name] = interpolated
-###
-###
-###            Console.add_lines(f"  {(i)}: {working_name:.<10}: {loaded_map.shape} --> {self.maps[working_name].shape}")
-###        Console.printf_collected_lines("success")
-###
-###        return self
-
-
 class MetabolicPropertyMapsAssembler:
     """
     This class handles Maps objects. Each Maps object contains one map for each Metabolite.
@@ -729,17 +522,6 @@ class MetabolicPropertyMapsAssembler:
 
         return metabolic_property_maps_dict
 
-
-###    class MetabolicPropertyMaps:
-###
-###        def __init__(self):
-###            # The name of the metabolite associated with this map
-###            pass
-###
-###
-###        def __add__(self):
-###            # To add of type Maps
-###            pass
 
 class MetabolicPropertyMap:
     """

@@ -1,17 +1,80 @@
 {
     "Author": "Markus Schuster",
-    "Description": "Paths file that should contain the used paths. This is just a template. Please add your paths! ;)",
-    "version": "2024-01-04",
-    "path": {
-    	"cache": "path/where/simulation/cache/is/stored/on/disc", 
-        "fid": {
-            "metabolites": "path/to/metabolites/data/m/file",
-            "lipids": "path/to/lipids/data/m/file"
+    "Description": "The path file that contains the paths and their associated units.",
+    "version": "This might be some date: XXXX-XX-XX",
+
+    "cache": "your path",
+    "checkpoints": "your path",
+    "pulse": {
+        "gauss_wet": "your path",
+        "unit": "unknown"
+    },
+    "fid": {
+        "metabolites": {
+            "path": "your path",
+            "unit_time": "seconds"
         },
-        "mask": {
-            "metabolites": "path/to/metabolites/mask",
-            "lipids": "path/to/lipids/mask",
-            "B0_inhomogeneity": "path/to/B0/mask"
+        "lipids": {
+            "path": "your path",
+            "unit": "unknown"
         }
-    }
+    },
+    "mask": {
+        "metabolites": {
+            "path": "your path",
+            "unit": "unknown"
+        },
+        "lipids": {
+            "path": "your path",
+            "unit": "unknown"
+        }
+    },
+    "maps": {
+        "B0": {
+            "path": "your path",
+            "unit": "Hz"
+        },
+        "B1": {
+            "path": "your path",
+            "unit": "unknown"
+        },
+        "T1": {
+            "path": "your path",
+            "unit": "milliseconds"
+        },
+        "metabolites_concentration": {
+            "path": "your path",
+            "unit": "mmol"
+        },
+	    "coil_sensitivity": {
+            "path": "your path",
+            "unit": "unknown"
+        },
+        "CSF_segmentation": {
+            "path": "your path",
+            "unit": "unknown"
+        },
+        "GM_segmentation": {
+            "path": "your path",
+            "unit": "unknown"
+        },
+
+        "WM_segmentation": {
+            "path": "your path",
+            "unit": "unknown"
+        }
+    },
+    "trajectories": {
+        "crt": {
+            "path": "your path",
+            "unit": "unknown"
+        }
+    },
+    "girf": {
+        "crt": {
+            "path": "your path",
+            "unit": "unknown"
+        }
+    },
+    "simulation_parameters": "your path"
 }
