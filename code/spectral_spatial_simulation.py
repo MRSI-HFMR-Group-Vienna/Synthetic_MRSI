@@ -574,7 +574,10 @@ class Model:
 
         self.data_type = data_type
 
+        self.mapped_steps: list[str] = [] # To map which steps are already mapped (e.g. T1, T2, mask ...)
+
         self.volume_types_allowed = ["T1", "T2", "concentration"] # the volumes types allowed so far for this model
+        self.working_volume: da.Array = None
 
     def model_summary(self):
         Console.add_lines("Spectral-Spatial-Model Summary:")
@@ -642,13 +645,40 @@ class Model:
 
 
     @staticmethod
-    def _t1_recovery(alpha, TR, t1_da):
-        """Function for elementwise operation. Creating a 5D array.
+    def _steady_state_longitudinal(alpha, TR, t1_da):
+        """
+        General:
+            For applying the steady-state state of the longitudinal magnetisation. This is done for each voxel.
+            Also note that sin(α) at the beginning of the equation yields the transversal (measurable signal)
+            of this steady-state. The cos(α) would yield the longitudinal magnetisation, which cannot be measured.
+
+            In general: The steady-state is reached after repeated RF-pulses. When TR < T1, then there is not enough
+            time for the longitudinal magnetisation to fully relax and therefore Mz ≠ M0, thus Mz cannot fully relax
+            to gain M0.
+
+            Note: It also assumes that the transversal magnetisation is already gone TR >> T2.
+
+            For literature see in references.bib:
+                * elster_spoiled_gre_parameters (Spoiled-GRE)
+                *
+
+
+            alpha ... flip angle
+            TR    ... repetition time
+            t1_da ... T1 map (T1 is how fast it relaxes back to Mz)
+
+        Programmatically:
+            Function for elementwise operation. Creating a 5D array.
 
             decay_t1(m,x,y,z) = sin(α) · (1 - exp(-TR / T1(m,x,y,z))) / (1 - cos(α) · exp(-TR / T1(m,x,y,z)))
 
             Output shape: (M, 1, X, Y, Z) for broadcasting over time in a (M, T, X, Y, Z) volume.
         """
+        cm = (tools.CitationManager("../docs/references.bib"))
+        cm.cite("elster_spoiled_gre_parameters")
+        cm.cite("miller2014steady_state_sequences_spoiled_balanced")
+        cm.cite("miller2011steady_state_mri_methods_neuroimaging")
+
         a = da.radians(alpha)
         e = da.exp(-TR / t1_da)
 
@@ -657,8 +687,18 @@ class Model:
 
     @staticmethod
     # t2_da[:,None,...] is (M,1,X,Y,Z), broadcasts with time vector
-    def _t2_decay(TE, time_da, t2_da):
-        """Function for elementwise operation. Creating a 5D array.
+    def _t2_echo_decay(TE, time_da, t2_da):
+        """
+        General:
+            This method incorporate the T2 decay. Together with the method '_steady_state_longitudinal' it forms the
+            Spoiled GRE [1]. Please note that the T2 instead of the T2* is used, since also later the B0 inhomogeneity
+            should be used.
+
+            [1] elster_spoiled_gre_parameters (see references.bib)
+
+
+        Programmatically:
+            Function for elementwise operation. Creating a 5D array.
 
             Then, to be used as
 
@@ -668,7 +708,10 @@ class Model:
             ... with m=t2 map metabolites, t=time vector, (x,y,z)=spatial dimensions.
 
             Note: The m should include a 4D array containing all metabolites of shape (M, X, Y, Z).
+            Note: TE + Δt(t) is the time passed since RF excitation
         """
+        cm = (tools.CitationManager("../docs/references.bib"))
+        cm.cite("elster_spoiled_gre_parameters")
 
         # Broadcast
         time_da = time_da[None, :, None, None, None]
@@ -678,6 +721,214 @@ class Model:
         decay_t2 = da.where(t2_da != 0, da.exp(-(TE + time_da) / t2_da), 1, )
         return decay_t2
 
+
+    def apply_mask(self):
+        """
+        TODO: Comment and add equation
+
+        :return:
+        """
+        if "mask" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply mask!")
+        else:
+            check_steps = ["t1", "t2", "concentration"]
+            if any(step in check_steps for step in self.mapped_steps):
+                Console.printf("error", f"Cannot apply mask after already one of this steps is applied: {check_steps}")
+            else:
+                self.mapped_steps.append("mask")
+
+                # TODO: Now start here the process!
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(self.fid.signal, verbose=False):
+                    Console.printf("warning", "FID signal array contains NaNs!")
+                if ArrayTools.check_nan(self.fid.time, verbose=False):
+                    Console.printf("warning", "FID time vector contains NaNs!")
+                if ArrayTools.check_nan(self.mask, verbose=False):
+                    Console.printf("warning", "Mask contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                metabolites_chunksize = len(self.fid.name)  # (!) Critical for reducing worker <-> worker transfers on sum over metabolites:
+                                                            #     -> keep metabolite axis as ONE chunk (or at least as few as possible).
+                fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))  # (M,T)
+                mask_dask = DaskTools.to_dask(self.mask, chunksize=(x_chunksize, y_chunksize, z_chunksize))       # (X,Y,Z)
+
+                #   c) Map to desired device before computational actions
+                fid_dask, mask_dask = GPUTools.dask_map_blocks_many(fid_dask, mask_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                fid_5d = fid_dask[:, :, None, None, None]  # (M,T,1,1,1)
+                mask_5d = mask_dask[None, None, :, :, :]   # (1,1,X,Y,Z)
+
+                #   b) Apply pointwise transformation
+                volume = fid_5d * mask_5d
+
+                # 3) Return on desired device
+                volume = GPUTools.dask_map_blocks(volume, device=self.return_on_device)
+                self.working_volume = volume
+
+                return volume
+
+
+
+    def apply_t1(self) -> da.Array:
+        """
+        Incorporating the T1 map in a way to simulate the steady state. The steady state is the state to which
+        the spins are relaxing via T1 decay and e.g., repeated measurements. Therefore, Mz ≠ M0 is possible.
+
+        For more information see comments in the method "_steady_state_longitudinal".
+
+        :return: dask array
+        """
+        if "t1" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply t1!")
+        else:
+            if "mask" not in self.mapped_steps:
+                Console.printf("error", "The mask must be applied beforehand!")
+            else:
+                self.mapped_steps.append("t1")
+
+                # 0) Get the data
+                t1 = self.parameter_volumes["T1"].volume
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(t1, verbose=False):
+                    Console.printf("warning", "T1 array contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                m_chunksize = len(self.fid.name)
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                t1_dask = DaskTools.to_dask(t1, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+                #   c) Map to desired device before computational actions
+                t1_dask = GPUTools.dask_map_blocks(t1_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                       # this already happens inside '_t1_recovery(..)'
+                #   b) Apply pointwise transformation
+                alpha = UnitTools.remove_unit(self.alpha)  # to remove possible units
+                TR = UnitTools.remove_unit(self.TR)        # to remove possible units
+                t1_recovery = Model._steady_state_longitudinal(alpha, TR, t1_dask)  # (M,1,X,Y,Z)
+                self.working_volume = self.working_volume * t1_recovery
+
+                # 3) Return on desired device
+                self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+                return self.working_volume
+
+
+    def apply_t2(self) -> da.Array:
+        """
+        This incorporate the the signal after T2 decay. For more information see comments in the method "_t2_echo_decay".
+
+        :return: Dask Array
+        """
+        if "t2" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply t2!")
+        else:
+            if "mask" not in self.mapped_steps:
+                Console.printf("error", "The mask must be applied beforehand!")
+            else:
+                self.mapped_steps.append("t2")
+
+                # 0) Get the data
+                t2 = self.parameter_volumes["T2"].volume
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(t2, verbose=False):
+                    Console.printf("warning", "T2 array contains NaNs!")
+                if ArrayTools.check_nan(self.fid.time, verbose=False):
+                    Console.printf("warning", "FID time vector contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                m_chunksize = len(self.fid.name)
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                t2_dask = DaskTools.to_dask(t2, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+                time_dask = DaskTools.to_dask(self.fid.time, chunksize=(time_chunksize,))
+                #   c) Map to desired device before computational actions
+                time_dask, t2_dask = GPUTools.dask_map_blocks_many(time_dask, t2_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                # this already happens inside '_t2_decay(..)'
+                #   b) Apply pointwise transformation
+                TE = UnitTools.remove_unit(self.TE)  # to remove possible units
+                t2_decay    = Model._t2_echo_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
+                self.working_volume = self.working_volume * t2_decay
+
+                # 3) Return on desired device
+                self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+                return self.working_volume
+
+
+    def apply_concentration(self) -> da.Array:
+        """
+        To perform a scaling based on spatial distribution of the concentrations of the respective metabolites.
+
+        :return: Dask Array
+        """
+        if "concentration" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply concentration!")
+        else:
+            if "mask" not in self.mapped_steps:
+                Console.printf("error", "The mask must be applied beforehand!")
+            else:
+                self.mapped_steps.append("concentration")
+
+                # TODO: Now start here the process!
+
+                # 0) Get the data
+                concentration = self.parameter_volumes["concentration"].volume
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(concentration, verbose=False):
+                    Console.printf("warning", "Concentration array contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                m_chunksize = len(self.fid.name)
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                concentration_dask = DaskTools.to_dask(concentration, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+                #   c) Map to desired device before computational actions
+                concentration_dask = GPUTools.dask_map_blocks(concentration_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                concentration = concentration_dask[:, None, :, :, :]  # (M,1,X,Y,Z)
+                # this already happens inside '_t2_decay(..)'
+                #   b) Apply pointwise transformation
+                self.working_volume = self.working_volume * concentration
+
+                # 3) Return on desired device
+                self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+                return self.working_volume
+
+    def sum_metabolites(self) -> da.Array:
+        """
+        To sum all metabolites from (metabolite, time, X, Y, Z) ==> (time, X, Y, Z). At the moment it only performs
+        a simple summation of the metabolites signals.
+
+        :return: Dask Array
+        """
+
+        if "mask" not in self.mapped_steps:
+            Console.printf("error", "Cannot apply sum over all metabolites since at least the 'mask' step needs to be applied.")
+        elif "sum_metabolites" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply t1!")
+        else:
+            self.working_volume = self.working_volume.sum(axis=0)
+            self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+            self.mapped_steps.append("sum_metabolites")
+
+        return self.working_volume
 
 
     # apply_T1
@@ -761,8 +1012,8 @@ class Model:
         TR = UnitTools.remove_unit(self.TR)       # to remove possible units
         TE = UnitTools.remove_unit(self.TE)       # to remove possible units
 
-        t1_recovery = Model._t1_recovery(alpha, TR, t1_dask)                  # (M,1,X,Y,Z)
-        t2_decay    = Model._t2_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
+        t1_recovery = Model._steady_state_longitudinal(alpha, TR, t1_dask)                  # (M,1,X,Y,Z)
+        t2_decay    = Model._t2_echo_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
         volume = fid_5d * mask_5d * t1_recovery * t2_decay * concentration    # (M,T,X,Y,Z)
 
         # Sum over all metabolites
