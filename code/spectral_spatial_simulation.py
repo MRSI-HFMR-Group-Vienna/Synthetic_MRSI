@@ -690,12 +690,20 @@ class Model:
     def _t2_echo_decay(TE, time_da, t2_da):
         """
         General:
-            This method incorporate the T2 decay. Together with the method '_steady_state_longitudinal' it forms the
-            Spoiled GRE [1]. Please note that the T2 instead of the T2* is used, since also later the B0 inhomogeneity
-            should be used.
+            This method incorporate the T2 decay. The echo time (TE) represents the time between the exciting RF-Pulse
+            and the readout, therefore the TE incorporates the measurement delay.
+            Together with the method '_steady_state_longitudinal' it forms the Spoiled GRE [1]. Please note that the T2
+            instead of the T2* is used, since also later the B0 inhomogeneity should be used.
 
             [1] elster_spoiled_gre_parameters (see references.bib)
 
+        Note:
+            exp(-TE/T2) * exp(-t/T2)     ======>     exp(-(TE+t)/T2)
+                (1)          (2)                           (3)
+
+            (1) Remaining signal due to the decay at the center of the echo
+            (2) The decay during the readout/echo
+            (3) Remaining signal at echo center + time course afterward (further decay)
 
         Programmatically:
             Function for elementwise operation. Creating a 5D array.
