@@ -674,10 +674,10 @@ class Model:
 
             Output shape: (M, 1, X, Y, Z) for broadcasting over time in a (M, T, X, Y, Z) volume.
         """
-        cm = (tools.CitationManager("../docs/references.bib"))
-        cm.cite("elster_spoiled_gre_parameters")
-        cm.cite("miller2014steady_state_sequences_spoiled_balanced")
-        cm.cite("miller2011steady_state_mri_methods_neuroimaging")
+        #cm = (tools.CitationManager("../docs/references.bib"))      # TODO: Uncomment
+        #cm.cite("elster_spoiled_gre_parameters")                    # TODO: Uncomment
+        #cm.cite("miller2014steady_state_sequences_spoiled_balanced")# TODO: Uncomment
+        #cm.cite("miller2011steady_state_mri_methods_neuroimaging")  # TODO: Uncomment
 
         a = da.radians(alpha)
         e = da.exp(-TR / t1_da)
@@ -718,8 +718,8 @@ class Model:
             Note: The m should include a 4D array containing all metabolites of shape (M, X, Y, Z).
             Note: TE + Δt(t) is the time passed since RF excitation
         """
-        cm = (tools.CitationManager("../docs/references.bib"))
-        cm.cite("elster_spoiled_gre_parameters")
+        #cm = (tools.CitationManager("../docs/references.bib")) # TODO: Uncomment
+        #cm.cite("elster_spoiled_gre_parameters")               # TODO: Uncomment
 
         # Broadcast
         time_da = time_da[None, :, None, None, None]
