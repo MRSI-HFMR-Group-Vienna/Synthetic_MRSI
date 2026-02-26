@@ -1,0 +1,5 @@
+Maybe this structure:
+
+short name | full name | ppm | source | note/additional info
+
+ --> and use sources from references.bib?
