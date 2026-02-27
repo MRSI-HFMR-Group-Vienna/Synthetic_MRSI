@@ -24,6 +24,7 @@ import numpy as np
 import cupy as cp
 # import numba
 # from numba import cuda
+import json
 import tools
 import dask
 import pint
@@ -297,7 +298,144 @@ class FID:
             Console.printf("error", f"Cannot assign unit '{self.unit_time}' to the time vector.")
 
 
-    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=1_500, show=True, save_path: str=None, *, reference_frequency=None, ppm_center=None, additional_description:str="", legend_position='upper left', figsize=(15,8)) -> None:
+###    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=1_500, show=True, save_path: str=None, *, reference_frequency=None, ppm_center=None, additional_description:str="", legend_position='upper left', figsize=(15,8)) -> None:
+###        """
+###        To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
+###
+###        The plot supports to plot:
+###            - The signals in the time domain (x_type='time')
+###            - The signals in the frequency domain in Hz (x_type='frequency')
+###            - The signals in the frequency domain in ppm (x_type='ppm')
+###
+###        Further, it is possible to save this plot and/or show it.
+###
+###        If ppm is chosen for x_type then spectroscopic axis form [X to 0], thus values are descending.
+###
+###        **(!) Please note:** If the magnitude is of the individual signals is low and the **plot_offset** relatively high, then the individual signals appear flat in the plot.
+###        **(!) The default plot_offset is 2000**!
+###
+###        :param x_type: Defines the domain. Can be "time", "frequency", "ppm".
+###        :param plot_offset: Offset in vertical axis (y-axis) for preventing signal overlapping.
+###        :param show: If plot is shown directly after creating it.
+###        :param save_path: Path including filename to save plot.
+###        :param reference_frequency: Important when using ppm, can be e.g., those of tetramethylsilane (TMS), or water, etc...
+###        :param ppm_center: Defines which chemical shift value corresponds to a frequency offset of 0 Hz
+###        :param additional_description: Additional string. Please make "\\n" for new lines!
+###        :param legend_position: See matplotlib.
+###        :return: Nothing
+###        """
+###
+###        if reference_frequency is None:
+###            reference_frequency = 297_223_042
+###            Console.printf("warning", f"No reference frequency is specified. Choosing: {reference_frequency} Hz.")
+###
+###        if ppm_center is None:
+###            ppm_center = 4.7
+###            Console.printf("warning", f"No ppm center is specified. Choosing: {ppm_center} ppm.")
+###
+###        # 0) Define possible quantities for x and y axis
+###        x_type_possible = ["time", "frequency", "ppm"]
+###        y_type_possible = {
+###            "magnitude": np.abs,
+###            "real": np.real,
+###            "imag": np.imag,
+###            "phase_rad": partial(np.angle, deg=False),
+###            "phase_deg": partial(np.angle, deg=True),
+###        }
+###
+###        # 1) Check if chosen type for x-axis is valid
+###        if not x_type in x_type_possible:
+###            Console.printf("error", f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
+###            sys.exit()
+###
+###        # 2) Then, cases possible: plotting either in time domain or the frequency domain (frequency=>Hz or ppm)
+###        if x_type == "time":
+###            scales = self.time
+###            signal = self.signal[np.newaxis, :] if self.signal.ndim == 1 else self.signal # to ensure signal has dim (1, X)
+###        else:
+###            spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency, ppm_center=ppm_center)
+###            scales = spectrum_dict["x"]
+###            signal = spectrum_dict["y"]
+###
+###        # 3a) Left subplot: To create the figure and plot all signals
+###        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=figsize,
+###                                                  nrows=1,
+###                                                  ncols=2,
+###                                                  gridspec_kw={'width_ratios': [5, 1]})
+###
+###        #  -> Convert complex signal to possible quantity and print error if quantity not supported
+###        if not y_type in y_type_possible:
+###            Console.printf("error",f"Only possible to choose '{y_type_possible}' for y-axis, but you have chosen '{y_type}'. Terminate program!")
+###            sys.exit()
+###        else:
+###            transform = y_type_possible[y_type]
+###
+###        #  -> Plot all signals
+###        for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
+###            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.8)
+###        ax_main.set_title('Absolute Values of the FID')
+###        ax_main.set_xlabel(f"{x_type}")
+###
+###        # 3b) Right subplot: To create the description
+###        ax_sidebar.axis('off')
+###        ax_sidebar.set_title('Description')  # keep the box/frame
+###        text_description = (f"{'Plot offset':.<17}: {plot_offset}\n"
+###                            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
+###                            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}")
+###
+###        # 3c) If ppm then add additional information
+###        if x_type == "ppm":
+###            ppm_string = (f"{'Ref. frequency':.<17}: {reference_frequency}\n"
+###                          f"{'ppm center':.<17}: {ppm_center if x_type == 'ppm' else None}\n")
+###            text_description = ppm_string + text_description
+###
+###        # 3d) Just to ensure this is first in text string
+###        text_description = f"{'Show y-values':.<17}: {y_type}\n" + text_description
+###
+###        # 4) Add text to the right (description) text subplot
+###        ax_sidebar.text(
+###            0.01, 0.99, text_description,
+###            transform=ax_sidebar.transAxes,
+###            va='top',
+###            ha='left',
+###            family='monospace'
+###        )
+###
+###        # 5a) Just required in case ppm occurs, thus x-axis is mirrored (spectroscopic view)
+###        handles, labels = ax_main.get_legend_handles_labels()
+###        handles = handles[::-1]
+###        labels = labels[::-1]
+###
+###        # 5b) Apply mirroring of axis in case ppm is chosen
+###        if x_type == "ppm":
+###            ax_main.invert_xaxis()
+###
+###        # 5c) Create the whole figure
+###        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False, ncol=1)
+###        plt.tight_layout()
+###
+###
+###        # 6) Save to desired path and/or show
+###        if save_path is not None:
+###            fig.savefig(save_path)
+###        if show:
+###            plt.show()
+
+    def plot(
+            self,
+            x_type="ppm",
+            y_type="magnitude",
+            plot_offset=1_500,
+            show=True,
+            save_path: str = None,
+            *,
+            reference_frequency=None,
+            ppm_center=None,
+            additional_description: str = "",
+            legend_position="upper left",
+            figsize=(15, 8),
+            show_metabolites_ideal_position: bool = False,  # NEW
+    ) -> None:
         """
         To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
 
@@ -321,6 +459,8 @@ class FID:
         :param ppm_center: Defines which chemical shift value corresponds to a frequency offset of 0 Hz
         :param additional_description: Additional string. Please make "\\n" for new lines!
         :param legend_position: See matplotlib.
+        :param show_metabolites_ideal_position: If True and x_type == "ppm", overlays metabolite real ppm positions using
+                                               self.metabolites_ideal_ppm = {metab_name: [ppm, ...], ...}
         :return: Nothing
         """
 
@@ -344,60 +484,173 @@ class FID:
 
         # 1) Check if chosen type for x-axis is valid
         if not x_type in x_type_possible:
-            Console.printf("error", f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
+            Console.printf(
+                "error",
+                f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!",
+            )
             sys.exit()
 
         # 2) Then, cases possible: plotting either in time domain or the frequency domain (frequency=>Hz or ppm)
         if x_type == "time":
             scales = self.time
-            signal = self.signal[np.newaxis, :] if self.signal.ndim == 1 else self.signal # to ensure signal has dim (1, X)
+            signal = self.signal[
+                np.newaxis, :] if self.signal.ndim == 1 else self.signal  # to ensure signal has dim (1, X)
         else:
-            spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency, ppm_center=ppm_center)
+            spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency,
+                                              ppm_center=ppm_center)
             scales = spectrum_dict["x"]
             signal = spectrum_dict["y"]
 
         # 3a) Left subplot: To create the figure and plot all signals
-        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=figsize,
-                                                  nrows=1,
-                                                  ncols=2,
-                                                  gridspec_kw={'width_ratios': [5, 1]})
+        fig, (ax_main, ax_sidebar) = plt.subplots(
+            figsize=figsize,
+            nrows=1,
+            ncols=2,
+            gridspec_kw={"width_ratios": [5, 1]},
+        )
 
         #  -> Convert complex signal to possible quantity and print error if quantity not supported
         if not y_type in y_type_possible:
-            Console.printf("error",f"Only possible to choose '{y_type_possible}' for y-axis, but you have chosen '{y_type}'. Terminate program!")
+            Console.printf(
+                "error",
+                f"Only possible to choose '{y_type_possible}' for y-axis, but you have chosen '{y_type}'. Terminate program!",
+            )
             sys.exit()
         else:
             transform = y_type_possible[y_type]
 
         #  -> Plot all signals
-        for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
-            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.8)
-        ax_main.set_title('Absolute Values of the FID')
+        for i, (name, scale, signal) in enumerate(zip(self.name, scales, signal)):
+            ax_main.plot(scales, transform(signal) + (i * plot_offset), label=name, linewidth=0.8)
+        ax_main.set_title("Absolute Values of the FID")
         ax_main.set_xlabel(f"{x_type}")
 
-        # 3b) Right subplot: To create the description
-        ax_sidebar.axis('off')
-        ax_sidebar.set_title('Description')  # keep the box/frame
-        text_description = (f"{'Plot offset':.<17}: {plot_offset}\n"
-                            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
-                            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}")
 
-        # 3c) If ppm then add additional information
+        # 3b) Top subplot: Show the available metabolites as list and a dot where a peak occurs.
+        #                  Further, plot horizontal lines at the 'peak position'/'center of peaks'
+
+        #     To load the data and assign it to object variable
+        path = Path.cwd().parent / "docs" / "chemical_compounds.json"
+        with path.open("r", encoding="utf-8") as f:
+            compounds = json.load(f)
+
+        self.metabolites_ideal_ppm = {}
+        for key in compounds["metabolites"].keys():
+            self.metabolites_ideal_ppm[key] = compounds["metabolites"][key]["ppm"]
+
+        #     To create the plot
+        ax_top = None  # (optional) keep reference if created
+        if show_metabolites_ideal_position and x_type == "ppm":
+            metab_dict = getattr(self, "metabolites_ideal_ppm", None)
+
+            if isinstance(metab_dict, dict) and len(metab_dict) > 0:
+                from mpl_toolkits.axes_grid1 import make_axes_locatable
+                from matplotlib.transforms import blended_transform_factory
+
+                metabs = list(metab_dict.keys())
+                cmap = plt.get_cmap("hsv")
+                color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
+
+                # a) vlines across full main-plot height
+                y0, y1 = ax_main.get_ylim()
+                ymin, ymax = (y0, y1) if y0 < y1 else (y1, y0)
+
+                for m in metabs:
+                    ppms = np.asarray(metab_dict[m], dtype=float)
+                    ax_main.vlines(
+                        ppms,
+                        ymin=ymin,
+                        ymax=ymax,
+                        colors=color_map[m],
+                        lw=0.8,
+                        alpha=0.25,
+                        zorder=0,
+                        label="_nolegend_",
+                    )
+
+                # b) top axis (track) above ax_main
+                divider = make_axes_locatable(ax_main)
+                ax_top = divider.append_axes("top", size="22%", pad=0.06, sharex=ax_main)
+
+                n = len(metabs)
+                ax_top.set_ylim(-0.5, n - 0.5)
+                ax_top.set_yticks([])  # no y ticks here
+                ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False, top=False, labeltop=False)
+                for s in ["left", "right", "bottom"]:
+                    ax_top.spines[s].set_visible(False)
+
+                # x in axes fraction (0..1), y in row index units
+                trans = blended_transform_factory(ax_top.transAxes, ax_top.transData)
+
+                for i, m in enumerate(metabs):
+                    col = color_map[m]
+                    ppms = np.asarray(metab_dict[m], dtype=float)
+
+                    # dots in row i
+                    ax_top.scatter(ppms, np.full_like(ppms, i, dtype=float), s=18, color=col, alpha=0.9, linewidths=0)
+
+                    # top-left metabolite list (colored)
+                    ax_top.text(
+                        0.01,
+                        i,
+                        m,
+                        transform=trans,
+                        ha="left",
+                        va="center",
+                        color=col,
+                        alpha=0.9,
+                        fontsize=9,
+                        clip_on=True,
+                    )
+
+                # optional subtle row guides
+                ax_top.hlines(
+                    np.arange(n),
+                    xmin=ax_main.get_xlim()[0],
+                    xmax=ax_main.get_xlim()[1],
+                    colors="k",
+                    alpha=0.06,
+                    lw=0.8,
+                )
+            else:
+                Console.printf(
+                    "warning",
+                    "show_metabolites_ideal_position=True, but self.metabolites_ideal_ppm is missing/empty. No overlay plotted.",
+                )
+
+        # 3c) Right subplot: To create the description
+        ax_sidebar.axis("off")
+        ax_sidebar.set_title("Description")  # keep the box/frame
+        text_description = (
+            f"{'Plot offset':.<17}: {plot_offset}\n"
+            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
+            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}"
+        )
+
+        # 3d) If ppm then add additional information
         if x_type == "ppm":
-            ppm_string = (f"{'Ref. frequency':.<17}: {reference_frequency}\n"
-                          f"{'ppm center':.<17}: {ppm_center if x_type == 'ppm' else None}\n")
+            ppm_string = (
+                f"{'Ref. frequency':.<17}: {reference_frequency}\n"
+                f"{'ppm center':.<17}: {ppm_center if x_type == 'ppm' else None}\n"
+            )
             text_description = ppm_string + text_description
 
-        # 3d) Just to ensure this is first in text string
+        # 3e) Just to ensure this is first in text string
         text_description = f"{'Show y-values':.<17}: {y_type}\n" + text_description
+
+        ### Also: add info about metabolite overlay into description (right side)
+        ##if x_type == "ppm":
+        ##    text_description = f"{'Metab. overlay':.<17}: {show_metabolites_ideal_position}\n" + text_description
 
         # 4) Add text to the right (description) text subplot
         ax_sidebar.text(
-            0.01, 0.99, text_description,
+            0.01,
+            0.99,
+            text_description,
             transform=ax_sidebar.transAxes,
-            va='top',
-            ha='left',
-            family='monospace'
+            va="top",
+            ha="left",
+            family="monospace",
         )
 
         # 5a) Just required in case ppm occurs, thus x-axis is mirrored (spectroscopic view)
@@ -408,11 +661,16 @@ class FID:
         # 5b) Apply mirroring of axis in case ppm is chosen
         if x_type == "ppm":
             ax_main.invert_xaxis()
+            # sharex => ax_top (if created) mirrors automatically, no extra code needed
 
         # 5c) Create the whole figure
         ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False, ncol=1)
+
         plt.tight_layout()
 
+        # 5d) For top metabolites plot: If the top axis exists, give the figure a bit more headroom so labels never get clipped
+        if ax_top is not None:
+            plt.subplots_adjust(top=0.90)
 
         # 6) Save to desired path and/or show
         if save_path is not None:

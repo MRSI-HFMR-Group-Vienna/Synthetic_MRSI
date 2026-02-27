@@ -8,7 +8,7 @@
   "metabolites": {
     "NAA": {
       "name_full": "N-acetylaspartate",
-      "ppm": [2.01],
+      "ppm": [2.01, 2.49, 2.67, 4.38, 7.82],
       "concentration": {
         "deGraaf": {
           "GM": {"range": [8, 10], "unit": "mM"},
@@ -156,7 +156,7 @@
         }
       },
       "biosignificance": "tied to phospholipid synthesis/degradation, therefore marker for membrane turnover; higher total creatine tCr in Alzheimer's disease and multiple sclerosis (suggesting altered membrane turnover); lower choline level in stroke",
-      "note": "total choline tCho at about 3.2 ppm is a composite signal (Cho, PC, GPC), not well separable",
+      "note": "total choline tCho at about 3.2 ppm is a composite signal (Cho, PC, GPC), not well separable; ppm_ranges is added since multiple peaks in this range!",
       "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
     }
   },
