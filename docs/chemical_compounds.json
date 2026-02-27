@@ -1,0 +1,164 @@
+{
+  "Author": "Markus Schuster",
+  "Description": "This file contains mainly the parts per million (ppm) information about chemical compounds for 1H-MRS (e.g., metabolites) and some additional information.",
+  "version": "2026-02-27",
+
+  "references": "docs/references.bib",
+
+  "metabolites": {
+    "NAA": {
+      "name_full": "N-acetylaspartate",
+      "ppm": [2.01],
+      "concentration": {
+        "deGraaf": {
+          "GM": {"range": [8, 10], "unit": "mM"},
+          "WM": {"range": [6, 9], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   { "range": [7.2, 9.0], "unit": "mM"},
+            "parietal":  { "range": [7.0, 9.0], "unit": "mM"},
+            "occipital": { "range": [6.9, 8.7], "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"range": [6.7, 8.7],  "unit": "mM"},
+            "parietal":  {"range": [7.4, 9.0],  "unit": "mM"},
+            "occipital": {"range": [8.3, 10.1], "unit": "mM"},
+            "insular":   {"range": [7.9, 9.5],  "unit": "mM"}
+          }
+        }
+      },
+      "biosignificance": "the exact function remains largely unknown; suggested functions are: osmoregulation and precursor of neurotransmitter NAAG, involvement in in fatty acid and myelin synthesis",
+      "note": "higher concentration in gray matter than white matter; secound most concentrated metabolite in brain after glutamate; used as marker for neuronal density, but it differ among neuron types",
+      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+    },
+    "Glu": {
+      "name_full": "Glutamate",
+      "ppm": [3.75, 2.04, 2.35],
+      "concentration": {
+        "deGraaf": {
+          "average_brain": {"range": [8, 12], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":     {"range": [4.4, 9.6], "unit": "mM"},
+            "parietal":    {"range": [4.9, 8.5], "unit": "mM"},
+            "occipital":   {"range": [4.8, 7.2], "unit": "mM"}
+          },
+          "GM": {
+            "frontal":     {"range": [7.5, 9.5], "unit": "mM"},
+            "parietal":    {"range": [7.1, 9.3], "unit": "mM"},
+            "occipital":   {"range": [7.5, 9.7], "unit": "mM"},
+            "insular":     {"range": [8.0, 9.6], "unit": "mM"}
+          }
+        }
+      },
+      "biosignificance": "excitatory neurotransmitter in mammalian brain; precursor of inhibitory neurotransmitter GABA; important component in synthetics of other small metabolites (e.g., glutathione) and also larger peptides and proteins; occurs in cell walls of escherichia coli.",
+      "note": "significant concentration difference in gray matter and white matter ",
+      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+    },
+    "Gln": {
+      "name_full": "Glutamine",
+      "ppm": [3.77, 2.12, 2.46, 6.8, 7.5],
+      "concentration": {
+        "deGraaf": {
+          "astroglia": {"range": [2, 4], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":    {"range": [0.2, 3.4], "unit": "mM"},
+            "parietal":   {"range": [0.2, 2.8], "unit": "mM"},
+            "occipital":  {"range": [0.6, 3.8], "unit": "mM"}
+          },
+          "GM": {
+            "frontal":    {"range": [3.0, 5.8], "unit": "mM"},
+            "parietal":   {"range": [2.4, 5.2], "unit": "mM"},
+            "occipital":  {"range": [2.8, 5.0], "unit": "mM"},
+            "insular":    {"range": [3.3, 6.5], "unit": "mM"}
+          }
+        }
+      },
+      "biosignificance": "main function is ammonia detoxification; it is fuel source for a number of cancers; it is synthesised from Glutamate in astroglia; can cross brain blood barrier; glutamate-glutamine neurotransmitter cycle",
+      "note": "At min 7T the the glutamate and glutamine H4 resonances are visually separated (see de Graaf)",
+      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+    },
+    "m-Ins": {
+      "name_full": "myo-Inositol",
+      "ppm": [3.53, 3.61, 3.27, 4.05],
+      "concentration": {
+        "deGraaf": {
+          "average_brain": {"range": [4, 8], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"range": [2.9, 4.7], "unit": "mM"},
+            "parietal":  {"range": [2.5, 3.7], "unit": "mM"},
+            "occipital": {"range": [3.3, 4.9], "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"range": [3.4, 5.2], "unit": "mM"},
+            "parietal":  {"range": [3.6, 5.0], "unit": "mM"},
+            "occipital": {"range": [3.5, 4.7], "unit": "mM"},
+            "insular":   {"range": [4.1, 5.3], "unit": "mM"}
+          }
+        }
+    },
+      "biosignificance": "most abundant isomer form of inositol found in tissue; proposed as a glial marker; altered levels found in mild cognitive impairment and Alzheimer's disease and brain injury",
+      "note": "This is one of the nine possible stereoisomers of inositol, thus only difference in orientation of proton H2. But same chemical formular and molar mass.",
+      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+    },
+    "Cr+PCr": {
+      "name_full": "Creatine + Phosphocreatine (total creatine)",
+      "ppm": [3.03, 3.93],
+      "concentration": {
+        "deGraaf": {
+          "WM": {"range": [5.2, 5.7], "unit": "mM"},
+          "GM": {"range": [6.4, 9.7], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"range": [5.2, 6.2], "unit": "mM"},
+            "parietal":  {"range": [5.1, 6.3], "unit": "mM"},
+            "occipital": {"range": [4.7, 6.3], "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"range": [5.7, 7.1], "unit": "mM"},
+            "parietal":  {"range": [5.9, 7.1], "unit": "mM"},
+            "occipital": {"range": [6.2, 7.6], "unit": "mM"},
+            "insular":   {"range": [6.4, 7.6], "unit": "mM"}
+          }
+        }
+      },
+      "biosignificance": "creatine and phosphocreatine together with ATP crucial role energy metabolism of tissue; total creatine tCr does not change over age or in various diseases, but decrease levels in chronic phase  of pathologies like stroke and tumours; present in neuronal and glial cells; tCr + creatine kinase: keeps ATP steady by quickly regenerating it (energy 'buffer'); carries energy from mitochondria to where it's used most (muscle fibers, nerve terminals).",
+      "note": "chemical shift between creatine (3.027 ppm) and phosphocreatine (3.029 ppm) methyl is is too small to detect in vivo, but possible for creatine (3.913 ppm) and phosphocreatine (3.930 ppm) methylene at min 7T scanner",
+      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+  },
+    "GPC+PCh": {
+      "name_full": "Glycerophosphocholine + Phosphorylcholine (total choline)",
+      "ppm": [3.21, 3.66, 4.31],
+      "ppm_ranges":[[3.6, 4.3]],
+      "concentration": {
+        "deGraaf": {
+          "average_brain": {"range": [1,2], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":    {"range": [1.37, 2.19], "unit": "mM"},
+            "parietal":   {"range": [1.41, 1.95], "unit": "mM"},
+            "occipital":  {"range": [1.43, 1.85], "unit": "mM"}
+          },
+          "GM": {
+            "frontal":    {"range": [1.21, 1.55], "unit": "mM"},
+            "parietal":   {"range": [0.96, 1.24], "unit": "mM"},
+            "occipital":  {"range": [0.78, 0.98], "unit": "mM"},
+            "insular":    {"range": [1.11, 1.49], "unit": "mM"}
+          }
+        }
+      },
+      "biosignificance": "tied to phospholipid synthesis/degradation, therefore marker for membrane turnover; higher total creatine tCr in Alzheimer's disease and multiple sclerosis (suggesting altered membrane turnover); lower choline level in stroke",
+      "note": "total choline tCho at about 3.2 ppm is a composite signal (Cho, PC, GPC), not well separable",
+      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+    }
+  },
+  "macromolecules": {}
+}
