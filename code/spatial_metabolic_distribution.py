@@ -68,16 +68,22 @@ class ParameterMap(Interpolation):
         self.unit: pint.Unit = unit                   # the unit
         self.affine: np.ndarray = affine              # TODO: Not yet used. E.g., if volumes obtain a different orientation.
 
+        self.applied_methods = [] # Just to collect already applied methods to this object
+
     def to_device(self, device, verbose=False):
         """
         To bring the values of the maps object to the desired device.
 
         :param device: "cpu" or "cuda"/"gpu"
         :param verbose: if True then prints to the console.
-        :return: Nothing
+        :return: the object itself
         """
         self.values = GPUTools.to_device(self.values, device=device)
         Console.printf("success", f"Brought Maps values to device: {device}", mute=not verbose)
+
+        self.applied_methods.append(f"put array on device: {device}")
+
+        return self
 
     def interpolate(self, target_size: tuple, order: int, device: str, target_gpu: int = 0, verbose: bool=False):
         """
@@ -98,6 +104,9 @@ class ParameterMap(Interpolation):
                                                      return_on_device="cpu",
                                                      target_gpu=target_gpu,
                                                      verbose=verbose)
+
+        self.applied_methods.append(f"interpolate with order {order} to shape: {target_size}")
+
         return self
 
 
@@ -106,10 +115,16 @@ class ParameterMap(Interpolation):
         To change to the current unit (e.g., mmol -> mol)
         :param target_unit: the desired unit as string
         :param verbose: if True then prints to the console.
-        :return: Nothing
+        :return: the object itself
         """
+        unit_before = self.unit  # just for self.applied_methods
+        unit_after = target_unit # just for self.applied_methods
+
         self.values, self.unit = UnitTools.to_unit(values=self.values,current_units=self.unit, target_units=target_unit, return_separate=True, verbose=verbose)
 
+        self.applied_methods.append(f"change unit from {unit_before} to {unit_after}")
+
+        return self
 
     def change_data_type(self, data_type, verbose: bool=True):
         """
@@ -117,12 +132,40 @@ class ParameterMap(Interpolation):
 
         :param data_type: data type as string (e.g. float32)
         :param verbose: if True, then print to console
-        :return: Nothing
+        :return: the object itself
         """
         data_type_before = self.values.dtype
         data_type_after = data_type
         self.values = self.values.astype(data_type_after)
         Console.printf("success", f"Changed data type from '{data_type_before}' => '{data_type_after}'", mute=not verbose)
+
+        self.applied_methods.append(f"change data type from {data_type_before} to {data_type_after}")
+
+        return self
+
+    def check_nan(self):
+        """
+        Check if Not a Number (NaN) are present in the array of this object. Just prints the result to the console.
+        :return: object itself to apply further methods
+        """
+        nans_present = ArrayTools.check_nan(self.values, verbose=True)
+
+        self.applied_methods.append(f"checked for NaNs: {nans_present}")
+
+        return self
+
+    def enforce_positive_values(self, convert_negative, convert_zeros):
+        """
+        To convert negative values and/or zeros values to eps value.
+
+        :return: the object itself to concatenate further method calls
+        """
+
+        self.values = ArrayTools.enforce_min_eps(array=self.values, convert_negative=convert_negative, convert_zeros=convert_zeros)
+
+        self.applied_methods.append(f"Enforce positive eps. Converting negative values: {convert_negative}; converting zero values: {convert_zeros}")
+
+        return self
 
     def __str__(self):
         """
@@ -182,13 +225,15 @@ class ParameterVolume(Interpolation):
         :param device: the device. Either "cpu", "gpu"/"cuda"
         :param target_gpu: if "gpu"/"cuda" is selected then the index of the gpu
         :param verbose: print to console if true
-        :return:  Nothing
+        :return: the object itself
         """
         for i, m in enumerate(self.maps):
             self.maps[i] = m.interpolate(target_size=target_size, order=order, device=device, target_gpu=target_gpu, verbose=verbose)
 
         self.to_volume(verbose=verbose)
         Console.printf("warning", "The individual maps are interpolated, and then the 4D volume is created again. This might slow down the process.")
+
+        return self
 
     # called previously interpolate_volume to distinguish between interpolate_maps but sice inherits from Interpolation it is not possible anymore....
     def interpolate(self, target_size: tuple, order: int = 3, device: str = "cpu", target_gpu: int = 0, verbose: bool = False):
@@ -202,7 +247,7 @@ class ParameterVolume(Interpolation):
         :param device: the device. Either "cpu", "gpu"/"cuda"
         :param target_gpu: if "gpu"/"cuda" is selected then the index of the gpu
         :param verbose: print to console if true
-        :return:  Nothing
+        :return: the object itself
         """
 
         # When no Parameter Map is in the list
@@ -223,6 +268,7 @@ class ParameterVolume(Interpolation):
                 verbose=verbose
             )
 
+        return self
 
     def to_volume(self, verbose=True):
         """
@@ -230,7 +276,7 @@ class ParameterVolume(Interpolation):
         are assembled to one 4D array of (metabolite, X,Y,Z).
 
         :param verbose: if True then prints to the console.
-        :return: Nothing
+        :return: the object itself
         """
 
         # When no Parameter Map is in the list
@@ -274,6 +320,7 @@ class ParameterVolume(Interpolation):
                                f" {'Space: ':.<17} {SpaceEstimator.for_array(self.volume, unit='MiB', verbose=False):.5g}",
                                mute=not verbose)
 
+        return self
 
 
     def size(self, unit="MiB", verbose=True) -> pint.Quantity:
@@ -312,7 +359,7 @@ class ParameterVolume(Interpolation):
         As input simply a list of the names of the metabolite sin the desired order is required.
 
         :param metabolites: list of metabolites. E.g., ["NAA", "Glu", Glx", ...]
-        :return: Nothing
+        :return: the object itself
         """
         current_order = list(self.metabolites)  # current metabolite names
         desired_order = list(metabolites)  # desired metabolite names
@@ -354,6 +401,7 @@ class ParameterVolume(Interpolation):
             else:
                 Console.printf("warning", "The metabolite axis of the volume cannot be rearranged since it is empty. Run 'to_volume' first!")
 
+        return self
 
 
     def __str__(self):

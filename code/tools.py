@@ -2231,6 +2231,7 @@ class ArrayTools:
                 Console.printf("warning", f"NaNs are presents ({nan_percent:.5g})%. NaNs/(array size): {nan_count}/{size_array}.")
             return True
         else:
+            Console.printf("success", "NaNs are NOT present!")
             return False
 
     @staticmethod

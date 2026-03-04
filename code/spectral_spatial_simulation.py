@@ -548,7 +548,7 @@ class FID:
                 from matplotlib.transforms import blended_transform_factory
 
                 metabs = list(metab_dict.keys())
-                cmap = plt.get_cmap("hsv")
+                cmap = plt.get_cmap("Dark2")
                 color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
 
                 # a) vlines across full main-plot height
