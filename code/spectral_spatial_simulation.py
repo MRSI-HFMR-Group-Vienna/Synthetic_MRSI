@@ -31,6 +31,8 @@ import pint
 import sys
 import os
 
+import xarray as xr
+
 
 class FID:
     """
@@ -1334,6 +1336,394 @@ class Simulator:
         raise NotImplementedError("This method is not yet implemented")
 
 
+class LookupTableWET2:
+    """
+    This class is for creating a lookup table for water suppression. The technique is WET.
+    The suppression is given as a ratio of suppressed signal to non-suppressed signal.
+
+    The Bloch simulation is fully vectorized: all (B1, T1) combinations are computed
+    simultaneously using element-wise NumPy operations instead of per-voxel matrix multiplies.
+    """
+
+    def __init__(
+        self,
+        T1_range: np.ndarray | list = np.array([300, 5000]),
+        T1_step_size: float = 50.0,
+        T2: float = 250.0,
+        B1_scales_inhomogeneity: np.ndarray | list = np.array([0, 2]),
+        B1_scales_gauss: np.ndarray | list = np.array([0.01, 1]),
+        B1_scales_inhomogeneity_step_size: float = 0.05,
+        B1_scales_gauss_step_size: float = 0.05,
+        TR: float = 600.0,
+        TE: float = 0.0,
+        flip_angle_excitation_degree: float = 47.0,
+        flip_angles_WET_degree: np.ndarray | list = np.array([89.2, 83.4, 160.8]),
+        time_gaps_WET: np.ndarray | list = np.array([30, 30, 30]),
+        off_resonance: float = 0.0,
+    ):
+        # A) Fixed input variables for Bloch Simulation
+        self.TR = TR
+        self.TE = TE
+        self.T2 = T2
+        self.flip_angle_excitation_rad = np.deg2rad(flip_angle_excitation_degree)
+        self.flip_angles_WET_rad = np.deg2rad(flip_angles_WET_degree)
+        self.time_gaps_WET = np.asarray(time_gaps_WET, dtype=float)
+        self.off_resonance = off_resonance
+
+        # B) Variables containing ranges for generating the dictionary
+        self._T1_step_size = T1_step_size
+        self._T1_range = np.asarray(T1_range, dtype=float)
+        self.T1_values = np.arange(T1_range[0], T1_range[1] + T1_step_size, T1_step_size)
+
+        self._B1_scales_lower_border = min(B1_scales_gauss[0], B1_scales_inhomogeneity[0])
+        self._B1_scales_upper_border = max(B1_scales_gauss[1], B1_scales_inhomogeneity[1])
+        self._B1_scales_step_size = min(B1_scales_inhomogeneity_step_size, B1_scales_gauss_step_size)
+        self.B1_scales_effective_values = np.arange(
+            self._B1_scales_lower_border,
+            self._B1_scales_upper_border + self._B1_scales_step_size,
+            self._B1_scales_step_size,
+        )
+
+        # Storage
+        self.simulated_data: xr.DataArray | None = None
+        self.residual_long_mag: np.ndarray | None = None
+
+    def create(self):
+        """Populate the full lookup table (vectorized over all B1 and T1 values)."""
+        print(
+            f"Start creating the Lookup Table for WET (water suppression enhanced through T1 effects)"
+            f"\n => Axis 1: B1 scale | Resolution: {self._B1_scales_step_size:>6.3f} | Range: {self._B1_scales_lower_border:>6.3f}:{self._B1_scales_upper_border:>6.3f}"
+            f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
+        )
+
+        sim = LookupTableWET2._BlochSimulation(
+            flip_angles=self.flip_angles_WET_rad,
+            time_gaps=self.time_gaps_WET,
+            flip_final_excitation=self.flip_angle_excitation_rad,
+            T2=self.T2,
+            TE1=self.TE,
+            TR=self.TR,
+            off_resonance=self.off_resonance,
+        )
+
+        # 2D grids of shape (N_b1, N_t1)
+        # Equivalent to the cartesian product (but displayed as two independent matrices)
+        b1_grid, t1_grid = np.meshgrid(self.B1_scales_effective_values, self.T1_values, indexing="ij")
+
+        signal_with_WET, residual_long_mag = sim.compute_signal_after_pulses(T1=t1_grid, B1_scale=b1_grid, with_WET=True)
+        signal_without_WET, _ = sim.compute_signal_after_pulses(T1=t1_grid, B1_scale=b1_grid, with_WET=False)
+
+        # To ignore error message if divided by 0. However, still yields inf if it happens.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            attenuation = np.abs(signal_with_WET) / np.abs(signal_without_WET)
+
+        self.residual_long_mag = residual_long_mag
+
+        self.simulated_data = xr.DataArray(
+            data=attenuation,
+            coords={
+                "B1_scale_effective": self.B1_scales_effective_values,
+                "T1_over_TR": self.T1_values / self.TR,
+            },
+            dims=["B1_scale_effective", "T1_over_TR"],
+        )
+
+        total_entries = self.simulated_data.size
+        Console.printf("success",
+                       f"Created WET lookup table with {total_entries} entries."
+                       f"Values Range: [{float(np.nanmin(attenuation))}, {float(np.nanmax(attenuation))}]")
+
+
+    def plot(self):
+        """
+        Plot the lookup table as a heatmap using matplotlib. Negative values
+        are overlaid in red.
+        :return: Nothing
+        """
+        # Format tick labels.
+        T1_over_TR_formatted = [f"{val / self.TR:.2f}" for val in self.T1_values]
+        B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
+
+        # Ensure the simulated data is a numpy array.
+        data = np.array(self.simulated_data)
+
+        # Create a figure and axis.
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Create two masked arrays:
+        pos_data = np.ma.masked_less(data, 0)
+        neg_data = np.ma.masked_greater_equal(data, 0)
+
+        # Plot non-negative values using the viridis colormap.
+        im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
+
+        # Overlay negative values in red.
+        im2 = ax.imshow(neg_data, cmap=ListedColormap(['red']), aspect='auto')
+
+        # Set x and y ticks with custom labels.
+        ax.set_xticks(np.arange(len(T1_over_TR_formatted)))
+        ax.set_xticklabels(T1_over_TR_formatted, fontsize=7, rotation=90, ha='right')
+        ax.set_yticks(np.arange(len(B1_scale_formatted)))
+        ax.set_yticklabels(B1_scale_formatted, fontsize=7)
+
+        # Add a colorbar for the viridis part.
+        cbar = fig.colorbar(im1, ax=ax)
+        cbar.ax.tick_params(labelsize=7)
+
+        # Set axis titles.
+        ax.set_title('Heatmap of Lookup Table')
+        ax.set_xlabel('T1/TR Value')
+        ax.set_ylabel('B1 Scale Value')
+
+        plt.tight_layout()
+        plt.show()
+
+
+    # Inner class: vectorized Bloch simulation -------------------------------------------------------------------------
+    class _BlochSimulation:
+        """
+        Vectorized Bloch-equation simulator for a spoiled WET sequence.
+
+        Instead of building 3x3 matrices per voxel, magnetization is stored as
+        three separate arrays (mx, my, mz) of arbitrary batch shape. All rotations,
+        decays, and spoilers are applied element-wise via NumPy broadcasting.
+        """
+
+        def __init__(self, flip_angles, time_gaps, flip_final_excitation, T2, TE1, TR, off_resonance):
+            """
+            Initialize the simulation with constant parameters.
+
+            :param flip_angles: Sequence of flip angles (in radians) for each WET pulse.
+            :param time_gaps: Sequence of durations between pulses (ms).
+            :param flip_final_excitation: Flip angle (in radians) for the final excitation pulse.
+            :param T2: Transverse relaxation time (ms).
+            :param TE1: Echo time from the last pulse to acquisition (ms).
+            :param TR: Repetition time (ms).
+            :param off_resonance: Off-resonance frequency (Hz).
+            """
+            self.flip_angles = np.asarray(flip_angles, dtype=float)
+            self.time_gaps = np.asarray(time_gaps, dtype=float)
+            self.flip_final_excitation = flip_final_excitation
+            self.T2 = T2
+            self.TE1 = TE1
+            self.TR = TR
+            self.off_resonance = off_resonance
+
+        # -- vectorized rotation and precession -----------------------------------
+
+        @staticmethod
+        def y_rot(mx, my, mz, angle):
+            """
+            Apply rotation about the y-axis to magnetization components.
+            All inputs are arrays of the same (broadcastable) shape.
+
+            Generally, the rotation matrix is the following and yields the new magnetisation vector with:
+
+                     |  cos(α)   0    sin(α)  |       | Mx'|   | cos(α)  0  sin(α) |   | Mx |
+            Ry(α) =  |    0      1      0     |  ===> | My'| = |   0     1    0    | * | My |
+                     | -sin(α)   0    cos(α)  |       | Mz'|   |-sin(α)  0  cos(α) |   | Mz |
+
+            This yields then:
+
+                     Mx' = cos(α) * Mx  + 0 * My   + sin(α) * Mz = cos(α) * Mx + sin(α) * Mz
+                     My' = 0 * Mx       + 1 * My   + 0 * Mz      = My
+                     Mz' = -sin(α) * Mx + 0 * My   + cos(α) * Mz = -sin(α) * Mx + cos(α) * Mz
+
+            ... which can also be used in vectorised form! Therefore, calculate for all values at once.
+
+            """
+            c = np.cos(angle)
+            s = np.sin(angle)
+            mx_new = c * mx + s * mz
+            my_new = my.copy()
+            mz_new = -s * mx + c * mz
+            return mx_new, my_new, mz_new
+
+        @staticmethod
+        def z_rot(mx, my, mz, angle):
+            """
+            Apply rotation about the z-axis to magnetization components.
+
+            Generally, the rotation matrix is the following and yields the new magnetisation vector with:
+
+                     | cos(α)  -sin(α)   0 |       | Mx'|   | cos(α)  -sin(α)  0 |   | Mx |
+            Rz(α) =  | sin(α)   cos(α)   0 |  ===> | My'| = | sin(α)   cos(α)  0 | * | My |
+                     |   0        0      1 |       | Mz'|   |   0        0     1 |   | Mz |
+
+            This yields then:
+
+                     Mx' = cos(α) * Mx  - sin(α) * My  + 0 * Mz = cos(α) * Mx - sin(α) * My
+                     My' = sin(α) * Mx  + cos(α) * My  + 0 * Mz = sin(α) * Mx + cos(α) * My
+                     Mz' = 0 * Mx       + 0 * My       + 1 * Mz = Mz
+
+            ... which can also be used in vectorised form! Therefore, calculate for all values at once.
+
+            """
+            c = np.cos(angle)
+            s = np.sin(angle)
+            mx_new = c * mx - s * my
+            my_new = s * mx + c * my
+            mz_new = mz.copy()
+            return mx_new, my_new, mz_new
+
+        @staticmethod
+        def free_precess(mx, my, mz, time_interval, t1, t2, off_resonance):
+            """
+            Simulate free precession and decay over a given time interval. Applies T2 decay to transverse components,
+            T1 recovery to longitudinal component, and off-resonance z-rotation. All inputs are broadcastable arrays.
+
+            Generally, the free precession can be described the decay and recovery:
+
+            | Mx' |   | e2   0   0  |   | Mx |   |   0  |
+            | My' | = | 0   e2   0  | * | My | + |   0  |
+            | Mz' |   | 0    0   e1 |   | Mz |   | 1-e1 |
+
+            This yields then:
+
+               Mx' = Mx * e2
+               My' = My * e2
+               Mz' = Mz * e1 + (1 - e1) ....(includes T1 recovery toward equilibrium M0=1)
+
+            And if off-resonance z-rotation is included (at the end via ._BlochSimulation.z_rot):
+
+            | Mx''|   | cos(Δφ)  -sin(Δφ)  0 |   | Mx' |
+            | My''| = | sin(Δφ)   cos(Δφ)  0 | * | My' |
+            | Mz''|   |    0         0     1 |   | Mz' |
+
+            But note: when on-resonance (Δφ=0), this is identity and Mx''=Mx', My''=My'.
+
+
+            :param mx, my, mz: Magnetization components, arrays of shape (...).
+            :param time_interval: Time interval in ms (scalar).
+            :param t1: Longitudinal relaxation time in ms, array (...).
+            :param t2: Transverse relaxation time in ms (scalar or array).
+            :param off_resonance: Off-resonance frequency in Hz (scalar or array).
+            :return: Updated (mx, my, mz) tuple.
+            """
+            e1 = np.exp(-time_interval / t1)
+            e2 = np.exp(-time_interval / t2)
+            angle = 2.0 * np.pi * off_resonance * time_interval / 1000.0
+
+            # Decay
+            mx_d = e2 * mx
+            my_d = e2 * my
+            mz_d = e1 * mz + (1.0 - e1)
+
+            # If Off-resonance rotation around z (!), otherwise if angle=zeros, then just (mx_d, my_d, mz_d)
+            return LookupTableWET2._BlochSimulation.z_rot(mx_d, my_d, mz_d, angle)
+
+        @staticmethod
+        def spoil(mx, my, mz):
+            """
+            Destroys the transverse magnetisation (gradient spoiler). Therefore, Mx & My == 0 !
+
+            :param mx: Mx
+            :param my: My
+            :param mz: Mz
+            :return: tuple of arrays, where Mx and My is zeroed
+            """
+
+            z = np.zeros_like(mx)
+            return z, z, mz
+
+        # -- main simulation -----------------------------------
+
+        def compute_signal_after_pulses(self, T1, B1_scale, with_WET=True, max_iterations=30, steady_state_convergence_tolerance=1e-12):
+            """
+            Compute the steady-state signal for arrays of T1 and B1_scale values.
+
+            :param T1: Array (...) of longitudinal relaxation times in ms.
+            :param B1_scale: Array (...) of B1 scaling factors, same shape as T1.
+            :param with_WET: If True, apply WET preparation pulses before excitation.
+            :return: Tuple (magnetization_fid_last, residual_long_mag) where both
+                     are arrays of the same shape as T1/B1_scale.
+            """
+
+
+            # (1) Broadcasting the shapes to represent all combinations of B1_scale and T1
+            # For example shapes:
+            #    T1.shape       = 61
+            #    B1_scale.shape = 95
+            #      ...the broadcasting would be for:
+            #           T1.shape       ----> (61x95)
+            #           B1_scale.shape ----> (61x95)
+            shape = np.broadcast_shapes(np.shape(T1), np.shape(B1_scale))
+            T1 = np.broadcast_to(np.asarray(T1, dtype=float), shape)
+            B1_scale = np.broadcast_to(np.asarray(B1_scale, dtype=float), shape)
+
+            # (2) Without WET the flip angles and time gaps are not present
+            flip_angles = self.flip_angles if with_WET else []
+            time_gaps = self.time_gaps if with_WET else []
+            n_wet_pulses = len(time_gaps)
+            total_delay = float(np.sum(time_gaps))
+
+            # (3) The initial magnetisations: with thermal equilibrium along +z
+            # Here building instead of the initial vector [Mx=0, Mx=0, Mz=1], a full arrays:
+            #   For the example above these yields the arrays
+            #      Mx = (61x95) shape of zeros
+            #      My = (61x95) shape of zeros
+            #      Mz = (61x95) shape of ones
+            #      ... and therefore the arrays are covering all combinations of T1 and B1_scales
+            mx = np.zeros(shape, dtype=float)
+            my = np.zeros(shape, dtype=float)
+            mz = np.ones(shape, dtype=float)
+
+            # Iterate to approach steady state
+            for i in range(max_iterations):
+
+                # Store Mz before this cycle to check convergence afterwards
+                mz_previous = mz.copy()
+
+                # --- WET pulses (only if with_WET is True) ---
+                # Most time not possible with one pulse to zero out Mz with one pulse (Mz=0) due to B1+ inhomogeneities,
+                # therefore multiple optimised pulses + recovery + spoiler gradient to approach Mz=0.
+                for u in range(n_wet_pulses):
+
+                    # (a) Bringing the signal to a certain extent from Mz to Bxy (therefore Mz decreases)
+                    #     => RF pulse (y-rotation scaled by B1)
+                    mx, my, mz = self.y_rot(mx, my, mz, B1_scale * flip_angles[u])
+
+                    # (b) Relaxation and Crusher-Gradient
+                    #     => This happens at the same time in reality during the proposed time gap
+                    #
+                    #         (1b) Free precession during gap
+                    mx, my, mz = self.free_precess(mx, my, mz, time_gaps[u], T1, self.T2, self.off_resonance)
+                    #         (2b) Spoiler gradient destroys transverse magnetization completely. Mx, My -> everywhere 0
+                    mx, my, mz = self.spoil(mx, my, mz)
+
+                # Mz just before excitation (diagnostic output)
+                residual_long_mag = mz.copy()
+
+                # (4) Final excitation pulse
+                #     After WET, Mz for water is assumed Mz=0. However, Mz for other chemical compounds like metabolites
+                #     still present. This pulse is flipping it to the transverse plane Mx. Therefore, everything where
+                #     Mz≠0, which depends on T1, will become a measurable signal. Ideally, no water signal.
+                mx, my, mz = self.y_rot(mx, my, mz, B1_scale * self.flip_final_excitation)
+
+                # (5) TE evolution (no spoiler - T2 acts here if TE > 0)
+                #     The time between excitation and readout. During this time the Mxy decays due to T2 decay, and T1
+                #     Recovery takes place. Signal readout in the next step (transverse signal).
+                mx, my, mz = self.free_precess(mx, my, mz, self.TE1, T1, self.T2, self.off_resonance)
+
+                # (6) Readout of the signal (Mx at echo) at this time point.
+                magnetization_fid_last = mx.copy()
+
+                # (7) Remaining TR + spoiler
+                #     The remaining time until the next TR cycle. Afterward, spoiling takes place to start with a fresh
+                #     cycle. Only Mz will be used in the current state (therefore, no spoiling) for the next iteration.
+                #     This might be important for the steady-state calculation.
+                dt_remaining = self.TR - self.TE1 - total_delay
+                mx, my, mz = self.free_precess(mx, my, mz, dt_remaining, T1, self.T2, self.off_resonance)
+                mx, my, mz = self.spoil(mx, my, mz)
+
+                # For comparing the current Mz array with them of the previous iteration (mz vs mz_previous) and if close
+                # with a certain tolerance, then break the loop.
+                if i > 0 and np.allclose(mz, mz_previous, atol=steady_state_convergence_tolerance):
+                    break
+
+
+            return magnetization_fid_last, residual_long_mag
+
 
 class LookupTableWET_new:
     # TODO: Think about which parameters could be outside
@@ -1343,6 +1733,8 @@ class LookupTableWET_new:
         pass
 
 
+# T1_range --> directly pass T1_array? Then T1_step_size not longer needed
+#
 
 
 class LookupTableWET:
@@ -1400,13 +1792,13 @@ class LookupTableWET:
                                                                     TR=self.TR,
                                                                     off_resonance=off_resonance)
 
-        #D) TODO: Test:
-        self.simulated_data = tools.NamedAxesArray(input_array=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
-                                                   axis_values={
-                                                       "B1_scale_effective": self.B1_scales_effective_values,
-                                                       "T1_over_TR": self.T1_values / self.TR
-                                                   },
-                                                   device="cpu")
+        ####D) TODO: Test:
+        ###self.simulated_data = tools.NamedAxesArray(input_array=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
+        ###                                           axis_values={
+        ###                                               "B1_scale_effective": self.B1_scales_effective_values,
+        ###                                               "T1_over_TR": self.T1_values / self.TR
+        ###                                           },
+        ###                                           device="cpu")
 
 
         # TODO: Just for plotting longitudinal magnetisation!
@@ -1416,14 +1808,14 @@ class LookupTableWET:
         # TODO: Delete after test usage!
         #self.negative_with_WET = 0
         #self.negative_without_WET = 0
-        ###self.simulated_data = xr.DataArray(
-        ###    data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
-        ###    coords={
-        ###        "B1_scale_effective": self.B1_scales_effective_values,
-        ###        "T1_over_TR": self.T1_values / self.TR
-        ###    },
-        ###    dims=["B1_scale_effective", "T1_over_TR"]
-        ###)
+        self.simulated_data = xr.DataArray(
+            data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
+            coords={
+                "B1_scale_effective": self.B1_scales_effective_values,
+                "T1_over_TR": self.T1_values / self.TR
+            },
+            dims=["B1_scale_effective", "T1_over_TR"]
+        )
         #self.simulated_data = np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float)
         #self.row_labels = np.asarray(self.B1_scales_effective_values)  # For B1 scales (rows)
         #self.col_labels = np.asarray(self.T1_values) / self.TR  # For T1/TR (columns)
@@ -1483,9 +1875,11 @@ class LookupTableWET:
                                    "NaN value occurred while creating dictionary. Check proposed ranges. Terminating program!")
                     sys.exit()
                 else:
-                    self.simulated_data.set_value(B1_scale_effective=B1_scale, # first axis
-                                                  T1_over_TR=T1/self.TR,       # second axis
-                                                  value=value)                 # and to axis coordinated according values
+                    ###self.simulated_data.set_value(B1_scale_effective=B1_scale, # first axis
+                    ###                              T1_over_TR=T1/self.TR,       # second axis
+                    ###                              value=value)                 # and to axis coordinated according values
+                    self.simulated_data.loc[{"B1_scale_effective": B1_scale, "T1_over_TR": T1 / self.TR}] = value
+
                     #self.simulated_data.loc[{"B1_scale_effective": B1_scale, "T1_over_TR": T1 / self.TR}] = value
 
         total_entries = self.simulated_data.size
@@ -1533,6 +1927,7 @@ class LookupTableWET:
             :return: Tuple (a_fp, b_fp) where:
                      a_fp (np.ndarray, 3x3): Rotation and relaxation matrix.
                      b_fp (np.ndarray, 3,): Recovery term added to the magnetization.
+
             """
 
             # angle = Δϕ=ωΔt with ω=2πf (and also off resonance); divided by 1000 to get from [ms] ->[s]

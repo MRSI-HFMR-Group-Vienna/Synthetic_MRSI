@@ -208,11 +208,23 @@ RUN cat << 'EOF' > /usr/local/bin/start-jupyter.sh
 #!/bin/bash
 set -e
 
-jupyter lab \
+PORT="${JUPYTER_PORT:-8888}"
+
+echo ""
+echo "============================================="
+echo "  JupyterLab is starting... The monkeys wish you lots of fun! 🐒🐒🐒"
+echo "  Port: ${PORT}"
+echo "============================================="
+echo ""
+
+exec jupyter lab \
   --ip=0.0.0.0 \
-  --port="${JUPYTER_PORT:-8888}" \
+  --port="${PORT}" \
   --no-browser \
-  --notebook-dir="${HOME}"
+  --allow-root \
+  --notebook-dir=/ \
+  --ServerApp.terminado_settings='{"shell_command": ["/bin/bash", "-l"]}' \
+  2>&1
 EOF
 
 RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/start-jupyter.sh
@@ -239,5 +251,5 @@ EXPOSE 8888
 # Entrypoint: tini -> start.sh (which activates env) -> your command
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start.sh"]
 
-# Default command: interactive shell (already inside MRSI_simulation env, if present)
-CMD ["bash"]
+# Default command: it starts the jupyter lab instead of the cmd as before
+CMD ["start-jupyter.sh"]
