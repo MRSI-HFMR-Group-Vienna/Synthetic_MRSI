@@ -739,10 +739,15 @@ class FID:
 
         # Case 2: The self and other object both do not have None attributes and need to be summed
         if not np.array_equal(self.time, other.time):
-            Console.printf("error", f"Not possible to sum the two FID since the time vectors are different! Vector 1: {self.time.shape}, Vector 2; {other.times.shape}")
+            Console.printf("error",
+                           f"Not possible to sum the two FID since the time vectors differ in shape or content! "
+                           f"Vector 1 shape: {self.time.shape}, Vector 2 shape: {other.time.shape}"
+                           )
             return
         if not self.signal.shape[-1] == other.signal.shape[-1]:
-            Console.printf("error", "Not possible to sum the two FID since the length does not match!")
+            Console.printf("error",
+                           "Not possible to sum the two FID since the length does not match!"
+                           )
             return
         else:
             fid = FID(signal=self.signal, time=self.time, name=self.name)  # new fid object containing the information of this object
@@ -1330,6 +1335,16 @@ class Simulator:
 
 
 
+class LookupTableWET_new:
+    # TODO: Think about which parameters could be outside
+    # return of longidutional or transverse
+
+    def __init__(self):
+        pass
+
+
+
+
 class LookupTableWET:
     """
     This class is for creating a lookup table for water suppression. The technique is WET.
@@ -1394,6 +1409,10 @@ class LookupTableWET:
                                                    device="cpu")
 
 
+        # TODO: Just for plotting longitudinal magnetisation!
+        self.residual_long_mag = []
+
+
         # TODO: Delete after test usage!
         #self.negative_with_WET = 0
         #self.negative_without_WET = 0
@@ -1426,13 +1445,13 @@ class LookupTableWET:
 
         :return: attenuation value for just one T1 and B1-scale value.
         """
-        signal_without_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=False)
-        signal_with_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=True)
+        signal_without_WET, _, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=False)
+        signal_with_WET, _, residual_long_mag = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=True)
 
         with np.errstate(divide='ignore', invalid='ignore'):
             attenuation = np.divide(np.abs(signal_with_WET), np.abs(signal_without_WET))
 
-        return attenuation
+        return attenuation, residual_long_mag
 
 
     def create(self):
@@ -1448,11 +1467,16 @@ class LookupTableWET:
             f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
         )
 
+        # TODO: Maybe integrate better:
+        self.residual_long_mag = [] #TODO: Reset it
+
         for T1 in tqdm(self.T1_values):
             for B1_scale in self.B1_scales_effective_values:
 
                 # Compute the attenuation value
-                value = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+                value, residual_long_mag = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+
+                self.residual_long_mag.append(residual_long_mag) # TODO: Append residual long magnetisation
 
                 if np.isnan(value):
                     Console.printf("error",
@@ -1513,7 +1537,7 @@ class LookupTableWET:
 
             # angle = Δϕ=ωΔt with ω=2πf (and also off resonance); divided by 1000 to get from [ms] ->[s]
             angle = 2.0 * np.pi * off_resonance * time_interval / 1000.0  # radians
-            e1 = np.exp(-time_interval / t1) # Mz(t) = M0 * (1-e^(-t/T1)    # TODO
+            e1 = np.exp(-time_interval / t1) # Mz(t) = M0 * (1-e^(-t/T1)    # TODO ==> gehört hier nicht 1-e??? Naja, eher nicht?
             e2 = np.exp(-time_interval / t2) # Mxy(t) = Mxy(0) * e^(-t/T2)  # TODO
 
             decay_matrix = np.array([
@@ -1634,6 +1658,7 @@ class LookupTableWET:
                 a_exc_to_next_exc.append(spoiler_matrix @ a_fp)
                 b_exc_to_next_exc.append(b_fp)
 
+
             # Final excitation pulse.
             r_flip_last = LookupTableWET._BlochSimulation.y_rot(B1_scale * self.flip_final_excitation)
 
@@ -1683,6 +1708,9 @@ class LookupTableWET:
                 #sys.exit()
                 #------------------------------------------------------------------------------
 
+                # TODO: Additional added to reproduce Fig. 3b of WET paper:
+                residual_long_mag = magnetizations[idx][2]
+
                 # TODO: Last excitations after WET pulses
                 magnetizations[idx + 1] = r_flip_last @ magnetizations[idx]
                 idx += 1
@@ -1721,7 +1749,7 @@ class LookupTableWET:
 
             magnetization_fid_last = magnetizations_fid[n_wet_pulses][0]
 
-            return magnetization_fid_last, magnetization_fid_rest
+            return magnetization_fid_last, magnetization_fid_rest, residual_long_mag
 
 ###        def compute_signal_after_pulses(self, T1: float, B1_scale: float, with_WET: bool = True) -> tuple:
 ###            """
