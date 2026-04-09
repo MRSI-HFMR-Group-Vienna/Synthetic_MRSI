@@ -2235,6 +2235,52 @@ class ArrayTools:
             return False
 
     @staticmethod
+    def check_inf(array: np.ndarray | cp.ndarray, verbose: bool = True) -> bool:
+        """
+        To check if Infs are present. Numpy or cupy array is possible.
+
+
+        :param array: numpy or cupy array
+        :return: True if Infs are present
+        """
+
+        inf_count, size_array = None, None
+
+        xp = ArrayTools.get_backend(array)
+
+        # if cupy array anyway perform on Inf count on GPU with respective index, but then convert result to numpy
+        # also free up unused cuda memory afterward
+        if isinstance(array, cp.ndarray):
+            gpu_idx = array.device.id
+            with cp.cuda.Device(gpu_idx):
+                size_array_cp = array.size
+                inf_count_cp = xp.isinf(array).sum()
+                has_inf_cp = xp.isinf(array).any()
+
+                inf_percent_cp = (inf_count_cp / size_array_cp * 100.0) if size_array_cp else 0.0
+
+                inf_percent = inf_percent_cp.get()
+                has_inf = has_inf_cp.get()
+
+                del size_array_cp, inf_count_cp, has_inf_cp, inf_percent_cp
+                GPUTools.free_cuda_after_del_cupy(gpu_idx)
+        else:
+            size_array = int(array.size)
+            inf_count = xp.isinf(array).sum()
+            has_inf = xp.isinf(array).any()
+
+            inf_percent = (inf_count / size_array * 100.0) if size_array else 0.0
+
+        if has_inf:
+            if verbose:
+                Console.printf("warning",
+                               f"Infs are presents ({inf_percent:.5g})%. Infs/(array size): {inf_count}/{size_array}.")
+            return True
+        else:
+            Console.printf("success", "Infs are NOT present!")
+            return False
+
+    @staticmethod
     def count_zeros(array: np.ndarray | cp.ndarray, verbose:bool = True):
         """
         To count the zeros present in the array. E.g., useful to check for 0/0 division.

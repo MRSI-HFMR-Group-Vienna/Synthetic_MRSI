@@ -1,8 +1,6 @@
 from __future__ import annotations      #TODO: due to circular import. Maybe solve different!
 from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
 
-from dask.dataframe.partitionquantiles import dtype_info
-
 if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
     from spatial_metabolic_distribution import ParameterVolume  #TODO: due to circular import. Maybe solve different!
 
@@ -1385,18 +1383,26 @@ class LookupTableWET2:
         )
 
         # Storage
-        self.simulated_data: xr.DataArray | None = None
+        self.simulated_data: xr.DataArray  | None = None
         self.residual_long_mag: np.ndarray | None = None
 
     def create(self):
-        """Populate the full lookup table (vectorized over all B1 and T1 values)."""
-        print(
+        """
+        Populate the full lookup table (this vectorised over all B1 and T1 values to enhance computational speed")
+
+        :return: Nothing
+        """
+
+        Console.printf("info",
             f"Start creating the Lookup Table for WET (water suppression enhanced through T1 effects)"
             f"\n => Axis 1: B1 scale | Resolution: {self._B1_scales_step_size:>6.3f} | Range: {self._B1_scales_lower_border:>6.3f}:{self._B1_scales_upper_border:>6.3f}"
             f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
         )
 
-        sim = LookupTableWET2._BlochSimulation(
+        Console.start_timer()
+
+        # (1) Creating the Block simulation object with the fixed variables
+        bloch_simulation = LookupTableWET2._BlochSimulation(
             flip_angles=self.flip_angles_WET_rad,
             time_gaps=self.time_gaps_WET,
             flip_final_excitation=self.flip_angle_excitation_rad,
@@ -1406,21 +1412,35 @@ class LookupTableWET2:
             off_resonance=self.off_resonance,
         )
 
-        # 2D grids of shape (N_b1, N_t1)
-        # Equivalent to the cartesian product (but displayed as two independent matrices)
-        b1_grid, t1_grid = np.meshgrid(self.B1_scales_effective_values, self.T1_values, indexing="ij")
+        # (2) Broadcast the variable values to be able to compute all values at once (without loop)
+        b1 = self.B1_scales_effective_values[:, None]  # (41, 1)
+        t1 = self.T1_values[None, :]                   # (1, 95)
 
-        signal_with_WET, residual_long_mag = sim.compute_signal_after_pulses(T1=t1_grid, B1_scale=b1_grid, with_WET=True)
-        signal_without_WET, _ = sim.compute_signal_after_pulses(T1=t1_grid, B1_scale=b1_grid, with_WET=False)
+        # (3) Compute for the B1 and T1 ranges the respective remaining signal with WET and without WET.
+        signal_with_WET, residual_long_mag = bloch_simulation.compute_signal_after_pulses(T1=t1, B1_scale=b1, with_WET=True)
+        signal_without_WET, _ = bloch_simulation.compute_signal_after_pulses(T1=t1, B1_scale=b1, with_WET=False)
 
-        # To ignore error message if divided by 0. However, still yields inf if it happens.
+        # (4) Compute the remaining signal.
+        #     1 --> full signal for T1/B1 combination
+        #     0 --> no remaining signal for T1/B1 combination
+        #     Further: Just to ignore error message if divided by 0. Therefore, still yields inf if it happens.
         with np.errstate(divide="ignore", invalid="ignore"):
-            attenuation = np.abs(signal_with_WET) / np.abs(signal_without_WET)
+            remaining_signal = np.abs(signal_with_WET) / np.abs(signal_without_WET)
 
+
+        # (5) Check if lookup table contains NaNs, Infs, zeros
+        tools.ArrayTools.check_nan(remaining_signal)
+        tools.ArrayTools.check_inf(remaining_signal)
+        tools.ArrayTools.count_zeros(remaining_signal)
+
+        # (6) Just for debugging, the remaining Mxy magnetisation after all WET pulses
         self.residual_long_mag = residual_long_mag
 
+        # (7) Create the xarray out of the remaining signal with the desired axes:
+        #     axis 1: The effective B1+ scales
+        #     axis 2: The T1/TR values
         self.simulated_data = xr.DataArray(
-            data=attenuation,
+            data=remaining_signal,
             coords={
                 "B1_scale_effective": self.B1_scales_effective_values,
                 "T1_over_TR": self.T1_values / self.TR,
@@ -1429,15 +1449,64 @@ class LookupTableWET2:
         )
 
         total_entries = self.simulated_data.size
+
+        Console.stop_timer()
+
         Console.printf("success",
                        f"Created WET lookup table with {total_entries} entries."
-                       f"Values Range: [{float(np.nanmin(attenuation))}, {float(np.nanmax(attenuation))}]")
+                       f"Values Range: [{float(np.nanmin(remaining_signal))}, {float(np.nanmax(remaining_signal))}]")
 
+
+    def get(self, b1_scales, t1_over_tr, interpolation:str ="linear", extrapolation:bool = True):
+        """
+        Fetch the remaining signal data from the created lookup table for the desired arrays of B1 and T1/TR values.
+
+        :param b1_scales: the B1+ values array
+        :param t1_over_tr: the T1/TR values array
+        :return: values from the table
+        """
+
+        # (0) Check if extrapolation is desired, otherwise make warnign it might yield NaNs
+        if extrapolation:
+            extrapolation_arg = {"fill_value": None}
+            Console.printf("info", "Extrapolation is activated (nearest-value extrapolation). Double check retrieved values outside the WET lookup table!")
+        else:
+            extrapolation_arg = {}
+            Console.printf("warning", "Extrapolation is deactivated. This yields NaNs for values outside the WET lookup table!")
+
+        # (1) Make sure that the arrays are numpy arrays
+        b1_scales = np.asarray(b1_scales)
+        t1_over_tr = np.asarray(t1_over_tr)
+
+        # (2) Check if the shapes of both arrays are matching
+        # (2a) Not matching shape
+        if b1_scales.shape != t1_over_tr.shape:
+            Console.printf("error", f"The B1 scales and the T1/TR arrays need the same shape, but: \n"
+                                    f"B1 scales: {b1_scales.shape} \n"
+                                    f"T1/TR: {t1_over_tr.shape}")
+            return None
+
+        else:
+            # (2b) Matching shape
+            original_shape = b1_scales.shape
+
+            # (3) Interpolate values from dictionary
+            # First flatten the b1_scales and t1_over_tr to fit the xarray interpolation function (scipy must be in background)
+            # and then reshape it to the original shape (based on the b1_scales, but could also be the t1_over_tr).
+            retrieved_values = self.simulated_data.interp(
+                B1_scale_effective=xr.DataArray(b1_scales.ravel(), dims="points"),
+                T1_over_TR=xr.DataArray(t1_over_tr.ravel(), dims="points"),
+                method=interpolation,
+                kwargs=extrapolation_arg
+            ).values.reshape(original_shape)
+
+            ArrayTools.check_nan(retrieved_values)
+            return retrieved_values
 
     def plot(self):
         """
         Plot the lookup table as a heatmap using matplotlib. Negative values
-        are overlaid in red.
+        are overlaid in red, inf values in magenta, NaN values appear as white.
         :return: Nothing
         """
         # Format tick labels.
@@ -1450,15 +1519,24 @@ class LookupTableWET2:
         # Create a figure and axis.
         fig, ax = plt.subplots(figsize=(8, 6))
 
-        # Create two masked arrays:
-        pos_data = np.ma.masked_less(data, 0)
-        neg_data = np.ma.masked_greater_equal(data, 0)
+        # Replace inf with NaN so imshow renders them as white.
+        inf_mask = np.isinf(data)
+        data_clean = np.where(inf_mask, np.nan, data)
+
+        # Create masked arrays:
+        pos_data = np.ma.masked_where((data_clean < 0) | np.isnan(data_clean), data_clean)
+        neg_data = np.ma.masked_where((data_clean >= 0) | np.isnan(data_clean), data_clean)
 
         # Plot non-negative values using the viridis colormap.
         im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
 
         # Overlay negative values in red.
         im2 = ax.imshow(neg_data, cmap=ListedColormap(['red']), aspect='auto')
+
+        # Overlay inf values in magenta.
+        if np.any(inf_mask):
+            im3 = ax.imshow(np.ma.masked_where(~inf_mask, inf_mask.astype(float)),
+                            cmap=ListedColormap(['magenta']), aspect='auto')
 
         # Set x and y ticks with custom labels.
         ax.set_xticks(np.arange(len(T1_over_TR_formatted)))
@@ -1474,6 +1552,14 @@ class LookupTableWET2:
         ax.set_title('Heatmap of Lookup Table')
         ax.set_xlabel('T1/TR Value')
         ax.set_ylabel('B1 Scale Value')
+
+        # Legend for special values.
+        from matplotlib.patches import Patch
+        ax.legend(handles=[
+            Patch(facecolor='white', edgecolor='black', label='NaN'),
+            Patch(facecolor='magenta', label='Inf'),
+            Patch(facecolor='red', label='Negative'),
+        ], loc='upper right', fontsize=7)
 
         plt.tight_layout()
         plt.show()
@@ -1692,7 +1778,7 @@ class LookupTableWET2:
                     mx, my, mz = self.spoil(mx, my, mz)
 
                 # Mz just before excitation (diagnostic output)
-                residual_long_mag = mz.copy()
+                residual_long_mag = mz.copy() # TODO: Maybe after final excitation pulse?
 
                 # (4) Final excitation pulse
                 #     After WET, Mz for water is assumed Mz=0. However, Mz for other chemical compounds like metabolites
