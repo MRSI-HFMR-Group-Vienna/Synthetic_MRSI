@@ -1466,7 +1466,7 @@ class LookupTableWET2:
         :return: values from the table
         """
 
-        # (0) Check if extrapolation is desired, otherwise make warnign it might yield NaNs
+        # (0) Check if extrapolation is desired, otherwise make warning that it might yield NaNs
         if extrapolation:
             extrapolation_arg = {"fill_value": None}
             Console.printf("info", "Extrapolation is activated (nearest-value extrapolation). Double check retrieved values outside the WET lookup table!")
