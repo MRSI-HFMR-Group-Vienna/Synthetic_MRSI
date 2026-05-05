@@ -3384,3 +3384,405 @@ class JupyterPlotManager:
             "slider_tick_lines": slider_tick_lines,
         }
         return fig, axs, state
+
+
+import sys
+import json
+from pathlib import Path
+from datetime import datetime
+from functools import partial
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+class MRSIVolume:
+    """
+    The MRSIVolume holds a 4D MRSI signal of shape (T, X, Y, Z) together with its time vector.
+    A single method, plot_voi(...), performs the whole pipeline: VOI cropping -> FFT (if needed) ->
+    statistics across all voxels in the VOI -> plot.
+
+    On the same plot the user can show any combination of:
+        - 'mean'         : center line (solid)
+        - 'median'       : center line (dashed)
+        - 'std_band'     : ± 1 SD around mean
+        - 'iqr_band'     : Q25-Q75 around median (robust to outlier voxels)
+        - 'p5_p95_band'  : 5th-95th percentile around median (robust)
+        - 'minmax_lines' : thin min and max envelope lines
+
+    The plot layout (main plot + description sidebar, monospace info text, optional metabolite
+    ideal-ppm overlay on top, ppm axis inversion, save/show options) follows the same convention
+    as FID.plot.
+    """
+
+    def __init__(self,
+                 signal: np.ndarray = None,
+                 time: np.ndarray = None,
+                 name: str = None):
+        """
+        A check if the time-axis length of the 4D signal equals the time vector is performed.
+        If false then the program quits.
+        Further, it is also possible to instantiate a class containing just "None".
+
+        :param signal: 4D MRSI signal of shape (T, X, Y, Z). Complex values supported.
+        :param time:   1D time vector of length T.
+        :param name:   optional label used in plots.
+        """
+
+        # If MRSIVolume is instantiated not empty
+        if signal is not None and time is not None:
+            # Check the dimensionality of the signal
+            if not signal.ndim == 4:
+                Console.printf("error",
+                               f"Expected signal of shape (T, X, Y, Z), but got shape {signal.shape}. Terminating the program!")
+                sys.exit()
+            # Check if the length of the time-axis of the signal equals the time vector
+            if not signal.shape[0] == time.shape[-1]:
+                Console.printf("error",
+                               f"Time-axis of signal ({signal.shape[0]}) does not match length of time vector ({time.shape[-1]}). Terminating the program!")
+                sys.exit()
+
+        self.signal: np.ndarray = signal  # 4D signal (T, X, Y, Z)
+        self.time: np.ndarray = time  # 1D time vector
+        self.name: str = name  # name of the volume / dataset
+        self.metabolites_ideal_ppm: dict = None  # filled by plot_voi if metabolite overlay is enabled
+
+    def plot_voi(self,
+                 x_range: tuple = None,
+                 y_range: tuple = None,
+                 z_range: tuple = None,
+                 x_type: str = "ppm",
+                 y_type: str = "magnitude",
+                 show_statistics: list = None,
+                 show: bool = True,
+                 save_path: str = None,
+                 *,
+                 reference_frequency: float = None,
+                 ppm_center: float = None,
+                 additional_description: str = "",
+                 legend_position: str = "upper left",
+                 figsize: tuple = (15, 8),
+                 show_metabolites_ideal_position: bool = False) -> None:
+        """
+        To plot the statistical envelope of all voxel-FIDs/spectra contained in the VOI.
+
+        The VOI is defined by index ranges (lo, hi) along the spatial axes. None means "use the
+        whole axis". The x-axis can be 'time', 'frequency' or 'ppm'; the y-axis 'magnitude',
+        'real', 'imag', 'phase_rad' or 'phase_deg'.
+
+        Multiple statistics can be plotted on top of each other by listing them in
+        show_statistics. Possible entries:
+
+            - 'mean'         : center line (solid C0)
+            - 'median'       : center line (dashed C1)
+            - 'std_band'     : ± 1 SD band around mean (C0 fill)
+            - 'iqr_band'     : Q25-Q75 band around median (C1 fill, robust)
+            - 'p5_p95_band'  : 5th-95th percentile band around median (C2 fill, robust)
+            - 'minmax_lines' : thin min and max envelope lines (C3)
+
+        Default: ['mean', 'std_band'] (literature default for MRSI).
+
+        :param x_range: spatial index range on X axis as (lo, hi). None = full axis.
+        :param y_range: spatial index range on Y axis as (lo, hi). None = full axis.
+        :param z_range: spatial index range on Z axis as (lo, hi). None = full axis.
+        :param x_type: domain of x-axis. Can be "time", "frequency", "ppm".
+        :param y_type: y-axis quantity. Can be "magnitude", "real", "imag", "phase_rad", "phase_deg".
+        :param show_statistics: list of statistic identifiers to plot, see above.
+        :param show: if plot is shown directly after creating it.
+        :param save_path: path including filename to save plot.
+        :param reference_frequency: e.g. that of TMS, water, etc., used for ppm scale.
+        :param ppm_center: chemical-shift value (in ppm) corresponding to a frequency offset of 0 Hz.
+        :param additional_description: additional string for the description sidebar. Use "\\n" for newlines.
+        :param legend_position: see matplotlib.
+        :param figsize: figure size of the whole figure.
+        :param show_metabolites_ideal_position: if True and x_type=='ppm', overlays metabolite real
+                                                ppm positions (loaded from chemical_compounds.json).
+        :return: Nothing
+        """
+
+        # 0a) Defaults for ppm scale
+        if reference_frequency is None:
+            reference_frequency = 297_223_042
+            Console.printf("warning", f"No reference frequency is specified. Choosing: {reference_frequency} Hz.")
+        if ppm_center is None:
+            ppm_center = 4.7
+            Console.printf("warning", f"No ppm center is specified. Choosing: {ppm_center} ppm.")
+
+        # 0b) Default statistics if user did not specify any
+        if show_statistics is None:
+            show_statistics = ["mean", "std_band"]
+
+        # 0c) Define possible quantities for x-axis, y-axis and statistics
+        x_type_possible = ["time", "frequency", "ppm"]
+        y_type_possible = {
+            "magnitude": np.abs,
+            "real": np.real,
+            "imag": np.imag,
+            "phase_rad": partial(np.angle, deg=False),
+            "phase_deg": partial(np.angle, deg=True),
+        }
+        statistics_possible = ["mean", "median", "std_band", "iqr_band", "p5_p95_band", "minmax_lines"]
+
+        # 1a) Check chosen x_type
+        if not x_type in x_type_possible:
+            Console.printf("error",
+                           f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
+            sys.exit()
+
+        # 1b) Check chosen y_type
+        if not y_type in y_type_possible:
+            Console.printf("error",
+                           f"Only possible to choose '{list(y_type_possible.keys())}' for y-axis, but you have chosen '{y_type}'. Terminate program!")
+            sys.exit()
+
+        # 1c) Check chosen statistics
+        invalid = [s for s in show_statistics if s not in statistics_possible]
+        if invalid:
+            Console.printf("error",
+                           f"Unknown entries in show_statistics: {invalid}. Possible: {statistics_possible}. Terminate program!")
+            sys.exit()
+
+        # 2a) Crop the volume to the VOI according to the index ranges
+        T, X, Y, Z = self.signal.shape
+
+        def _make_slice(rng, axis_len, axis_name):
+            if rng is None:
+                return slice(None)
+            lo, hi = rng
+            if not (0 <= lo < hi <= axis_len):
+                Console.printf("error",
+                               f"{axis_name}_range={rng} out of bounds (axis length {axis_len}). Terminate program!")
+                sys.exit()
+            return slice(lo, hi)
+
+        sx = _make_slice(x_range, X, "x")
+        sy = _make_slice(y_range, Y, "y")
+        sz = _make_slice(z_range, Z, "z")
+        signal_voi = self.signal[:, sx, sy, sz]  # shape (T, Xv, Yv, Zv)
+        n_voxels = int(np.prod(signal_voi.shape[1:]))
+
+        # 2a-bis) If signal/time is a Dask array, materialize them to NumPy now.
+        #         Done *after* VOI cropping so we only pull the small VOI into memory,
+        #         not the whole volume. Required because:
+        #           * np.fft.fft on a Dask array dispatches to dask.array.fft, which
+        #             requires the FFT axis to be a single chunk.
+        #           * np.percentile (used for IQR / p5_p95) needs a concrete NumPy array.
+        #         If your VOI is too large to fit in memory, choose a smaller one.
+        try:
+            import dask.array as _da
+            if isinstance(signal_voi, _da.Array):
+                Console.printf("info", f"Dask array detected. Computing VOI of shape {signal_voi.shape} to NumPy.")
+                signal_voi = signal_voi.compute()
+            if isinstance(self.time, _da.Array):
+                time_arr = self.time.compute()
+            else:
+                time_arr = self.time
+        except ImportError:
+            time_arr = self.time
+
+        # 2b) Compute the x-axis (time / frequency / ppm) and the per-sample data array
+        if x_type == "time":
+            scales = time_arr
+            samples = signal_voi  # (T, Xv, Yv, Zv)
+        else:
+            N = time_arr.size
+            dwell_time = time_arr[1] - time_arr[0]
+            frequency_hz = np.fft.fftfreq(N, d=dwell_time)
+            frequency_hz = np.fft.fftshift(frequency_hz)
+            spectrum = np.fft.fft(signal_voi, axis=0)
+            spectrum = np.fft.fftshift(spectrum, axes=0)
+            samples = spectrum  # (F, Xv, Yv, Zv)
+            if x_type == "frequency":
+                scales = frequency_hz
+            else:  # ppm
+                scales = (frequency_hz / reference_frequency) * 1e6 + ppm_center
+
+        # 2c) Apply y_type transform and flatten the spatial dims to (F, N_voxels)
+        transform = y_type_possible[y_type]
+        samples = transform(samples)
+        samples_flat = samples.reshape(samples.shape[0], -1)
+
+        # 2d) Compute only the statistics that are actually requested
+        stats_data = {}
+        if any(s in show_statistics for s in ["mean", "std_band"]):
+            stats_data["mean"] = samples_flat.mean(axis=1)
+        if any(s in show_statistics for s in ["median", "iqr_band", "p5_p95_band"]):
+            stats_data["median"] = np.median(samples_flat, axis=1)
+        if "std_band" in show_statistics:
+            stats_data["std"] = samples_flat.std(axis=1)
+        if "iqr_band" in show_statistics:
+            stats_data["q25"] = np.percentile(samples_flat, 25, axis=1)
+            stats_data["q75"] = np.percentile(samples_flat, 75, axis=1)
+        if "p5_p95_band" in show_statistics:
+            stats_data["p5"] = np.percentile(samples_flat, 5, axis=1)
+            stats_data["p95"] = np.percentile(samples_flat, 95, axis=1)
+        if "minmax_lines" in show_statistics:
+            stats_data["min"] = samples_flat.min(axis=1)
+            stats_data["max"] = samples_flat.max(axis=1)
+
+        # 3a) Left subplot (main) + right subplot (description), same layout as FID.plot
+        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=figsize,
+                                                  nrows=1,
+                                                  ncols=2,
+                                                  gridspec_kw={'width_ratios': [5, 1]})
+
+        # 3b) Plot bands FIRST so center lines stay on top.
+        #     Order: widest band (p5-p95) at the bottom, then std, then iqr.
+        if "p5_p95_band" in show_statistics:
+            ax_main.fill_between(scales, stats_data["p5"], stats_data["p95"],
+                                 color="C2", alpha=0.18, linewidth=0,
+                                 label="5th-95th pct.", zorder=1)
+        if "std_band" in show_statistics:
+            ax_main.fill_between(scales,
+                                 stats_data["mean"] - stats_data["std"],
+                                 stats_data["mean"] + stats_data["std"],
+                                 color="C0", alpha=0.25, linewidth=0,
+                                 label="Mean ± 1 SD", zorder=2)
+        if "iqr_band" in show_statistics:
+            ax_main.fill_between(scales, stats_data["q25"], stats_data["q75"],
+                                 color="C1", alpha=0.30, linewidth=0,
+                                 label="IQR (Q25-Q75)", zorder=3)
+
+        # 3c) Plot min/max as thin lines (independent of any chosen band)
+        if "minmax_lines" in show_statistics:
+            ax_main.plot(scales, stats_data["min"], color="C3", lw=0.6, alpha=0.7,
+                         label="Min", zorder=4)
+            ax_main.plot(scales, stats_data["max"], color="C3", lw=0.6, alpha=0.7,
+                         label="Max", zorder=4)
+
+        # 3d) Plot center lines (drawn last => on top)
+        if "mean" in show_statistics:
+            ax_main.plot(scales, stats_data["mean"], color="C0", lw=1.3,
+                         label="Mean", zorder=5)
+        if "median" in show_statistics:
+            ax_main.plot(scales, stats_data["median"], color="C1", lw=1.3, ls="--",
+                         label="Median", zorder=6)
+
+        ax_main.set_title(f"MRSI VOI envelope — {n_voxels} voxels")
+        ax_main.set_xlabel(f"{x_type}")
+
+        # 3e) Top subplot: show the available metabolites as a list and a dot where a peak occurs.
+        #                  Further, plot vertical guide lines at the peak positions.
+        ax_top = None
+        if show_metabolites_ideal_position and x_type == "ppm":
+            # To load the data and assign it to the object variable
+            path = Path.cwd().parent / "docs" / "chemical_compounds.json"
+            with path.open("r", encoding="utf-8") as f:
+                compounds = json.load(f)
+
+            self.metabolites_ideal_ppm = {}
+            for key in compounds["metabolites"].keys():
+                self.metabolites_ideal_ppm[key] = compounds["metabolites"][key]["ppm"]
+
+            metab_dict = self.metabolites_ideal_ppm
+
+            if isinstance(metab_dict, dict) and len(metab_dict) > 0:
+                from mpl_toolkits.axes_grid1 import make_axes_locatable
+                from matplotlib.transforms import blended_transform_factory
+
+                metabs = list(metab_dict.keys())
+                cmap = plt.get_cmap("Dark2")
+                color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
+
+                # a) vlines across full main-plot height
+                y0, y1 = ax_main.get_ylim()
+                ymin, ymax = (y0, y1) if y0 < y1 else (y1, y0)
+
+                for m in metabs:
+                    ppms = np.asarray(metab_dict[m], dtype=float)
+                    ax_main.vlines(ppms,
+                                   ymin=ymin, ymax=ymax,
+                                   colors=color_map[m],
+                                   lw=0.8, alpha=0.25,
+                                   zorder=0,
+                                   label="_nolegend_")
+
+                # b) top axis (track) above ax_main
+                divider = make_axes_locatable(ax_main)
+                ax_top = divider.append_axes("top", size="22%", pad=0.06, sharex=ax_main)
+
+                n = len(metabs)
+                ax_top.set_ylim(-0.5, n - 0.5)
+                ax_top.set_yticks([])
+                ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False, top=False, labeltop=False)
+                for s in ["left", "right", "bottom"]:
+                    ax_top.spines[s].set_visible(False)
+
+                # x in axes fraction (0..1), y in row index units
+                trans = blended_transform_factory(ax_top.transAxes, ax_top.transData)
+
+                for i, m in enumerate(metabs):
+                    col = color_map[m]
+                    ppms = np.asarray(metab_dict[m], dtype=float)
+
+                    # dots in row i
+                    ax_top.scatter(ppms, np.full_like(ppms, i, dtype=float),
+                                   s=18, color=col, alpha=0.9, linewidths=0)
+
+                    # top-left metabolite list (colored)
+                    ax_top.text(0.01, i, m,
+                                transform=trans,
+                                ha="left", va="center",
+                                color=col, alpha=0.9,
+                                fontsize=9, clip_on=True)
+
+                # optional subtle row guides
+                ax_top.hlines(np.arange(n),
+                              xmin=ax_main.get_xlim()[0],
+                              xmax=ax_main.get_xlim()[1],
+                              colors="k", alpha=0.06, lw=0.8)
+            else:
+                Console.printf("warning",
+                               "show_metabolites_ideal_position=True, but self.metabolites_ideal_ppm is missing/empty. No overlay plotted.")
+
+        # 4a) Right subplot: description text
+        ax_sidebar.axis('off')
+        ax_sidebar.set_title('Description')
+        text_description = (f"{'Statistics':.<17}: {', '.join(show_statistics)}\n"
+                            f"{'N voxels':.<17}: {n_voxels}\n"
+                            f"{'X range':.<17}: {x_range}\n"
+                            f"{'Y range':.<17}: {y_range}\n"
+                            f"{'Z range':.<17}: {z_range}\n"
+                            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
+                            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}")
+
+        # 4b) If ppm then add additional information at the top
+        if x_type == "ppm":
+            ppm_string = (f"{'Ref. frequency':.<17}: {reference_frequency}\n"
+                          f"{'ppm center':.<17}: {ppm_center}\n")
+            text_description = ppm_string + text_description
+
+        # 4c) Just to ensure this is first in the text string
+        text_description = f"{'Show y-values':.<17}: {y_type}\n" + text_description
+
+        # 4d) Add text to the right (description) text subplot
+        ax_sidebar.text(0.01, 0.99, text_description,
+                        transform=ax_sidebar.transAxes,
+                        va='top', ha='left',
+                        family='monospace')
+
+        # 5a) Just required in case ppm occurs, thus x-axis is mirrored (spectroscopic view)
+        handles, labels = ax_main.get_legend_handles_labels()
+        handles = handles[::-1]
+        labels = labels[::-1]
+
+        # 5b) Apply mirroring of axis in case ppm is chosen
+        if x_type == "ppm":
+            ax_main.invert_xaxis()
+            # sharex => ax_top (if created) mirrors automatically, no extra code needed
+
+        # 5c) Create the whole figure
+        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False, ncol=1)
+        plt.tight_layout()
+
+        # 5d) For top metabolites plot: give the figure a bit more headroom so labels never get clipped
+        if ax_top is not None:
+            plt.subplots_adjust(top=0.90)
+
+        # 6) Save to desired path and/or show
+        if save_path is not None:
+            fig.savefig(save_path)
+        if show:
+            plt.show()
+
+

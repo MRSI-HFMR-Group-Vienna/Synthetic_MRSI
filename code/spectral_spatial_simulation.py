@@ -1094,7 +1094,7 @@ class Model:
 
     def apply_t2(self) -> da.Array:
         """
-        This incorporate the the signal after T2 decay. For more information see comments in the method "_t2_echo_decay".
+        This incorporate the signal after T2 decay. For more information see comments in the method "_t2_echo_decay".
 
         :return: Dask Array
         """
@@ -1321,6 +1321,12 @@ class Simulator:
         raise NotImplementedError("This method is not yet implemented")
 
     def water_suppression(self):
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+
+
         # TODO: Perform on signal of FID? Spectrum required?
 
         # TODO: Currently working on this.
@@ -1330,6 +1336,11 @@ class Simulator:
         raise NotImplementedError("This method is not yet implemented")
 
     def lipid_suppression(self):
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+
         # TODO: Perform on signal of FID? Spectrum required?
         raise NotImplementedError("This method is not yet implemented")
 
@@ -1503,10 +1514,20 @@ class LookupTableWET2:
             ArrayTools.check_nan(retrieved_values)
             return retrieved_values
 
-    def plot(self):
+    def plot(
+            self,
+            show_metabolites_position: bool = False,
+            metabolites_tissue: str = "both",
+    ):
         """
         Plot the lookup table as a heatmap using matplotlib. Negative values
         are overlaid in red, inf values in magenta, NaN values appear as white.
+
+        :param show_metabolites_position: If True, overlay metabolite T1/TR positions
+                                          as vertical dotted lines, with a top track
+                                          listing the metabolite names.
+        :param metabolites_tissue: 'WM', 'GM', or 'both'. Which tissue T1 to use for
+                                   the overlay. Only used if show_metabolites_position.
         :return: Nothing
         """
         # Format tick labels.
@@ -1561,8 +1582,159 @@ class LookupTableWET2:
             Patch(facecolor='red', label='Negative'),
         ], loc='upper right', fontsize=7)
 
+        # Optional metabolite overlay (reference fixed to 7T / Xin / occipital, self.TR assumed in ms).
+        ax_top = None
+        if show_metabolites_position:
+            import pint
+            ureg = pint.UnitRegistry()
+
+            # Load the compound database.
+            path = Path.cwd().parent / "docs" / "chemical_compounds.json"
+            with path.open("r", encoding="utf-8") as f:
+                compounds = json.load(f)
+
+            # Collect T1 midpoints per metabolite for the requested tissue(s).
+            # Use pint to convert from the JSON's stored unit into ms, so the
+            # metabolite T1 and self.TR share the same unit before forming T1/TR.
+            tissues = ["WM", "GM"] if metabolites_tissue.lower() == "both" else [metabolites_tissue]
+            metab_t1_dict = {}
+            for metab_name, metab_info in compounds["metabolites"].items():
+                t1_block = metab_info.get("T1", {}).get("7T", {}).get("Xin", {})
+                for tissue in tissues:
+                    entry = t1_block.get(tissue, {}).get("occipital", None)
+                    if entry is None:
+                        continue
+                    lo, hi = entry["range"]
+                    src_unit = entry.get("unit", "s")
+                    midpoint_q = (0.5 * (lo + hi)) * ureg(src_unit)
+                    midpoint_in_ms = midpoint_q.to("ms").magnitude
+                    label = f"{metab_name} ({tissue})" if len(tissues) > 1 else metab_name
+                    metab_t1_dict[label] = midpoint_in_ms
+
+            # Map T1/TR -> imshow column index via np.interp.
+            # Both metab_t1_dict[m] and self.TR are in ms, so the ratio is dimensionless.
+            if len(metab_t1_dict) > 0:
+                t1_over_tr_array = np.array(self.T1_values) / self.TR
+                positions_axis = np.arange(len(self.T1_values), dtype=float)
+                sort_idx = np.argsort(t1_over_tr_array)
+                xp_sorted = t1_over_tr_array[sort_idx]
+                fp_sorted = positions_axis[sort_idx]
+
+                from mpl_toolkits.axes_grid1 import make_axes_locatable
+                from matplotlib.transforms import blended_transform_factory
+
+                metabs = list(metab_t1_dict.keys())
+                cmap = plt.get_cmap("Dark2")
+                color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
+
+                # a) Vertical dotted line per metabolite across the heatmap.
+                y0, y1 = ax.get_ylim()
+                ymin, ymax = (y0, y1) if y0 < y1 else (y1, y0)
+                for m in metabs:
+                    ratio = metab_t1_dict[m] / self.TR
+                    if ratio < xp_sorted[0] or ratio > xp_sorted[-1]:
+                        continue  # outside the table's T1/TR range, skip
+                    xpos = float(np.interp(ratio, xp_sorted, fp_sorted))
+                    ax.vlines(xpos, ymin=ymin, ymax=ymax,
+                              colors=color_map[m], linestyles=":",
+                              linewidth=1.2, alpha=0.85, zorder=5)
+
+                # b) Top axis (track) above ax with a dot and the metabolite name.
+                divider = make_axes_locatable(ax)
+                ax_top = divider.append_axes("top", size="22%", pad=0.06, sharex=ax)
+                n = len(metabs)
+                ax_top.set_ylim(-0.5, n - 0.5)
+                ax_top.set_yticks([])
+                ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False,
+                                   top=False, labeltop=False)
+                for s in ["left", "right", "bottom"]:
+                    ax_top.spines[s].set_visible(False)
+
+                # x in axes fraction (0..1), y in row index units
+                trans = blended_transform_factory(ax_top.transAxes, ax_top.transData)
+                for i, m in enumerate(metabs):
+                    col = color_map[m]
+                    ratio = metab_t1_dict[m] / self.TR
+                    if xp_sorted[0] <= ratio <= xp_sorted[-1]:
+                        xpos = float(np.interp(ratio, xp_sorted, fp_sorted))
+                        ax_top.scatter([xpos], [i], s=22, color=col, alpha=0.9, linewidths=0)
+                    # top-left metabolite list (colored)
+                    ax_top.text(0.01, i, m, transform=trans, ha="left", va="center",
+                                color=col, alpha=0.95, fontsize=7, clip_on=True)
+
+                # optional subtle row guides
+                ax_top.hlines(np.arange(n),
+                              xmin=ax.get_xlim()[0], xmax=ax.get_xlim()[1],
+                              colors="k", alpha=0.06, lw=0.8)
+
         plt.tight_layout()
+
+        # Give the figure a bit more headroom so the top labels do not get clipped.
+        if ax_top is not None:
+            plt.subplots_adjust(top=0.88)
+
         plt.show()
+
+###    def plot(self):
+###        """
+###        Plot the lookup table as a heatmap using matplotlib. Negative values
+###        are overlaid in red, inf values in magenta, NaN values appear as white.
+###        :return: Nothing
+###        """
+###        # Format tick labels.
+###        T1_over_TR_formatted = [f"{val / self.TR:.2f}" for val in self.T1_values]
+###        B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
+###
+###        # Ensure the simulated data is a numpy array.
+###        data = np.array(self.simulated_data)
+###
+###        # Create a figure and axis.
+###        fig, ax = plt.subplots(figsize=(8, 6))
+###
+###        # Replace inf with NaN so imshow renders them as white.
+###        inf_mask = np.isinf(data)
+###        data_clean = np.where(inf_mask, np.nan, data)
+###
+###        # Create masked arrays:
+###        pos_data = np.ma.masked_where((data_clean < 0) | np.isnan(data_clean), data_clean)
+###        neg_data = np.ma.masked_where((data_clean >= 0) | np.isnan(data_clean), data_clean)
+###
+###        # Plot non-negative values using the viridis colormap.
+###        im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
+###
+###        # Overlay negative values in red.
+###        im2 = ax.imshow(neg_data, cmap=ListedColormap(['red']), aspect='auto')
+###
+###        # Overlay inf values in magenta.
+###        if np.any(inf_mask):
+###            im3 = ax.imshow(np.ma.masked_where(~inf_mask, inf_mask.astype(float)),
+###                            cmap=ListedColormap(['magenta']), aspect='auto')
+###
+###        # Set x and y ticks with custom labels.
+###        ax.set_xticks(np.arange(len(T1_over_TR_formatted)))
+###        ax.set_xticklabels(T1_over_TR_formatted, fontsize=7, rotation=90, ha='right')
+###        ax.set_yticks(np.arange(len(B1_scale_formatted)))
+###        ax.set_yticklabels(B1_scale_formatted, fontsize=7)
+###
+###        # Add a colorbar for the viridis part.
+###        cbar = fig.colorbar(im1, ax=ax)
+###        cbar.ax.tick_params(labelsize=7)
+###
+###        # Set axis titles.
+###        ax.set_title('Heatmap of Lookup Table')
+###        ax.set_xlabel('T1/TR Value')
+###        ax.set_ylabel('B1 Scale Value')
+###
+###        # Legend for special values.
+###        from matplotlib.patches import Patch
+###        ax.legend(handles=[
+###            Patch(facecolor='white', edgecolor='black', label='NaN'),
+###            Patch(facecolor='magenta', label='Inf'),
+###            Patch(facecolor='red', label='Negative'),
+###        ], loc='upper right', fontsize=7)
+###
+###        plt.tight_layout()
+###        plt.show()
 
 
     # Inner class: vectorized Bloch simulation -------------------------------------------------------------------------

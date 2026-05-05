@@ -34,6 +34,26 @@ RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8
 
+# 🔹 X11 / Qt runtime libs needed for Spyder GUI via X11 forwarding (container → local desktop)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      libxcb-xinerama0 \
+      libxkbcommon-x11-0 \
+      libdbus-1-3 \
+      libxcb-icccm4 \
+      libxcb-image0 \
+      libxcb-keysyms1 \
+      libxcb-randr0 \
+      libxcb-render-util0 \
+      libxcb-shape0 \
+      libxcb-sync1 \
+      libxcb-xfixes0 \
+      libgl1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# 🔹 Avoid Qt MIT-SHM shared memory errors when Spyder window is forwarded out of the container
+ENV QT_X11_NO_MITSHM=1
+
 ############################
 # FUSE / rclone helper
 ############################
@@ -143,6 +163,11 @@ RUN conda install -n "${PROJECT_ENV_NAME}" -c conda-forge \
       ipympl \
       ipywidgets \
       jupyterlab_widgets && \
+    conda clean -afy
+
+# 🔹 Install Spyder into the project env (same env as the Jupyter kernel)
+#    Launch from inside the container with `spyder`; window appears on local desktop via X11 forwarding
+RUN conda install -n "${PROJECT_ENV_NAME}" -c conda-forge spyder && \
     conda clean -afy
 
 # 🔹 Register a Jupyter kernel for the project env SYSTEM-WIDE (no --user)

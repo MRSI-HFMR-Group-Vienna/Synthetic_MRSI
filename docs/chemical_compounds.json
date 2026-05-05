@@ -1,7 +1,7 @@
 {
   "Author": "Markus Schuster",
   "Description": "This file contains mainly the parts per million (ppm) information about chemical compounds for 1H-MRS (e.g., metabolites) and some additional information.",
-  "version": "2026-02-27",
+  "version": "2026-03-24",
 
   "references": "docs/references.bib",
 
@@ -28,9 +28,17 @@
           }
         }
       },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": { "occipital": { "range": [1.84, 1.96], "unit": "s" } },
+            "GM": { "occipital": { "range": [1.78, 1.88], "unit": "s" } }
+          }
+        }
+      },
       "biosignificance": "the exact function remains largely unknown; suggested functions are: osmoregulation and precursor of neurotransmitter NAAG, involvement in in fatty acid and myelin synthesis",
       "note": "higher concentration in gray matter than white matter; secound most concentrated metabolite in brain after glutamate; used as marker for neuronal density, but it differ among neuron types",
-      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+      "reference_keys": [{"deGraaf":"deGraaf2019InVivoNMR"}, {"Pouwels":"Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
     },
     "Glu": {
       "name_full": "Glutamate",
@@ -53,9 +61,17 @@
           }
         }
       },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": { "occipital": { "range": [1.71, 1.79], "unit": "s" } },
+            "GM": { "occipital": { "range": [1.52, 1.70], "unit": "s" } }
+          }
+        }
+      },
       "biosignificance": "excitatory neurotransmitter in mammalian brain; precursor of inhibitory neurotransmitter GABA; important component in synthetics of other small metabolites (e.g., glutathione) and also larger peptides and proteins; occurs in cell walls of escherichia coli.",
       "note": "significant concentration difference in gray matter and white matter ",
-      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+      "reference_keys": [{"deGraaf":"deGraaf2019InVivoNMR"}, {"Pouwels":"Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
     },
     "Gln": {
       "name_full": "Glutamine",
@@ -78,9 +94,17 @@
           }
         }
       },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": { "occipital": { "range": [1.51, 1.97], "unit": "s" } },
+            "GM": { "occipital": { "range": [1.57, 1.71], "unit": "s" } }
+          }
+        }
+      },
       "biosignificance": "main function is ammonia detoxification; it is fuel source for a number of cancers; it is synthesised from Glutamate in astroglia; can cross brain blood barrier; glutamate-glutamine neurotransmitter cycle",
       "note": "At min 7T the the glutamate and glutamine H4 resonances are visually separated (see de Graaf)",
-      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+      "reference_keys": [{"deGraaf":"deGraaf2019InVivoNMR"}, {"Pouwels":"Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
     },
     "m-Ins": {
       "name_full": "myo-Inositol",
@@ -103,9 +127,17 @@
           }
         }
     },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": { "occipital": { "range": [1.12, 1.26], "unit": "s" } },
+            "GM": { "occipital": { "range": [1.20, 1.36], "unit": "s" } }
+          }
+        }
+      },
       "biosignificance": "most abundant isomer form of inositol found in tissue; proposed as a glial marker; altered levels found in mild cognitive impairment and Alzheimer's disease and brain injury",
       "note": "This is one of the nine possible stereoisomers of inositol, thus only difference in orientation of proton H2. But same chemical formular and molar mass.",
-      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+      "reference_keys": [{"deGraaf":"deGraaf2019InVivoNMR"}, {"Pouwels":"Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
     },
     "Cr+PCr": {
       "name_full": "Creatine + Phosphocreatine (total creatine)",
@@ -129,9 +161,17 @@
           }
         }
       },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": { "occipital": { "range": [1.74, 1.82], "unit": "s" } },
+            "GM": { "occipital": { "range": [1.68, 1.80], "unit": "s" } }
+          }
+        }
+      },
       "biosignificance": "creatine and phosphocreatine together with ATP crucial role energy metabolism of tissue; total creatine tCr does not change over age or in various diseases, but decrease levels in chronic phase  of pathologies like stroke and tumours; present in neuronal and glial cells; tCr + creatine kinase: keeps ATP steady by quickly regenerating it (energy 'buffer'); carries energy from mitochondria to where it's used most (muscle fibers, nerve terminals).",
       "note": "chemical shift between creatine (3.027 ppm) and phosphocreatine (3.029 ppm) methyl is is too small to detect in vivo, but possible for creatine (3.913 ppm) and phosphocreatine (3.930 ppm) methylene at min 7T scanner",
-      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+      "reference_keys": [{"deGraaf":"deGraaf2019InVivoNMR"}, {"Pouwels":"Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
   },
     "GPC+PCh": {
       "name_full": "Glycerophosphocholine + Phosphorylcholine (total choline)",
@@ -155,9 +195,17 @@
           }
         }
       },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": { "occipital": { "range": [1.26, 1.38], "unit": "s" } },
+            "GM": { "occipital": { "range": [1.40, 1.62], "unit": "s" } }
+          }
+        }
+      },
       "biosignificance": "tied to phospholipid synthesis/degradation, therefore marker for membrane turnover; higher total creatine tCr in Alzheimer's disease and multiple sclerosis (suggesting altered membrane turnover); lower choline level in stroke",
       "note": "total choline tCho at about 3.2 ppm is a composite signal (Cho, PC, GPC), not well separable; ppm_ranges is added since multiple peaks in this range!",
-      "reference_keys": ["deGraaf2019InVivoNMR", "Pouwels1998Regional"]
+      "reference_keys": [{"deGraaf":"deGraaf2019InVivoNMR"}, {"Pouwels":"Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
     }
   },
   "macromolecules": {}
