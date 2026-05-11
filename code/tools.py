@@ -11,8 +11,9 @@ import sys
 
 import warnings
 import functools
+from functools import wraps
 from typing import Callable
-from printer import Console
+from prettyconsole import Console
 
 u = pint.UnitRegistry()  # for using units
 
@@ -27,6 +28,7 @@ import bibtexparser
 import socket
 import time
 import operator
+from pathlib import Path, PosixPath
 
 # For CustomArray extend visualisation jupyter lab:
 import html as _html
@@ -2093,18 +2095,137 @@ class UnitTools:
         else:
             return array
 
+    @staticmethod
+    def unwrap_pint(func):
+        """
+        Decorator that strips a pint.Quantity wrapper from the first array argument,
+        lets the wrapped function operate on the bare numpy/cupy array, and re-wraps
+        the result with the original unit.
+
+        The wrapped function never needs to know about pint. If the input was not a
+        pint.Quantity, the decorator is a no-op.
+
+        (!) Note: if you use the decorator @staticmethod together with this
+                  @UnitTools.unwrap_pint then is it in the following order
+                  to avoid conflicts:
+                      @staticmethod
+                      @UnitTools.unwrap_pint
+                      def some_function_or_method()
+                           (...)
+
+        :param func: function whose first positional argument is an array
+        :return: wrapped function with transparent pint handling
+        """
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Find the first positional arg and check if it carries a pint unit
+            unit = None
+            if args and hasattr(args[0], "magnitude") and hasattr(args[0], "units"):
+                unit = args[0].units
+                args = (args[0].magnitude,) + args[1:]
+
+            # Call the wrapped function with the bare array
+            result = func(*args, **kwargs)
+
+            # Re-wrap the result if the input was a pint.Quantity
+            if unit is not None and result is not None:
+                result = result * unit
+
+            return result
+
+        return wrapper
+
+
 class ArrayTools:
+    """
+    Just different array manipulation tools for more convenience, uniform array
+    handling and thus faster programming progress.
+    """
 
     @staticmethod
-    def to_data_type(array: np.ndarray | cp.ndarray, data_type: str, verbose: bool = True):
+    @UnitTools.unwrap_pint
+    def to_precision(array: np.ndarray | cp.ndarray | pint.Quantity, precision: int, verbose: bool = True):
+        """
+        Change the dtype precision of a numpy or cupy array.
+        This method is helpful if e.g., a complex signal (fid) and float signal (time) need both exhibit
+        a certain precision (e.g., 32), then its more convenient to just call the same method, this method
+        twice.
+
+        (!) This method uses: ArrayTools.to_data_type in the background!
+
+        (!) Note: This also works with pint.Quantities since @UnitTools.unwrap_pint is used.
+
+        :param array: input array (numpy or cupy), optionally wrapped as a pint.Quantity
+        :param precision: target precision in bit (e.g. 8, 16, 32, 64, ...)
+                          The precision is interpreted as the precision of one scalar component.
+                          Therefore, precision=32 -> float32, int32, uint32 and complex64.
+        :param verbose: Print to console if True
+        :return: array with changed precision
+        """
+        if not isinstance(precision, int):
+            Console.printf("error", "precision must be an integer!")
+            return
+
+        if precision <= 0:
+            Console.printf("error", "precision must be larger than 0")
+            return
+
+        xp = ArrayTools.get_backend(array)
+
+        data_type_before = xp.dtype(array.dtype)
+        data_type_kind = data_type_before.kind
+
+        if data_type_kind == "b":
+            data_type = "bool"
+
+        elif data_type_kind == "i":
+            data_type = f"int{precision}"
+
+        elif data_type_kind == "u":
+            data_type = f"uint{precision}"
+
+        elif data_type_kind == "f":
+            data_type = f"float{precision}"
+
+        elif data_type_kind == "c":
+            data_type = f"complex{2 * precision}"
+
+        else:
+            Console.printf("error",
+                           f"Cannot change precision for data type {data_type_before}."
+                           f"Only bool, integer, unsigned integer, float and complex arrays are supported.")
+            return
+
+        try:
+            xp.dtype(data_type)
+        except TypeError:
+            Console.printf("error",
+                           f"Precision {precision} is not supported for data type kind '{data_type_kind}' "
+                           f"with backend {xp.__name__}. Tried to create data type '{data_type}'")
+            return
+
+        return ArrayTools.to_data_type(array=array, data_type=data_type, verbose=verbose)
+
+    @staticmethod
+    @UnitTools.unwrap_pint
+    def to_data_type(array: np.ndarray | cp.ndarray | pint.Quantity, data_type: str, verbose: bool = True):
         """
         Change the dtype of a numpy or cupy array.
 
-        :param array: input array (numpy or cupy)
+        (!) Note: This also works with pint.Quantities since @UnitTools.unwrap_pint is used.
+
+        :param array: input array (numpy or cupy), optionally wrapped as a pint.Quantity
         :param data_type: target dtype as string (e.g. "float32", "float64", "complex128")
         :param verbose: Print to console if True
-        :return: array with changed dtype
+        :return: array with changed dtype (re-wrapped as pint.Quantity if the input was)
         """
+        # Strip pint unit if present (duck-typed to avoid a hard pint import)
+        unit = None
+        if hasattr(array, "magnitude") and hasattr(array, "units"):
+            unit = array.units
+            array = array.magnitude
+
         xp = ArrayTools.get_backend(array)
 
         data_type_before = array.dtype
@@ -2112,9 +2233,14 @@ class ArrayTools:
         data_type_after = array.dtype
 
         if data_type_before != data_type_after:
-            Console.printf("success", f"Changed the data type from {data_type_before} -> {data_type_after}", mute=not verbose)
+            Console.printf("success", f"Changed the data type from {data_type_before} -> {data_type_after}",
+                           mute=not verbose)
         else:
             Console.printf("warning", f"Data type already {data_type_after}. No change was made.", mute=not verbose)
+
+        # Re-wrap with the original unit if the input was a pint.Quantity
+        if unit is not None:
+            array = array * unit
 
         return array
 
@@ -3386,6 +3512,34 @@ class JupyterPlotManager:
         return fig, axs, state
 
 
+class PathTools:
+    """
+    For dealing with paths, finding files and so on.
+    """
+
+    @staticmethod
+    def list_files(path_to_folder, extension, verbose=True) -> list[PosixPath, PosixPath, ...]:
+        """
+        To find all files of specific extension in desired path. It returns a list of type "pathlib.PosixPath"
+        which can be treated in many cases like a string.
+        """
+        folder = Path(path_to_folder)
+        files = list(folder.glob(f"*{extension}"))
+        number_total_files = sum(1 for p in folder.iterdir() if p.is_file())
+
+        if len(files) == 0:
+            Console.printf("error",
+                           f"No files with extension '{extension}' are available in the given path. Number of files available in this folder: {number_total_files}",
+                           mute=not verbose)
+            return
+        else:
+            Console.printf("success",
+                           f"Found {len(files)} files with extension '{extension}'. In total {number_total_files} files are in this folder!")
+            return files
+
+
+
+### Here TODO. Below, modify it! #############
 import sys
 import json
 from pathlib import Path

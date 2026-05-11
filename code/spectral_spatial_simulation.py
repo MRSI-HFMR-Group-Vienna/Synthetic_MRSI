@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from functools import partial
 from tools import CustomArray
-from printer import Console
+from prettyconsole import Console
 from tools import GPUTools, DaskTools, UnitTools, SpaceEstimator, ArrayTools
 from scipy.signal import resample
 from pathlib import Path
@@ -1345,7 +1345,7 @@ class Simulator:
         raise NotImplementedError("This method is not yet implemented")
 
 
-class LookupTableWET2:
+class LookupTableWET: # Note: was before LookupTableWET2
     """
     This class is for creating a lookup table for water suppression. The technique is WET.
     The suppression is given as a ratio of suppressed signal to non-suppressed signal.
@@ -1413,7 +1413,7 @@ class LookupTableWET2:
         Console.start_timer()
 
         # (1) Creating the Block simulation object with the fixed variables
-        bloch_simulation = LookupTableWET2._BlochSimulation(
+        bloch_simulation = LookupTableWET._BlochSimulation(
             flip_angles=self.flip_angles_WET_rad,
             time_gaps=self.time_gaps_WET,
             flip_final_excitation=self.flip_angle_excitation_rad,
@@ -1675,67 +1675,6 @@ class LookupTableWET2:
 
         plt.show()
 
-###    def plot(self):
-###        """
-###        Plot the lookup table as a heatmap using matplotlib. Negative values
-###        are overlaid in red, inf values in magenta, NaN values appear as white.
-###        :return: Nothing
-###        """
-###        # Format tick labels.
-###        T1_over_TR_formatted = [f"{val / self.TR:.2f}" for val in self.T1_values]
-###        B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
-###
-###        # Ensure the simulated data is a numpy array.
-###        data = np.array(self.simulated_data)
-###
-###        # Create a figure and axis.
-###        fig, ax = plt.subplots(figsize=(8, 6))
-###
-###        # Replace inf with NaN so imshow renders them as white.
-###        inf_mask = np.isinf(data)
-###        data_clean = np.where(inf_mask, np.nan, data)
-###
-###        # Create masked arrays:
-###        pos_data = np.ma.masked_where((data_clean < 0) | np.isnan(data_clean), data_clean)
-###        neg_data = np.ma.masked_where((data_clean >= 0) | np.isnan(data_clean), data_clean)
-###
-###        # Plot non-negative values using the viridis colormap.
-###        im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
-###
-###        # Overlay negative values in red.
-###        im2 = ax.imshow(neg_data, cmap=ListedColormap(['red']), aspect='auto')
-###
-###        # Overlay inf values in magenta.
-###        if np.any(inf_mask):
-###            im3 = ax.imshow(np.ma.masked_where(~inf_mask, inf_mask.astype(float)),
-###                            cmap=ListedColormap(['magenta']), aspect='auto')
-###
-###        # Set x and y ticks with custom labels.
-###        ax.set_xticks(np.arange(len(T1_over_TR_formatted)))
-###        ax.set_xticklabels(T1_over_TR_formatted, fontsize=7, rotation=90, ha='right')
-###        ax.set_yticks(np.arange(len(B1_scale_formatted)))
-###        ax.set_yticklabels(B1_scale_formatted, fontsize=7)
-###
-###        # Add a colorbar for the viridis part.
-###        cbar = fig.colorbar(im1, ax=ax)
-###        cbar.ax.tick_params(labelsize=7)
-###
-###        # Set axis titles.
-###        ax.set_title('Heatmap of Lookup Table')
-###        ax.set_xlabel('T1/TR Value')
-###        ax.set_ylabel('B1 Scale Value')
-###
-###        # Legend for special values.
-###        from matplotlib.patches import Patch
-###        ax.legend(handles=[
-###            Patch(facecolor='white', edgecolor='black', label='NaN'),
-###            Patch(facecolor='magenta', label='Inf'),
-###            Patch(facecolor='red', label='Negative'),
-###        ], loc='upper right', fontsize=7)
-###
-###        plt.tight_layout()
-###        plt.show()
-
 
     # Inner class: vectorized Bloch simulation -------------------------------------------------------------------------
     class _BlochSimulation:
@@ -1868,7 +1807,7 @@ class LookupTableWET2:
             mz_d = e1 * mz + (1.0 - e1)
 
             # If Off-resonance rotation around z (!), otherwise if angle=zeros, then just (mx_d, my_d, mz_d)
-            return LookupTableWET2._BlochSimulation.z_rot(mx_d, my_d, mz_d, angle)
+            return LookupTableWET._BlochSimulation.z_rot(mx_d, my_d, mz_d, angle)
 
         @staticmethod
         def spoil(mx, my, mz):
@@ -1983,19 +1922,9 @@ class LookupTableWET2:
             return magnetization_fid_last, residual_long_mag
 
 
-class LookupTableWET_new:
-    # TODO: Think about which parameters could be outside
-    # return of longidutional or transverse
-
-    def __init__(self):
-        pass
 
 
-# T1_range --> directly pass T1_array? Then T1_step_size not longer needed
-#
-
-
-class LookupTableWET:
+class LookupTableWET_OLD:
     """
     This class is for creating a lookup table for water suppression. The technique is WET.
     The suppression is given as a ratio of suppressed signal to non-suppressed signal.
