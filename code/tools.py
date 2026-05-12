@@ -3518,24 +3518,105 @@ class PathTools:
     """
 
     @staticmethod
-    def list_files(path_to_folder, extension, verbose=True) -> list[PosixPath, PosixPath, ...]:
+    def list_files(path_to_folder: str, extension: str =None, verbose: bool =True) -> list[Path] | None:
         """
-        To find all files of specific extension in desired path. It returns a list of type "pathlib.PosixPath"
-        which can be treated in many cases like a string.
+        Purpose in short: To get list of paths (or of those with desired extension) to all files
+                          in desired folder
+
+        Description: To find all files in desired path, optionally filtered by a specific extension.
+        It returns a list of type "pathlib.Path" which can be treated in many cases like a string.
+        If no extension is given, all files in the folder are returned (hidden files excluded).
+
+        :param path_to_folder: the path to the folder as string
+        :param extension: the extension of the file as string
+        :param verbose: if it should be printed to the console (bool)
+        :return: list of the paths
         """
+
         folder = Path(path_to_folder)
-        files = list(folder.glob(f"*{extension}"))
-        number_total_files = sum(1 for p in folder.iterdir() if p.is_file())
+
+        if not folder.is_dir():
+            Console.printf("error", f"Path '{folder}' is not a folder.", mute=not verbose)
+            return None
+
+        # All top-level files, excluding hidden ones like .DS_Store
+        all_files = [p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")]
+        number_total_files = len(all_files)
+
+        # Filter by extension if given, normalizing so caller can pass "csv" or ".csv"
+        if extension is not None:
+            ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
+            files = sorted(f for f in all_files if f.suffix.lower() == ext)
+            ext_msg = f" with extension '{extension}'"
+        else:
+            files = sorted(all_files)
+            ext_msg = ""
 
         if len(files) == 0:
             Console.printf("error",
-                           f"No files with extension '{extension}' are available in the given path. Number of files available in this folder: {number_total_files}",
+                           f"No files{ext_msg} are available in the given path. "
+                           f"Number of files available in this folder: {number_total_files}",
                            mute=not verbose)
-            return
-        else:
-            Console.printf("success",
-                           f"Found {len(files)} files with extension '{extension}'. In total {number_total_files} files are in this folder!")
+            return None
+
+        Console.printf("success",
+                       f"Found {len(files)} files{ext_msg}. "
+                       f"In total {number_total_files} files are in this folder!",
+                       mute=not verbose)
+        return files
+
+    @staticmethod
+    def collect_files(path: str, extension: str = None, verbose: bool = True) -> list[Path] | None:
+        """
+        Purpose in short: to insert path, and (a) if path to folder the get list of all files (of
+                          specific extension if defined) and (b) if path is to one file then get
+                          list containing this one path. Useful, for iterating over all paths!
+
+        Description: To handle a path that can point to either a folder or a single file.
+        If a folder is given, all files inside are returned (error if mixed file types
+        and no extension is specified). If a single file is given, returns it wrapped
+        in a list. Optionally filters by extension in both cases.
+
+        :param path: the path to the folder as string
+        :param extension: the extension of the file as string
+        :param verbose: if it should be printed to the console (bool)
+        :return: list of the paths
+        """
+        p = Path(path)
+
+        # Case 1: path points to a single file
+        if p.is_file():
+            # If extension given, make sure the file actually matches
+            if extension is not None:
+                ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
+                if p.suffix.lower() != ext:
+                    Console.printf("error",
+                                   f"File {p} has extension {p.suffix!r}, expected {ext!r}.",
+                                   mute=not verbose)
+                    return None
+            return [p]
+
+        # Case 2: path points to a folder => delegate file gathering to list_files
+        if p.is_dir():
+            files = PathTools.list_files(p, extension=extension, verbose=verbose)
+            if files is None:
+                return None
+
+            # If no extension was given, the folder must be homogeneous
+            if extension is None:
+                found = {f.suffix.lower() for f in files}
+                if len(found) > 1:
+                    Console.printf("error",
+                                   f"Folder {p} contains mixed file types: {found}. "
+                                   f"Specify an extension to filter.",
+                                   mute=not verbose)
+                    return None
+
             return files
+
+        # Case 3: path does not exist at all
+        Console.printf("error", f"Path does not exist: {p}", mute=not verbose)
+        return None
 
 
 

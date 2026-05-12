@@ -20,7 +20,7 @@ from spec2nii import jmrui
 
 import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
-from tools import deprecated, ArrayTools
+from tools import deprecated, ArrayTools, PathTools
 from scipy.io import loadmat
 from prettyconsole import Console
 from pathlib import Path
@@ -41,9 +41,30 @@ u = pint.UnitRegistry()
 
 class BasisSet:
 
-    def __init__(self, path: str, data_precision: int = 32, verbose: bool = True):
+    def __init__(self, path: str, data_precision: int = 32, extension:str = None, verbose: bool = True):
+        """
+        The constructor. It checks if path to one folder or direct to one file is given.
+
+        (!) None: If path is to folder and files with mixed extensions are inside then error message will raise.
+                  Then, the solution is to define the 'extension' here (when creating these instance)!
+
+        :param path: the path to folder or direct to one file
+        :param data_precision: the precision, e.g. 32 yields float32 and complex64
+        :param extension: Only important if path to one folder is given
+        :param verbose: just if output to the console should be printed
+        """
+
         # Here the configurator is not used. It is better to stay generic with the path.
-        self.path = Path(path)
+        # Check whether path to one file is directly given of to folder containing multiple files
+        self.path = PathTools.collect_files(path=path, extension=extension, verbose=verbose)
+
+        if self.path is None:
+            Console.printf("error", f"Could not find any files or mixed files are available. "
+                                    f"If files with mixed extensions in the folder try to specify 'extension' here.")
+            return
+
+        self.data_precision = data_precision
+
 
         # The data precision is later handled to tools.ArrayTools.to_precision
         # -> Only affects the moment the time vector and signal
@@ -66,7 +87,7 @@ class BasisSet:
 
         # Get first file type (extension) and check if supported
         path = self.path
-        suffix = path.suffix.lower()
+        suffix = path[0].suffix.lower() # get suffix of fist file (and if only one file, then just one in the list)
 
         if suffix not in self.file_extensions:
             Console.printf("error", f"Invalid file extension: {suffix}. Only possible: {self.file_extensions}")
@@ -89,6 +110,58 @@ class BasisSet:
         # TODO: Write to NIFTI MRS?
         raise NotImplementedError
         pass
+
+    def _check_jmrui_common_parameters(self, loaded_data, verbose=False):
+        """
+        To check if all jMRUI files have same parameters needed for one output.
+        Files with different parameters are skipped.
+
+        :param loaded_data: list with dicts containing parameters and signal
+        :param verbose: if it should be printed to the chat or not.
+        :return: list with filtered data, common dwell time, spectral frequency and nucleus
+        """
+        reference = loaded_data[0]
+        checked_data = [reference]
+        skipped_files = []
+
+        for data in loaded_data[1:]:
+            skip_reasons = []
+
+            # Same signal size and dwell time create the same time vector
+            if data['signal'].size != reference['signal'].size:
+                skip_reasons.append("signal size")
+
+            if not np.isclose(
+                    data['dwell_time'].to(u.s).magnitude,
+                    reference['dwell_time'].to(u.s).magnitude
+            ):
+                skip_reasons.append("dwell time")
+
+            if not np.isclose(
+                    data['spectral_frequency'].to(u.hertz).magnitude,
+                    reference['spectral_frequency'].to(u.hertz).magnitude
+            ):
+                skip_reasons.append("spectral frequency")
+
+            if data['nucleus'] != reference['nucleus']:
+                skip_reasons.append("nucleus")
+
+            if skip_reasons:
+                skipped_files.append(f"  - {data['path'].name}: {', '.join(skip_reasons)}")
+            else:
+                checked_data.append(data)
+
+        # Print collected skipped files
+        if skipped_files:
+            Console.printf(
+                "warning",
+                f"Skipped jMRUI files because following parameters do not match {reference['path'].name}:\n"
+                + "\n".join(skipped_files),
+                mute=not verbose
+            )
+
+        return checked_data, reference['dwell_time'], reference['spectral_frequency'], reference['nucleus']
+
 
     def _read_jmrui_file(self, suffix, verbose=False) -> dict:
         """
@@ -115,26 +188,45 @@ class BasisSet:
 
     def _read_jmrui_txt(self, verbose=False):
         """
-        To load metabolite FID signal and parameters from .txt-file created from an jMRUI file.
+        To load metabolite FID signal and parameters from .txt-file(s) created from an jMRUI file.
 
         :param verbose: if it should be printed to the chat or not.
         :return: dict with parameters, signal, time vector
         """
-        # Get the signal and header data
-        signal, header = jmrui_io.readjMRUItxt(self.path)
-        signal = np.asarray(signal).squeeze() * u.dimensionless
+        loaded_data = []
 
-        # Just complicate way to assume unit 'ms' and convert to 's' ;)
-        dwell_time = (float(header['jmrui']['SamplingInterval']) * u.millisecond).to_base_units()
-        # Create the time vector
-        time_vector = np.arange(signal.size) * dwell_time.magnitude * u.s
-        # Assume Hz in txt file
-        spectral_frequency = (float(header['jmrui']['TransmitterFrequency']) * u.hertz)
-        # Check if nucleus is in header defined
-        nucleus = header.get('nucleus')
-        if not nucleus:
-            Console.printf("warning", "Nucleus not defined in the header! Set it to 'None'", mute=not verbose)
+        for path in self.path:
+            # Get the signal and header data
+            signal, header = jmrui_io.readjMRUItxt(path)
+            signal = np.asarray(signal).squeeze() * u.dimensionless
+
+            # Just complicate way to assume unit 'ms' and convert to 's' ;)
+            dwell_time = (float(header['jmrui']['SamplingInterval']) * u.millisecond).to_base_units()
+            # Assume Hz in txt file
+            spectral_frequency = (float(header['jmrui']['TransmitterFrequency']) * u.hertz)
+            # jMRUI files do not define a reliable nucleus string
             nucleus = None
+
+            loaded_data.append({
+                'path': path,
+                'signal': signal,
+                'dwell_time': dwell_time,
+                'spectral_frequency': spectral_frequency,
+                'nucleus': nucleus,
+            })
+
+        # Check if all files can be used as one metabolite list
+        loaded_data, dwell_time, spectral_frequency, nucleus = self._check_jmrui_common_parameters(
+            loaded_data=loaded_data,
+            verbose=verbose
+        )
+
+        # Create the time vector
+        time_vector = np.arange(loaded_data[0]['signal'].size) * dwell_time.magnitude * u.s
+
+        # Stack metabolites to desired shape: (metabolites, signal)
+        signal = np.stack([data['signal'].magnitude for data in loaded_data], axis=0) * u.dimensionless
+        names = [data['path'].stem for data in loaded_data]
 
         # Convert to desired data type
         signal = ArrayTools.to_precision(array=signal, precision=self.data_precision, verbose=verbose)
@@ -143,36 +235,55 @@ class BasisSet:
         # (!) Uniform formatted output (as other similar methods here)
         return {
             'parameters': {
-                'dwell_time': dwell_time,                    # in sec
-                'spectral_frequency': spectral_frequency,    # in Hz
-                'nucleus': nucleus,                          # if not specified in file then None
-                'name': self.path.stem,                      # based on file name (usually e.g.,NAA.txt)
+                'dwell_time': dwell_time,  # in sec
+                'spectral_frequency': spectral_frequency,  # in Hz
+                'nucleus': nucleus,  # jMRUI files do not define a reliable nucleus string
+                'name': names,  # based on file names (usually e.g., NAA.txt)
             },
-            'signal': signal,            # complex, dimensionless
-            'time': time_vector          # in sec
+            'signal': signal,  # complex, dimensionless, shape: (metabolites, signal)
+            'time': time_vector  # in sec
         }
 
     def _read_jmrui_binary(self, verbose=False):
         """
-        To load metabolite FID signal and parameters from .mrui-file.
+        To load metabolite FID signal and parameters from .mrui-file(s).
 
         :param verbose: if it should be printed to the chat or not.
         :return: dict with parameters, signal, time vector
         """
-        signal, header, _ = jmrui.read_mrui(str(self.path))
-        signal = np.asarray(signal).squeeze() * u.dimensionless
+        loaded_data = []
 
-        # Assuming jMRUI-convention: sampling_interval in ms, transmitter_frequency in Hz
-        dwell_time = (float(header['sampling_interval']) * u.millisecond).to_base_units()
-        # Create the time vector
-        time_vector = np.arange(signal.size) * dwell_time.magnitude * u.s
-        # Assume Hz in binary (mrui) file
-        spectral_frequency = (float(header['transmitter_frequency']) * u.hertz)
-        # Check if nucleus is in header defined
-        nucleus = header.get('nucleus')
-        if not nucleus:
-            Console.printf("warning", "Nucleus not defined in the header! Set it to 'None'", mute=not verbose)
+        for path in self.path:
+            signal, header, _ = jmrui.read_mrui(str(path))
+            signal = np.asarray(signal).squeeze() * u.dimensionless
+
+            # Assuming jMRUI-convention: sampling_interval in ms, transmitter_frequency in Hz
+            dwell_time = (float(header['sampling_interval']) * u.millisecond).to_base_units()
+            # Assume Hz in binary (mrui) file
+            spectral_frequency = (float(header['transmitter_frequency']) * u.hertz)
+            # jMRUI files do not define a reliable nucleus string
             nucleus = None
+
+            loaded_data.append({
+                'path': path,
+                'signal': signal,
+                'dwell_time': dwell_time,
+                'spectral_frequency': spectral_frequency,
+                'nucleus': nucleus,
+            })
+
+        # Check if all files can be used as one metabolite list
+        loaded_data, dwell_time, spectral_frequency, nucleus = self._check_jmrui_common_parameters(
+            loaded_data=loaded_data,
+            verbose=verbose
+        )
+
+        # Create the time vector
+        time_vector = np.arange(loaded_data[0]['signal'].size) * dwell_time.magnitude * u.s
+
+        # Stack metabolites to desired shape: (metabolites, signal)
+        signal = np.stack([data['signal'].magnitude for data in loaded_data], axis=0) * u.dimensionless
+        names = [data['path'].stem for data in loaded_data]
 
         # Convert to desired data type
         signal = ArrayTools.to_precision(array=signal, precision=self.data_precision, verbose=verbose)
@@ -181,13 +292,13 @@ class BasisSet:
         # (!) Uniform formatted output (as other similar methods here)
         return {
             'parameters': {
-                'dwell_time': dwell_time,           # in sec
-                'spec_freq': spectral_frequency,    # in Hz
-                'nucleus': nucleus,                 # ggf. None
-                'name': self.path.stem,             # based on file name (usually e.g., NAA.mrui)
+                'dwell_time': dwell_time,  # in sec
+                'spectral_frequency': spectral_frequency,  # in Hz
+                'nucleus': nucleus,  # jMRUI files do not define a reliable nucleus string
+                'name': names,  # based on file names (usually e.g., NAA.mrui)
             },
-            'signal': signal,                         # complex, dimensionless
-            'time': time_vector,                      # in sec
+            'signal': signal,  # complex, dimensionless, shape: (metabolites, signal)
+            'time': time_vector,  # in sec
         }
 
     def _read_jmrui_m(self, verbose=False):
@@ -196,11 +307,11 @@ class BasisSet:
         (MATLAB-style text export).
 
         :param verbose: if it should be printed to the chat or not.
-        :return: dict with parameters, signal, time vector
+        :return: dict with parameters, signal of shape (metabolites, samples), time vector
         """
         # Read the content of the .m file
         parameters: dict = {}
-        with open(self.path, 'r') as file:
+        with open(self.path[0], 'r') as file: # need self.path[0], the [0], since list per default!
             file_content = file.read()
             file_content = file_content.replace('{', '[').replace('}', ']')
 
@@ -246,8 +357,14 @@ class BasisSet:
         # -> jMRUI DATA columns are [re(FID), im(FID), re(spec), im(spec)]; only first two needed
         signal = (amplitude_raw[:, 0] + 1j * amplitude_raw[:, 1]).astype(complex)
 
+        # Split the whole signal into per-compound rows
+        # -> SIZE[2] = number of compounds; DIM_VALUES[2] = matching names (same order)
+        # -> resulting shape is (metabolites, samples), all sharing the same time axis
+        signal = signal.reshape(int(parameters['SIZE'][2]), -1)
+        compound_names = parameters['DIM_VALUES'][2]
+
         # Attach units to signal, dwell time and time vector
-        signal = signal * u.dimensionless                           # a.u.
+        signal = signal * u.dimensionless                           # a.u., shape (metabolites, samples)
         dwell_time = (dwell_time_raw * u.second).to_base_units()    # in sec
         time = time * u.second                                      # in sec
 
@@ -257,7 +374,7 @@ class BasisSet:
             spectral_frequency = float(raw_freq) * u.hertz
         else:
             Console.printf("warning",
-                           f"TransmitterFrequency not defined in the header of {self.path.name}! Set it to 'None'",
+                           f"TransmitterFrequency not defined in the header of {self.path[0].name}! Set it to 'None'",
                            mute=not verbose)
             spectral_frequency = None
 
@@ -265,7 +382,7 @@ class BasisSet:
         nucleus = parameters.get('Nucleus')
         if not nucleus:
             Console.printf("warning",
-                           f"Nucleus not defined in the header of {self.path.name}! Set it to 'None'",
+                           f"Nucleus not defined in the header of {self.path[0].name}! Set it to 'None'",
                            mute=not verbose)
             nucleus = None
 
@@ -276,13 +393,13 @@ class BasisSet:
         # (!) Uniform formatted output (as other similar methods here)
         return {
             'parameters': {
-                'dwell_time': dwell_time,           # in sec
-                'spec_freq': spectral_frequency,    # in Hz, possibly None
-                'nucleus': nucleus,                 # possibly None
-                'name': self.path.stem,             # based on file name (usually e.g., NAA.m)
+                'dwell_time': dwell_time,                   # in sec
+                'spectral_frequency': spectral_frequency,   # in Hz, possibly None
+                'nucleus': nucleus,                         # possibly None
+                'name': compound_names,                     # list of compound names from DIM_VALUES[2]
             },
-            'signal': signal,                       # complex, dimensionless
-            'time': time,                           # in sec
+            'signal': signal,                               # complex pint quantity, shape (metabolites, samples)
+            'time': time,                                   # in sec, shared across all compound rows
         }
 
 
@@ -294,7 +411,7 @@ class BasisSet:
         :return: dict with parameters, signal, time vector
         """
 
-        basis_set = read_basis(str(self.path))
+        basis_set = read_basis(str(self.path[0]))
         signals = np.asarray(basis_set.original_basis_array).T * u.dimensionless # -> (number metabolites, number points)
 
         # Assuming BADELT (dwell time) in sec and HZPPPM (Hz per ppm) in MHz
@@ -308,7 +425,7 @@ class BasisSet:
         # Try to get nucleus from the FSL-MRS attributes
         nucleus = getattr(basis_set, 'nucleus', None)
         if not nucleus:
-            Console.printf("warning", "Nucleus not defined in the header! Set it to 'None'", mute=not verbose)
+            Console.printf("warning", f"Nucleus not defined in the header of {self.path[0].name}! Set it to 'None'", mute=not verbose)
 
         # Convert to desired data type
         signal = ArrayTools.to_precision(array=signals, precision=self.data_precision, verbose=verbose)
@@ -317,49 +434,16 @@ class BasisSet:
         # (!) Uniform formatted output (as other similar methods here)
         return {
             'parameters': {
-                'dwell_time': dwell_time,               # in sec
-                'spec_freq': spectral_frequency,        # in Hz
-                'nucleus': nucleus,                     # possibly None
-                'names': list(basis_set.names),         # list of metabolite names in same order as signal array
+                'dwell_time': dwell_time,                   # in sec
+                'spectral_frequency': spectral_frequency,   # in Hz
+                'nucleus': nucleus,                         # possibly None
+                'name': list(basis_set.names),              # list of metabolite names in same order as signal array
             },
-            'signal': signal,                           # complex, dimensionless, shape (number metabolites, number points)
-            'time': time_vector,                        # in sec
+            'signal': signal,                               # complex, dimensionless, shape (number metabolites, number points)
+            'time': time_vector,                            # in sec
         }
 
 
-#### TODO: Maybe use this instead of manually above? Then also use decorator: @UnitTools.unwrap_pint
-###    def _uniform_output_for_reader(self,
-###                        signal: np.ndarray,
-###                        dwell_time: float,
-###                        spectral_frequency: float,
-###                        nucleus: str,
-###                        **additional) -> dict:
-###        """
-###        To generate a uniform output for all readers.
-###
-###        :param signal: The signal of the respective metabolite or set
-###        :param dwell_time: the dwell time
-###        :param spectral_frequency:
-###        :param nucleus:
-###        :param additional:
-###        :return: dictionary of desired structure
-###        """
-###
-###        # To create the time vector
-###        number_of_points = signal.shape[-1]
-###        time_vector = np.arange(number_of_points) * dwell_time
-###
-###        # Return a dict of desired structure
-###        return {
-###            'parameters': {
-###                'dwell_time': dwell_time,
-###                'spectral_frequency': spectral_frequency,
-###                'nucleus':   nucleus,
-###                **additional,
-###            },
-###            'signal': signal,
-###            'time':  time_vector,
-###        }
 
 class JMRUI:
     """
@@ -906,12 +990,37 @@ class FID:
     the Real and Imaginary part in the file given as (Re, Im) -> Re + j*Im.
     """
 
-    def __init__(self, configurator: Configurator):
+    def __init__(self, configurator: Configurator, key: str):
         self.configurator = configurator
         self.parameters: dict = {}
         self.loaded_fid: spectral_spatial_simulation.FID = spectral_spatial_simulation.FID()
 
-    def load(self, fid_name: str, signal_data_type: np.dtype = np.float64):  # TODO: replace fid_name to fid_type_name??? --> see Maps class above
+    def get_nested(self, data, key_path, sep="/"):
+        """
+        For dealing with nested keys in json file! E.g., json format:
+
+                'xyz': {
+                    'txt': {
+                        'metabolites': {
+                            'path': 'some path'
+                        }
+                    }
+                }
+                -> normally get via: ['xyz']['txt']['metabolites']['path'] -> creates this from 'xyz/txt/metabolites'
+
+                TODO TODO TODO TODO: Right Place?? Maybe i configurator?? Because also need to take into account "files" key!!!!!! alalalala
+
+        :param data:
+        :param key_path:
+        :param sep:
+        :return:
+        """
+        value = data
+        for key in key_path.split(sep):
+            value = value[key]
+        return value
+
+    def load(self, fid_name: str, data_precision: int = 32, verbose: bool = False):  # TODO: replace fid_name to fid_type_name??? --> see Maps class above
         """
         For loading and splitting the FID according to the respective chemical compound (metabolites, lipids).
         Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.
@@ -924,14 +1033,20 @@ class FID:
         """
         self.configurator.load()
         path = self.configurator.data["fid"][fid_name]["path"]
-        jmrui = JMRUI(path=path, signal_data_type=signal_data_type)
-        data = jmrui.load_m_file()
+
+        # TODO: make here that fid name -> e.g. xyz/txt/metabolites -> yields ["xyz"]["txt"]["metabolites"]["path"]
+
+        basis_set = BasisSet(path=path, data_precision=data_precision, verbose=verbose)
+        #jmrui = JMRUI(path=path, signal_data_type=signal_data_type) TODO: OLD DELETE
+        data = basis_set.read()
+        #data = jmrui.load_m_file() TODO: OLD DELETE
 
         parameters, signal, time = data["parameters"], data["signal"], data["time"]
         self.parameters = parameters
 
-        signal_complex = self.__transform_signal_complex(signal, time)
-        self.__assign_signal_to_compound(signal_complex, time)
+        #signal_complex = self.__transform_signal_complex(signal, time)
+        # Basically just: self.loaded fid -> create fid object for each component and then sum them up!
+        self._assign_signal_to_compound(signal, time)
 
         # At this point the FID is already created. Just adding the unit.
         unit = self.configurator.data["fid"][fid_name]["unit_time"]
@@ -946,7 +1061,7 @@ class FID:
         if ArrayTools.check_nan(self.loaded_fid.time, verbose=False):
             Console.printf("warning", "loaded time vector of FID contains NaNs.")
 
-    def __transform_signal_complex(self, amplitude: np.ndarray, conjugate: bool = True) -> np.ndarray:
+    def _transform_signal_complex(self, amplitude: np.ndarray, conjugate: bool = True) -> np.ndarray:
         """
         Transform the values given for each row as [Real, Imaginary] to [Real + j*Imaginary]
         :return: None
@@ -964,7 +1079,7 @@ class FID:
 
         return amplitude
 
-    def __assign_signal_to_compound(self, amplitude: np.ndarray, time: np.ndarray) -> None:
+    def _assign_signal_to_compound(self, signal: np.ndarray, time: np.ndarray) -> None:
         """
         For splitting the whole signal into the parts corresponding to the respective compound (metabolite or lipid).
         This is given in the .m file which this class ins handling.
@@ -974,17 +1089,17 @@ class FID:
         :return: Nothing
         """
 
-        # Resize and thus split the whole signal into parts corresponding to the respective compound
-        signal_reshaped = amplitude.reshape(int(self.parameters['SIZE'][2]), -1)
+        ### Resize and thus split the whole signal into parts corresponding to the respective compound TODO: MAYBE CAN BE DELETED
+        ##signal_reshaped = amplitude.reshape(int(self.parameters['SIZE'][2]), -1) TODO MAYBE CAN BE DELETED
 
         # Create for each part of the signal (signal) corresponding to one compound an FID object,
         # the put into a list containing all FID objects
         Console.add_lines("Assigned FID parts:")
 
         # Merge the signals into one FID, thus also the names
-        for column_number, name in enumerate(self.parameters['DIM_VALUES'][2]):
-            self.loaded_fid += spectral_spatial_simulation.FID(signal=signal_reshaped[column_number], time=time, name=[name])
-            Console.add_lines(f"{column_number}. {name + ' ':-<30}-> shape: {signal_reshaped[column_number].shape}")
+        for column_number, name in enumerate(range(signal.size)):
+            self.loaded_fid += spectral_spatial_simulation.FID(signal=signal[column_number], time=time, name=[name])
+            Console.add_lines(f"{column_number}. {name + ' ':-<30}-> shape: {signal[column_number].shape}")
 
         Console.printf_collected_lines("success")
 
