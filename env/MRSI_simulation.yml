@@ -57,6 +57,7 @@ dependencies:
   - bibtexparser
   - typing_extensions
   - ipykernel
+  - glom                     # nested data structure (dict/list) access and manipulation
 
   # Graphviz binaries (for using easygraph)
   - graphviz

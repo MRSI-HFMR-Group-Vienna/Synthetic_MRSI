@@ -1,16 +1,8 @@
 ## just for type checking, to solve circular imports ##
 from __future__ import annotations
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from sampling import CoilSensitivityVolume
-#######################################################
-
-
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 import spectral_spatial_simulation
-#from spatial_metabolic_distribution import MetabolicPropertyMap, MetabolicPropertyMaps
-from spatial_metabolic_distribution import ParameterMap, ParameterVolume
+from spatial_simulation import ParameterMap, ParameterVolume
 from typing_extensions import Self
 from tools import JsonConverter, UnitTools, JupyterPlotManager, SpaceEstimator, ArrayTools
 
@@ -18,9 +10,10 @@ from tools import JsonConverter, UnitTools, JupyterPlotManager, SpaceEstimator, 
 from fsl_mrs.utils.mrs_io import jmrui_io, read_basis
 from spec2nii import jmrui
 
+from configurator import Configurator
 import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
-from tools import deprecated, ArrayTools, PathTools
+from tools import deprecated, ArrayTools, PathTools, DictionaryTools
 from scipy.io import loadmat
 from prettyconsole import Console
 from pathlib import Path
@@ -32,12 +25,18 @@ import h5py
 import json
 import sys
 import os
+from typing import TYPE_CHECKING
 
-from interfaces import WorkingVolume, Plot
+from interface import WorkingSource, Plot
+from spectral_spatial_simulation import FID as SpectralSpatialFID
+
+# Just for type annotations
+if TYPE_CHECKING:
+    from sampling_simulation import CoilSensitivityVolume as SamplingCoilSensitivityVolume
+
 
 # For enabling to use units
 u = pint.UnitRegistry()
-
 
 class BasisSet:
 
@@ -56,7 +55,7 @@ class BasisSet:
 
         # Here the configurator is not used. It is better to stay generic with the path.
         # Check whether path to one file is directly given of to folder containing multiple files
-        self.path = PathTools.collect_files(path=path, extension=extension, verbose=verbose)
+        self.path = PathTools.collect_files(path=path, extension=extension, verbose=False)
 
         if self.path is None:
             Console.printf("error", f"Could not find any files or mixed files are available. "
@@ -77,7 +76,7 @@ class BasisSet:
         # All at the moment supported file types
         self.file_extensions = [".mrui", ".txt", ".m", ".basis"]
 
-    def read(self) -> dict:
+    def load(self, subset_names: list[str] = None) -> dict:
         """
         To automatically decide based on the file type which method should be called. The called methods
         are returning standardised output.
@@ -95,21 +94,82 @@ class BasisSet:
 
         # Case 1: jmrui derivate
         if suffix in [".mrui", ".txt", ".m"]:
-            return self._read_jmrui_file(suffix=suffix, verbose=self.verbose)
+            data: dict = self._load_jmrui_file(suffix=suffix, verbose=self.verbose)
 
         # Case 2: basis set
         elif suffix in [".basis"]:
-            return self._read_lcmodel_basis_set(verbose=self.verbose)
+            data: dict = self._load_lcmodel_basis_set(verbose=self.verbose)
 
         else: # TODO: Maybe will never be reached!
             Console.printf("error", f"Invalid file extension: {suffix}. Only possible: {self.file_extensions}")
             return
 
+        # Check if subset of the loaded data (specific metabolites by name) are requested!
+        if subset_names is not None:
+            data = self.get_subset_by_name(data=data, compound_name=subset_names, verbose=self.verbose)
+
+        Console.printf("success", f"Loaded FID signals of {len(data['name'])} chemical compounds! \n"
+                                  f"  names: {data['name']}", mute=not self.verbose)
+        return data
 
     def write(self):
         # TODO: Write to NIFTI MRS?
         raise NotImplementedError
-        pass
+
+    def get_subset_by_name(self, data: dict, compound_name: str | list[str], verbose: bool=False) -> dict:
+        """
+        To get a subset of the data dictionary based on one or multiple compound names.
+
+        :param verbose: if True the print ot console
+        :param data: the dictionary holding the data of all chemical compounds and parameters
+        :param compound_name: one compound name as string or a list of compound names
+        :return: dictionary with only subset
+        """
+
+        # Check if compound name is of type string
+        if isinstance(compound_name, str):
+            compound_name = [compound_name]
+
+        # Give error if no names provided
+        if len(compound_name) == 0:
+            Console.printf("Error", "No compound name(s) provided", verbose=verbose)
+            return
+
+        # Give error if any required key is missing in the dictionary
+        required_keys = ['parameters', 'signal', 'time', 'name']
+        missing_keys = [k for k in required_keys if k not in data]
+        if missing_keys:
+            Console.printf("Error", f"Key(s) missing in data: {missing_keys}", verbose=verbose)
+            return
+
+        # Find which of the requested names exist and which do not:
+        #  -> 'found' keeps the original order of compound_name
+        #  -> 'missing' is just for the warning message
+        found = [n for n in compound_name if n in data['name']]
+        missing = [n for n in compound_name if n not in data['name']]
+
+        # Give error if not a single requested name was found
+        if len(found) == 0:
+            Console.printf("Error", f"None of the requested name(s) found: {compound_name}", verbose=verbose)
+            return
+
+        # Just a warning if some names are missing but at least one is found
+        if missing:
+            Console.printf("Warning", f"Name(s) not found and skipped: {missing}", verbose=verbose)
+
+        # Get all the indices of the found names and then build the subset:
+        #  -> select the respective rows from the signal array,
+        #  -> keep the names in the same order as found,
+        #  -> copy parameters and time as they are shared across all signals
+        indices = [data['name'].index(n) for n in found]
+        subset = {
+            'parameters': data['parameters'],
+            'signal': data['signal'][indices, :],
+            'time': data['time'],
+            'name': [data['name'][i] for i in indices],
+        }
+
+        return subset
 
     def _check_jmrui_common_parameters(self, loaded_data, verbose=False):
         """
@@ -163,57 +223,43 @@ class BasisSet:
         return checked_data, reference['dwell_time'], reference['spectral_frequency'], reference['nucleus']
 
 
-    def _read_jmrui_file(self, suffix, verbose=False) -> dict:
+    def _load_jmrui_file(self, suffix, verbose=False) -> dict:
         """
         All files are derived from jMRUI.
         For automatic handling the methods:
-            * Reading .mrui file: self._read_jmrui_binary
-            * Reading .txt file:  self._read_jmrui_txt
-            * Reading .m file:    self._read_jmrui_m
+            * Reading .mrui file: self._read_jmrui_binary  (one metabolite per file)
+            * Reading .txt file:  self._read_jmrui_txt     (one metabolite per file)
+            * Reading .m file:    self._read_jmrui_m       (already multiple metabolites in one file)
+
+        For .mrui and .txt each file holds one metabolite. This method calls the matching
+        single-file reader for every file in self.path, then checks if all files share the
+        same parameters (dwell time, spectral frequency, ...) and stacks them to one signal
+        array of shape (metabolites, signal).
+
+        The .m case is structurally different (multi-metabolite already in one file), so it
+        is just delegated and does NOT run through the stacking pipeline here.
 
         :return: dictionary holding the data {parameters: (...), signal: (...), time: (...)}
         """
-        # Case 1: .mrui file
+
+        # Case 1: .m file -> all metabolites already in one file, just delegate
+        if suffix == ".m":
+            return self._load_jmrui_m(verbose=verbose)
+
+        # Case 2: .mrui / .txt -> pick the matching single-file reader
         if suffix == ".mrui":
-            return self._read_jmrui_binary(verbose=verbose)
-        # Case 2: .txt file
+            single_file_reader = self._load_jmrui_binary
         elif suffix == ".txt":
-            return self._read_jmrui_txt(verbose=verbose)
-        # Case 3: .m file
-        elif suffix == ".m":
-            return self._read_jmrui_m(verbose=verbose)
+            single_file_reader = self._load_jmrui_txt
         else:
             Console.printf("error", f"Invalid file extension: {suffix}. Only possible: {self.file_extensions}")
             return
 
-    def _read_jmrui_txt(self, verbose=False):
-        """
-        To load metabolite FID signal and parameters from .txt-file(s) created from an jMRUI file.
-
-        :param verbose: if it should be printed to the chat or not.
-        :return: dict with parameters, signal, time vector
-        """
+        # Read each file individually (one metabolite per file)
+        # -> each returns an intermediate dict (path, signal, dwell_time, spectral_frequency, nucleus)
         loaded_data = []
-
         for path in self.path:
-            # Get the signal and header data
-            signal, header = jmrui_io.readjMRUItxt(path)
-            signal = np.asarray(signal).squeeze() * u.dimensionless
-
-            # Just complicate way to assume unit 'ms' and convert to 's' ;)
-            dwell_time = (float(header['jmrui']['SamplingInterval']) * u.millisecond).to_base_units()
-            # Assume Hz in txt file
-            spectral_frequency = (float(header['jmrui']['TransmitterFrequency']) * u.hertz)
-            # jMRUI files do not define a reliable nucleus string
-            nucleus = None
-
-            loaded_data.append({
-                'path': path,
-                'signal': signal,
-                'dwell_time': dwell_time,
-                'spectral_frequency': spectral_frequency,
-                'nucleus': nucleus,
-            })
+            loaded_data.append(single_file_reader(path=path))
 
         # Check if all files can be used as one metabolite list
         loaded_data, dwell_time, spectral_frequency, nucleus = self._check_jmrui_common_parameters(
@@ -222,86 +268,101 @@ class BasisSet:
         )
 
         # Create the time vector
-        time_vector = np.arange(loaded_data[0]['signal'].size) * dwell_time.magnitude * u.s
+        time_vector = (np.arange(loaded_data[0]['signal'].size) * dwell_time).to(u.s)
 
         # Stack metabolites to desired shape: (metabolites, signal)
         signal = np.stack([data['signal'].magnitude for data in loaded_data], axis=0) * u.dimensionless
         names = [data['path'].stem for data in loaded_data]
 
         # Convert to desired data type
-        signal = ArrayTools.to_precision(array=signal, precision=self.data_precision, verbose=verbose)
-        time_vector = ArrayTools.to_precision(array=time_vector, precision=self.data_precision, verbose=verbose)
+        signal_dtype_before = signal.dtype
+        time_vector_dtype_before = time_vector.dtype
+
+        signal = ArrayTools.to_precision(array=signal, precision=self.data_precision, verbose=False)
+        time_vector = ArrayTools.to_precision(array=time_vector, precision=self.data_precision, verbose=False)
+        #  Just for printing conversation
+
+        w = max(len(str(signal_dtype_before)), len(str(time_vector_dtype_before)))
+        Console.add_lines(f"      signal: {str(signal_dtype_before):<{w}} -> {signal.dtype}")
+        Console.add_lines(f"      time:   {str(time_vector_dtype_before):<{w}} -> {time_vector.dtype}")
+#        Console.printf("info", f"Changed the data type of the FID signal(s): \n"
+#                               f"      signal: {str(signal_dtype_before):<{w}} -> {signal.dtype} \n"
+#                               f"      time:   {str(time_vector_dtype_before):<{w}} -> {time_vector.dtype}")
 
         # (!) Uniform formatted output (as other similar methods here)
         return {
             'parameters': {
-                'dwell_time': dwell_time,  # in sec
-                'spectral_frequency': spectral_frequency,  # in Hz
-                'nucleus': nucleus,  # jMRUI files do not define a reliable nucleus string
-                'name': names,  # based on file names (usually e.g., NAA.txt)
+                'dwell_time': dwell_time,                   # in sec
+                'spectral_frequency': spectral_frequency,   # in Hz
+                'nucleus': nucleus,                         # jMRUI files do not define a reliable nucleus string
             },
-            'signal': signal,  # complex, dimensionless, shape: (metabolites, signal)
-            'time': time_vector  # in sec
+            'signal': signal,                               # complex, dimensionless, shape: (metabolites, signal)
+            'time': time_vector,                            # in sec
+            'name': names                                   # based on file names (usually e.g., NAA.mrui / NAA.txt)
         }
 
-    def _read_jmrui_binary(self, verbose=False):
+    def _load_jmrui_txt(self, path):
         """
-        To load metabolite FID signal and parameters from .mrui-file(s).
+        To load metabolite FID signal and parameters from ONE jMRUI .txt-file.
 
-        :param verbose: if it should be printed to the chat or not.
-        :return: dict with parameters, signal, time vector
+        The multi-file handling (looping over self.path, checking common parameters,
+        stacking signals, precision conversion) is done in self._read_jmrui_file.
+
+        :param path: path to the single .txt file to read
+        :return: intermediate dict (path, signal, dwell_time, spectral_frequency, nucleus)
         """
-        loaded_data = []
 
-        for path in self.path:
-            signal, header, _ = jmrui.read_mrui(str(path))
-            signal = np.asarray(signal).squeeze() * u.dimensionless
+        # Get the signal and header data
+        signal, header = jmrui_io.readjMRUItxt(path)
+        signal = np.asarray(signal).squeeze() * u.dimensionless
 
-            # Assuming jMRUI-convention: sampling_interval in ms, transmitter_frequency in Hz
-            dwell_time = (float(header['sampling_interval']) * u.millisecond).to_base_units()
-            # Assume Hz in binary (mrui) file
-            spectral_frequency = (float(header['transmitter_frequency']) * u.hertz)
-            # jMRUI files do not define a reliable nucleus string
-            nucleus = None
+        # Just complicate way to assume unit 'ms' and convert to 's' ;)
+        dwell_time = (float(header['jmrui']['SamplingInterval']) * u.millisecond).to_base_units()
+        # Assume Hz in txt file
+        spectral_frequency = (float(header['jmrui']['TransmitterFrequency']) * u.hertz)
+        # jMRUI files do not define a reliable nucleus string
+        nucleus = None
 
-            loaded_data.append({
-                'path': path,
-                'signal': signal,
-                'dwell_time': dwell_time,
-                'spectral_frequency': spectral_frequency,
-                'nucleus': nucleus,
-            })
-
-        # Check if all files can be used as one metabolite list
-        loaded_data, dwell_time, spectral_frequency, nucleus = self._check_jmrui_common_parameters(
-            loaded_data=loaded_data,
-            verbose=verbose
-        )
-
-        # Create the time vector
-        time_vector = np.arange(loaded_data[0]['signal'].size) * dwell_time.magnitude * u.s
-
-        # Stack metabolites to desired shape: (metabolites, signal)
-        signal = np.stack([data['signal'].magnitude for data in loaded_data], axis=0) * u.dimensionless
-        names = [data['path'].stem for data in loaded_data]
-
-        # Convert to desired data type
-        signal = ArrayTools.to_precision(array=signal, precision=self.data_precision, verbose=verbose)
-        time_vector = ArrayTools.to_precision(array=time_vector, precision=self.data_precision, verbose=verbose)
-
-        # (!) Uniform formatted output (as other similar methods here)
+        # (!) Intermediate output: gets combined with other files in self._read_jmrui_file (if multiple files)
         return {
-            'parameters': {
-                'dwell_time': dwell_time,  # in sec
-                'spectral_frequency': spectral_frequency,  # in Hz
-                'nucleus': nucleus,  # jMRUI files do not define a reliable nucleus string
-                'name': names,  # based on file names (usually e.g., NAA.mrui)
-            },
-            'signal': signal,  # complex, dimensionless, shape: (metabolites, signal)
-            'time': time_vector,  # in sec
+            'path': path,
+            'signal': signal,
+            'dwell_time': dwell_time,
+            'spectral_frequency': spectral_frequency,
+            'nucleus': nucleus,
         }
 
-    def _read_jmrui_m(self, verbose=False):
+    def _load_jmrui_binary(self, path):
+        """
+        To load metabolite FID signal and parameters from ONE jMRUI .mrui-file.
+
+        The multi-file handling (looping over self.path, checking common parameters,
+        stacking signals, precision conversion) is done in self._read_jmrui_file.
+
+        :param path: path to the single .mrui file to read
+        :return: intermediate dict (path, signal, dwell_time, spectral_frequency, nucleus)
+        """
+
+        signal, header, _ = jmrui.read_mrui(str(path))
+        signal = np.asarray(signal).squeeze() * u.dimensionless
+
+        # Assuming jMRUI-convention: sampling_interval in ms, transmitter_frequency in Hz
+        dwell_time = (float(header['sampling_interval']) * u.millisecond).to_base_units()
+        # Assume Hz in binary (mrui) file
+        spectral_frequency = (float(header['transmitter_frequency']) * u.hertz)
+        # jMRUI files do not define a reliable nucleus string
+        nucleus = None
+
+        # (!) Intermediate output: gets combined with other files in self._read_jmrui_file (if multiple files)
+        return {
+            'path': path,
+            'signal': signal,
+            'dwell_time': dwell_time,
+            'spectral_frequency': spectral_frequency,
+            'nucleus': nucleus,
+        }
+
+    def _load_jmrui_m(self, verbose=False):
         """
         To load metabolite FID signal and parameters from a jMRUI .m-file
         (MATLAB-style text export).
@@ -396,14 +457,14 @@ class BasisSet:
                 'dwell_time': dwell_time,                   # in sec
                 'spectral_frequency': spectral_frequency,   # in Hz, possibly None
                 'nucleus': nucleus,                         # possibly None
-                'name': compound_names,                     # list of compound names from DIM_VALUES[2]
             },
             'signal': signal,                               # complex pint quantity, shape (metabolites, samples)
             'time': time,                                   # in sec, shared across all compound rows
+            'name': compound_names                          # list of compound names from DIM_VALUES[2]
         }
 
 
-    def _read_lcmodel_basis_set(self, verbose=False):
+    def _load_lcmodel_basis_set(self, verbose=False):
         """
         To load metabolite FID signals and parameters from a .basis file (jMRUI).
 
@@ -437,89 +498,89 @@ class BasisSet:
                 'dwell_time': dwell_time,                   # in sec
                 'spectral_frequency': spectral_frequency,   # in Hz
                 'nucleus': nucleus,                         # possibly None
-                'name': list(basis_set.names),              # list of metabolite names in same order as signal array
             },
             'signal': signal,                               # complex, dimensionless, shape (number metabolites, number points)
             'time': time_vector,                            # in sec
+            'name': list(basis_set.names),                  # list of metabolite names in same order as signal array
         }
 
 
-
-class JMRUI:
-    """
-    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file. Further, also rename JMRUI instead of JMRUI!
-    """
-
-    def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
-        self.path = path
-        self.signal_data_type = signal_data_type # TODO: Has no effect!
-        self.mute = mute
-
-    def load_m_file(self) -> dict:
-        parameters: dict = {}
-
-        # Read the content of the .m file
-        with open(self.path, 'r') as file:
-            file_content = file.read()
-            file_content = file_content.replace('{', '[').replace('}', ']')
-
-        # Create a dictionary to store variable names and their values
-        data_found = False  # for entering the mode to append the FID data
-        amplitude = "["
-        for line in file_content.splitlines():
-            parts = line.split('=')
-            if len(parts) == 2:
-                var_name = parts[0].strip()
-                var_value = parts[1].strip().rstrip(';')  # Remove trailing ';' if present
-                parameters[var_name] = var_value
-
-            if data_found:
-                amplitude += line + ", "
-                pass
-            elif parts[0] == "DATA":
-                data_found = True
-
-        # For creating time vector (numpy array) from the parameters given in the file
-        # Also, adding the other content. This includes the name of the chemical compounds.
-        dim_values = parameters["DIM_VALUES"].replace("[", "").replace("]", "").replace("'", "").split(",")
-        parameters["DIM_VALUES"] = []
-        parameters["DIM_VALUES"].append(dim_values[0])
-        parameters["DIM_VALUES"].append(dim_values[1])
-        parameters["DIM_VALUES"].append(dim_values[2:])
-        time_vector = parameters["DIM_VALUES"][0].split(":")
-        time_vector_start, time_vector_stepsize, time_vector_end = float(time_vector[0]), float(time_vector[1]), float(time_vector[2])
-        time = np.arange(time_vector_start, time_vector_end, time_vector_stepsize)
-        time = time[0:len(time) - 1]
-
-        # For transforming the signal values given in the file to a numpy array
-        parameters['SIZE'] = eval(parameters['SIZE'])  # str to list
-        amplitude = amplitude.replace('\t', ' ').replace('[', '').replace(']', '').replace(';', '')  # .split(",")
-        amplitude_list_strings = amplitude.split(",")
-        amplitude_list_strings = [[float(num) for num in string_element.split()] for string_element in amplitude_list_strings]
-        amplitude = np.asarray(amplitude_list_strings[0:len(amplitude_list_strings) - 2])
-
-        # Short overview of a chosen data type for the FID signal, used space and precision (in digits)
-        Console.printf("info", f"Loaded FID signal as {self.signal_data_type} \n" +
-                       f" -> thus using space: {amplitude.nbytes / 1024} KB \n" +
-                       f" -> thus using digits: {np.finfo(amplitude.dtype).precision}",
-                       mute=self.mute)
-
-        return {"parameters": parameters,
-                "signal": amplitude,
-                "time": time}
-
-    def show_parameters(self) -> None:
-        """
-        Printing the successfully read parameters formatted to the console.
-
-        :return: None
-        """
-        # np.set_printoptions(20)  # for printing numpy numbers with 20 digits to the console
-        for key, value in self.parameters.items():
-            Console.add_lines(f"Key: {key}, Value: {value}")
-
-        Console.printf_collected_lines("success")
-        # np.set_printoptions() resetting numpy printing options
+# TODO: DELETE
+###class JMRUI:
+###    """
+###    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file. Further, also rename JMRUI instead of JMRUI!
+###    """
+###
+###    def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
+###        self.path = path
+###        self.signal_data_type = signal_data_type # TODO: Has no effect!
+###        self.mute = mute
+###
+###    def load_m_file(self) -> dict:
+###        parameters: dict = {}
+###
+###        # Read the content of the .m file
+###        with open(self.path, 'r') as file:
+###            file_content = file.read()
+###            file_content = file_content.replace('{', '[').replace('}', ']')
+###
+###        # Create a dictionary to store variable names and their values
+###        data_found = False  # for entering the mode to append the FID data
+###        amplitude = "["
+###        for line in file_content.splitlines():
+###            parts = line.split('=')
+###            if len(parts) == 2:
+###                var_name = parts[0].strip()
+###                var_value = parts[1].strip().rstrip(';')  # Remove trailing ';' if present
+###                parameters[var_name] = var_value
+###
+###            if data_found:
+###                amplitude += line + ", "
+###                pass
+###            elif parts[0] == "DATA":
+###                data_found = True
+###
+###        # For creating time vector (numpy array) from the parameters given in the file
+###        # Also, adding the other content. This includes the name of the chemical compounds.
+###        dim_values = parameters["DIM_VALUES"].replace("[", "").replace("]", "").replace("'", "").split(",")
+###        parameters["DIM_VALUES"] = []
+###        parameters["DIM_VALUES"].append(dim_values[0])
+###        parameters["DIM_VALUES"].append(dim_values[1])
+###        parameters["DIM_VALUES"].append(dim_values[2:])
+###        time_vector = parameters["DIM_VALUES"][0].split(":")
+###        time_vector_start, time_vector_stepsize, time_vector_end = float(time_vector[0]), float(time_vector[1]), float(time_vector[2])
+###        time = np.arange(time_vector_start, time_vector_end, time_vector_stepsize)
+###        time = time[0:len(time) - 1]
+###
+###        # For transforming the signal values given in the file to a numpy array
+###        parameters['SIZE'] = eval(parameters['SIZE'])  # str to list
+###        amplitude = amplitude.replace('\t', ' ').replace('[', '').replace(']', '').replace(';', '')  # .split(",")
+###        amplitude_list_strings = amplitude.split(",")
+###        amplitude_list_strings = [[float(num) for num in string_element.split()] for string_element in amplitude_list_strings]
+###        amplitude = np.asarray(amplitude_list_strings[0:len(amplitude_list_strings) - 2])
+###
+###        # Short overview of a chosen data type for the FID signal, used space and precision (in digits)
+###        Console.printf("info", f"Loaded FID signal as {self.signal_data_type} \n" +
+###                       f" -> thus using space: {amplitude.nbytes / 1024} KB \n" +
+###                       f" -> thus using digits: {np.finfo(amplitude.dtype).precision}",
+###                       mute=self.mute)
+###
+###        return {"parameters": parameters,
+###                "signal": amplitude,
+###                "time": time}
+###
+###    def show_parameters(self) -> None:
+###        """
+###        Printing the successfully read parameters formatted to the console.
+###
+###        :return: None
+###        """
+###        # np.set_printoptions(20)  # for printing numpy numbers with 20 digits to the console
+###        for key, value in self.parameters.items():
+###            Console.add_lines(f"Key: {key}, Value: {value}")
+###
+###        Console.printf_collected_lines("success")
+###        # np.set_printoptions() resetting numpy printing options
 
 
 class NeuroImage:
@@ -566,68 +627,6 @@ class NeuroImage:
         ArrayTools.check_nan(self.data, verbose=report_nan)
 
         return self
-
-
-class Configurator:
-    """
-    For loading paths and configurations from a json file. If necessary, different
-    instances for different config files can be created.
-    """
-
-    def __init__(self, path_folder: str, file_name: str, info: str = None) -> None:
-        if os.path.exists(path_folder):  # check if the path to the folder exists
-            self.path_folder: str = path_folder  # path to the config file
-        else:
-            Console.printf("error", f"Path does not exists: {path_folder}. Terminate program!")
-            sys.exit()
-
-        self.file_name: str = file_name  # file name or desired file name
-        self.file_path: str = os.path.join(self.path_folder, self.file_name)  # file name and path
-        self.info: str = info  # additional information of the configurator instance
-        self.data: dict = None
-
-    def load(self) -> object:
-        """
-        For loading a json file and storing it as a dictionary.
-
-        :return: Nothing
-        """
-        if os.path.exists(self.file_path):
-            with open(self.file_path, "r") as file:
-                self.data = json.load(file)
-        else:
-            Console.printf("error", f"Could not load '{self.file_name}'. Wrong path, name or may not exist!")
-
-        return self
-
-    def save(self, new_data: dict):
-        """
-        For creating or overwriting a formatted json config file from a dictionary.
-
-        :param new_data:
-        :return:
-        """
-
-        if os.path.exists(self.file_path):
-            Console.ask_user(f"Overwrite file '{self.file_path}' ?")
-        else:
-            Console.printf("info", f"New file '{self.file_name}' will be created")
-
-        try:
-            with open(self.file_path, "w") as file:
-                json.dump(new_data, file, indent=4, default=str)  # default str converts everything not known to a string
-        except Exception as e:
-            Console.printf("error", f"Could not create/overwrite the file: {type(e).__name__}: {e}")
-
-    def print_formatted(self) -> None:
-        """
-        For printing the content of the JSON file to the console.
-
-        :return: None
-        """
-
-        Console.printf("info", f"Content of the config file: {self.file_name} \n"
-                               f"{json.dumps(self.data, indent=4)}")
 
 
 
@@ -731,8 +730,7 @@ class MetabolicAtlas:
         pass
 
 
-
-class ParameterMaps(WorkingVolume, Plot):
+class ParameterMaps(WorkingSource[ParameterVolume], Plot):
     """
     This class can be used at the moment for various purposes:
 
@@ -954,11 +952,11 @@ class ParameterMaps(WorkingVolume, Plot):
             Console.printf("error", "No maps loaded yet, thus no plotting possible.")
 
 
-    def to_working_volume(self, data_type: str = None, verbose: bool = True) -> ParameterVolume:
+    def to_working(self, data_type: str = None, verbose: bool = True) -> ParameterVolume:
         """
         This transforms the loaded maps directly to a 4D array of (metabolites, X, Y, Z)
 
-        :return: a ParameterVolume (see module spatial_metabolic_distribution)
+        :return: a ParameterVolume (see module spatial_simulation)
         """
 
         # Create the Parameter Volume
@@ -980,128 +978,85 @@ class ParameterMaps(WorkingVolume, Plot):
 
 
 
-# Issue is here that this file.FID is specifically handling the data from the .m file. However, maybe better that
-# the JMRUI class handles this and then provides teh data in the same way for each fid (loaded from .m, .txt or
-# or .basis?
-class FID:
+class FID(WorkingSource[SpectralSpatialFID]):
     """
     This class is for creating an FID containing several attributes. The FID signal and parameters can be
     either added from e.g., a simulation or loaded from a MATLAB file (.m). Moreover, it is able to convert
     the Real and Imaginary part in the file given as (Re, Im) -> Re + j*Im.
     """
 
-    def __init__(self, configurator: Configurator, key: str):
+    def __init__(self, configurator: Configurator):
         self.configurator = configurator
         self.parameters: dict = {}
-        self.loaded_fid: spectral_spatial_simulation.FID = spectral_spatial_simulation.FID()
+        self.signal: np.ndarray = None
+        self.time: np.ndarray = None
+        self.names: list = []
+        self.fid: spectral_spatial_simulation.FID = None
 
-    def get_nested(self, data, key_path, sep="/"):
-        """
-        For dealing with nested keys in json file! E.g., json format:
-
-                'xyz': {
-                    'txt': {
-                        'metabolites': {
-                            'path': 'some path'
-                        }
-                    }
-                }
-                -> normally get via: ['xyz']['txt']['metabolites']['path'] -> creates this from 'xyz/txt/metabolites'
-
-                TODO TODO TODO TODO: Right Place?? Maybe i configurator?? Because also need to take into account "files" key!!!!!! alalalala
-
-        :param data:
-        :param key_path:
-        :param sep:
-        :return:
-        """
-        value = data
-        for key in key_path.split(sep):
-            value = value[key]
-        return value
-
-    def load(self, fid_name: str, data_precision: int = 32, verbose: bool = False):  # TODO: replace fid_name to fid_type_name??? --> see Maps class above
+    def load(self, fid_key: str, compounds: list | str = None, data_precision: int = 32, verbose: bool = True):
         """
         For loading and splitting the FID according to the respective chemical compound (metabolites, lipids).
         Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.
         Additional: since the complex signal is represented in two columns (one for real and one for imaginary),
         it has to be transformed to a complex signal.
 
-        :param fid_name: Name of the FID (e.g., 'metabolites', 'lipids')
-        :param signal_data_type: Desired data type of the signal signal (numpy data types).
+        :param compounds: if desired enter a list of the names (or one string name) of the chemical compounds that should be loaded. Otherwise, all will be loaded!
+        :param data_precision: the precision of the FID signal and time. If e.g., 32 then float32 for time and complex64 for signal
+        :param verbose: if True then prints to the console
+        :param fid_key: Name of the FID (e.g., 'metabolites', 'lipids'). For nested: 'abcd.txt.metabolites'
         :return: Nothing. Access the list loaded_fid of the object for the signals!
         """
+
+        # (1) Load the data from the config file and get the required path
         self.configurator.load()
-        path = self.configurator.data["fid"][fid_name]["path"]
+        path = self.configurator.get_data(key=["fid", fid_key, "path"])
 
-        # TODO: make here that fid name -> e.g. xyz/txt/metabolites -> yields ["xyz"]["txt"]["metabolites"]["path"]
-
+        # (2) Load the basis set data
         basis_set = BasisSet(path=path, data_precision=data_precision, verbose=verbose)
-        #jmrui = JMRUI(path=path, signal_data_type=signal_data_type) TODO: OLD DELETE
-        data = basis_set.read()
-        #data = jmrui.load_m_file() TODO: OLD DELETE
+        data = basis_set.load(subset_names=compounds)
 
-        parameters, signal, time = data["parameters"], data["signal"], data["time"]
-        self.parameters = parameters
+        # (3) Extract the relevant data from the basis set data
+        self.parameters, self.signal, self.time = data["parameters"], data["signal"], data["time"]
 
-        #signal_complex = self.__transform_signal_complex(signal, time)
-        # Basically just: self.loaded fid -> create fid object for each component and then sum them up!
-        self._assign_signal_to_compound(signal, time)
+        # (4) Create for each signal an FID object and then merge it to one FID object
+        Console.add_lines("Assigned FID parts:")
+        self.names = data["name"]
 
-        # At this point the FID is already created. Just adding the unit.
-        unit = self.configurator.data["fid"][fid_name]["unit_time"]
-        try:
-            self.loaded_fid.unit_time: pint.Unit = u.Unit(unit)
-            Console.printf("success", f"Assigned unit to the loaded time vector: {self.loaded_fid.unit_time}")
-        except:
-            Console.printf("error", f"Could not assign unit to loaded FID: '{unit}'. No valid unit.")
-
-        if ArrayTools.check_nan(self.loaded_fid.signal, verbose=False):
+        # (5) Check for loaded signal and time if NaNs are present!a
+        if ArrayTools.check_nan(self.signal, verbose=False):
             Console.printf("warning", "Loaded signal of FID contains NaNs.")
-        if ArrayTools.check_nan(self.loaded_fid.time, verbose=False):
+        if ArrayTools.check_nan(self.time, verbose=False):
             Console.printf("warning", "loaded time vector of FID contains NaNs.")
 
-    def _transform_signal_complex(self, amplitude: np.ndarray, conjugate: bool = True) -> np.ndarray:
+        return self
+
+
+    def to_working(self, verbose: bool = True) -> SpectralSpatialFID:
         """
-        Transform the values given for each row as [Real, Imaginary] to [Real + j*Imaginary]
-        :return: None
+        To transform the loaded data to an FID object in another module, since this class
+        here is just for handling loading FID data from the files.
+        The other FID object has various methods to manipulate the FID signal, e.g.,
+        including interpolation, merging, renaming and so on.
 
-        :param conjugate: complex conjugation if True. Default True.
-        """
-        signal_shape_previous = amplitude.shape
-        re = amplitude[:, 0]
-        im = amplitude[:, 1]
-        amplitude = np.vectorize(complex)(re, im)
-        amplitude = np.conjugate(amplitude) if conjugate is True else amplitude
-
-        Console.printf("success",
-                       f"Transformed FID signal to complex values: {signal_shape_previous} -> {amplitude.shape}")
-
-        return amplitude
-
-    def _assign_signal_to_compound(self, signal: np.ndarray, time: np.ndarray) -> None:
-        """
-        For splitting the whole signal into the parts corresponding to the respective compound (metabolite or lipid).
-        This is given in the .m file which this class ins handling.
-
-        :param amplitude: Overall signal (whole signal given in .m-File)
-        :param time: Corresponding time vector
-        :return: Nothing
+        :param verbose: if True then print to the console.
+        :return: The spectral spatial FID object.
         """
 
-        ### Resize and thus split the whole signal into parts corresponding to the respective compound TODO: MAYBE CAN BE DELETED
-        ##signal_reshaped = amplitude.reshape(int(self.parameters['SIZE'][2]), -1) TODO MAYBE CAN BE DELETED
+        # (1) To create an empty FID object
+        fid = spectral_spatial_simulation.FID()
 
-        # Create for each part of the signal (signal) corresponding to one compound an FID object,
-        # the put into a list containing all FID objects
-        Console.add_lines("Assigned FID parts:")
+        # (2) Create and FID object for each signal and then add it together.
+        #     The new FID class also checks for having the same time vector
+        #     and unit.
+        for column_number, name in enumerate(self.names):
+            fid += spectral_spatial_simulation.FID(signal=self.signal[column_number], time=self.time, name=[name])
+            if verbose:
+                Console.add_lines(f"{column_number}. {name + ' ':-<30}-> shape: {self.signal[column_number].shape}")
 
-        # Merge the signals into one FID, thus also the names
-        for column_number, name in enumerate(range(signal.size)):
-            self.loaded_fid += spectral_spatial_simulation.FID(signal=signal[column_number], time=time, name=[name])
-            Console.add_lines(f"{column_number}. {name + ' ':-<30}-> shape: {signal[column_number].shape}")
+        if verbose:
+            Console.printf_collected_lines("success")
 
-        Console.printf_collected_lines("success")
+        return fid
 
     def show_parameters(self) -> None:
         """
@@ -1116,7 +1071,7 @@ class FID:
         Console.printf_collected_lines("success")
 
 
-class CoilSensitivityMaps(WorkingVolume, Plot):
+class CoilSensitivityMaps(WorkingSource["SamplingCoilSensitivityVolume"], Plot):
     """
     For loading and interpolating the coil sensitivity maps. At the moment, only HDF5 files are supported.
     The maps can be interpolated on 'cpu' and desired 'gpu'. It is strongly recommended to use the 'gpu'
@@ -1173,13 +1128,13 @@ class CoilSensitivityMaps(WorkingVolume, Plot):
 
         self.maps = maps_complex
 
-    def to_working_volume(self) -> CoilSensitivityVolume | None:
+    def to_working(self) -> SamplingCoilSensitivityVolume| None:
         """
         Converts the from file.CoilSensitivityMaps to sampling.CoilSensitivityVolume.
 
-        :return: CoilSensitivityVolume in sampling
+        :return: SamplingCoilSensitivityVolumein sampling
         """
-        from sampling import CoilSensitivityVolume
+        from sampling_simulation import CoilSensitivityVolume
 
         if self.maps is None:
             Console.printf("error", "Need to load coil sensitivity maps before converting to working volume!")

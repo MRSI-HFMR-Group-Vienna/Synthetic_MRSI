@@ -2,7 +2,7 @@ from __future__ import annotations      #TODO: due to circular import. Maybe sol
 from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
 
 if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
-    from spatial_metabolic_distribution import ParameterVolume  #TODO: due to circular import. Maybe solve different!
+    from spatial_simulation import ParameterVolume  #TODO: due to circular import. Maybe solve different!
 
 from cupyx.scipy.interpolate import interpn as interpn_gpu
 from scipy.interpolate import interpn as interpn_cpu
@@ -44,9 +44,9 @@ class FID:
                  signal: np.ndarray = None,
                  time: np.ndarray | pint.Quantity = None, # TODO: Pint Quantity not yet taken into account
                  name: list[str] = None,
-                 signal_data_type: np.dtype = None,
-                 sampling_period: float = None,
-                 unit_time: pint.Unit = None):
+                 signal_data_type: np.dtype = None):
+                 #sampling_period: float = None,
+                 #unit_time: pint.Unit = None):
         """
         A checks if the shape of the time vector equals the signal vector is performed. If false then the program quits.
         Further, it is also possible to instantiate a class containing just "None".
@@ -71,9 +71,9 @@ class FID:
         self.name: list = name  # name, e.g., of the respective metabolite
         self.concentration: float = None
         self.t2_value: np.ndarray = None  # TODO
-        self.sampling_period = sampling_period  # it is just 1/(sampling frequency)
+        #self.sampling_period = sampling_period  # it is just 1/(sampling frequency)
 
-        self.unit_time = unit_time
+        #self.unit_time = unit_time
 
         self._iter_index = 0
 
@@ -103,6 +103,7 @@ class FID:
             self._iter_index += 1
 
         return fid
+
 
     def merge_signals(self, names: list[str], new_name: str, divisor: int):
         """
@@ -193,6 +194,38 @@ class FID:
 
         return name_abbreviation
 
+    def drop_signal_by_name(self, compound_name: str | list[str]):
+        """
+        To drop one or multiple components of the
+
+        :param compound_name:
+        :return:
+        """
+
+        # Check if compound name is of type string
+        if isinstance(compound_name, str):
+            compound_name = [compound_name]
+
+        # Give error if remaining signals would be less than 1
+        if len(self.name) - len(compound_name) < 1:
+            Console.printf("error", f"Cannot drop {compound_name}: would leave fewer than one signal")
+            return
+
+        # Check if all provided compound names exist in the list
+        missing = [n for n in compound_name if n not in self.name]
+        if missing:
+            Console.printf("warning", f"Compounds named the following not found: {missing}. Cannot delete them!")
+
+        # Get all the indices of the names and then delete:
+        #  -> the desired signal at the respective position in the array,
+        #  -> and the desired compound names in the list and
+        indices = [self.name.index(n) for n in compound_name]
+        self.signal = np.delete(self.signal, indices, axis=0)
+        for k in sorted(indices, reverse=True):
+            del self.name[k]
+
+        return self
+
     def get_signal_by_name(self, compound_name: str):
         """
         To get one signal from the whole FID by name.
@@ -222,6 +255,7 @@ class FID:
 
         return signal
 
+
     def show_signal_shape(self) -> None:
         """
         Print the shape of the FID signal to the console.
@@ -229,6 +263,7 @@ class FID:
         :return: None
         """
         Console.printf("info", f"FID Signal shape: {self.signal.shape}")
+
 
     def sum_all_signals(self):
         """
@@ -238,6 +273,7 @@ class FID:
         self.name = [" + ".join(self.name)]  # To put all compound names in one string (in a list)
         return self
 
+    # TODO: need to handle pint untits here?
     def get_spectrum(self, x_type="ppm", *, reference_frequency=297_223_042, ppm_center=4.65) -> dict[str, np.ndarray]: # 2.65
         r"""
         To get the spectrum of all signals contained in the FID (e.g. of NAA, Glutamate, and so on). Also, a single signal
@@ -262,8 +298,8 @@ class FID:
             sys.exit()
 
         # A) Compute the frequency vector
-        N = self.time.size
-        dwell_time = self.time[1] - self.time[0]
+        N = tools.UnitTools.remove_unit(self.time.size)
+        dwell_time = tools.UnitTools.remove_unit(self.time[1] - self.time[0])
         frequency_hz = np.fft.fftfreq(N, d=dwell_time)
         frequency_hz = np.fft.fftshift(frequency_hz)
         x = frequency_hz
@@ -273,6 +309,9 @@ class FID:
             signal = self.signal[np.newaxis, :]
         else:
             signal = self.signal
+
+        signal = tools.UnitTools.remove_unit(signal)
+
         spectrum = np.fft.fft(signal, axis=1)
         spectrum = np.fft.fftshift(spectrum, axes=1)
 
@@ -464,6 +503,9 @@ class FID:
         :return: Nothing
         """
 
+        time = tools.UnitTools.remove_unit(self.time)
+        signal = tools.UnitTools.remove_unit(self.signal)
+
         if reference_frequency is None:
             reference_frequency = 297_223_042
             Console.printf("warning", f"No reference frequency is specified. Choosing: {reference_frequency} Hz.")
@@ -492,8 +534,8 @@ class FID:
 
         # 2) Then, cases possible: plotting either in time domain or the frequency domain (frequency=>Hz or ppm)
         if x_type == "time":
-            scales = self.time
-            signal = self.signal[
+            scales = time
+            signal = signal[
                 np.newaxis, :] if self.signal.ndim == 1 else self.signal  # to ensure signal has dim (1, X)
         else:
             spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency,
@@ -718,6 +760,7 @@ class FID:
                                   f"{data_type_after} "
                                   f"({SpaceEstimator.for_array(self.time, unit='KiB')})", mute=not verbose)
 
+
     def __add__(self, other):
         """
         For merging different FID signals. Add two together with just "+"
@@ -738,7 +781,7 @@ class FID:
             return self
 
         # Case 2: The self and other object both do not have None attributes and need to be summed
-        if not np.array_equal(self.time, other.time):
+        if not UnitTools.equal(self.time, other.time, tolerant=True):
             Console.printf("error",
                            f"Not possible to sum the two FID since the time vectors differ in shape or content! "
                            f"Vector 1 shape: {self.time.shape}, Vector 2 shape: {other.time.shape}"
@@ -2676,21 +2719,22 @@ class LookupTableWET_OLD:
 if __name__ == '__main__':
 
     # ========================= TO LOAD THE MAPS ANS INTERPOLATE IT ====================================================
-    import file
-    configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
+    from configurator import Configurator
+    from file import ParameterMaps as FileParameterMaps
+    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
                                      file_name="paths_14032025.json")
     configurator.load()
 
-    loaded_B1_map = file.ParameterMaps(configurator=configurator, map_type_name="B1").load_file()
+    loaded_B1_map = FileParameterMaps(configurator=configurator, map_type_name="B1").load_file()
     loaded_B1_map_shape = loaded_B1_map.loaded_maps.shape
 
-    loaded_B0_map = file.ParameterMaps(configurator=configurator, map_type_name="B0").load_file()
+    loaded_B0_map = FileParameterMaps(configurator=configurator, map_type_name="B0").load_file()
     loaded_B0_map = loaded_B0_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
 
 
-    loaded_GM_map = file.ParameterMaps(configurator=configurator, map_type_name="GM_segmentation").load_file()
-    loaded_WM_map = file.ParameterMaps(configurator=configurator, map_type_name="WM_segmentation").load_file()
-    loaded_CSF_map = file.ParameterMaps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
+    loaded_GM_map = FileParameterMaps(configurator=configurator, map_type_name="GM_segmentation").load_file()
+    loaded_WM_map = FileParameterMaps(configurator=configurator, map_type_name="WM_segmentation").load_file()
+    loaded_CSF_map = FileParameterMaps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
 
     loaded_GM_map = loaded_GM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
     loaded_WM_map = loaded_WM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)

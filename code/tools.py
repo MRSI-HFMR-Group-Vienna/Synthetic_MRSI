@@ -52,6 +52,7 @@ from scipy.ndimage import zoom as zoom_cpu
 from scipy.fft import fftn as fftn_cpu, fftshift as fftshift_cpu # cpu case: using scipy instead of numpy since numpy automatically data type promotion (e.g., complex64 -> fft -> complex128)
 from cupy.fft  import fftn as fftn_gpu, fftshift as fftshift_gpu # gpu case: for gpu directly cupy is used
 
+import glom
 
 
 
@@ -2082,6 +2083,54 @@ class UnitTools:
                 return quantity_after.magnitude, quantity_after.units
 
     @staticmethod
+    def equal(a, b, tolerant: bool = False, verbose: bool = False) -> bool:
+        """
+        Compare two values for equality that also exhibiting units.
+        (!) Note: it is also possible to just pass numpy arrays, cupy arrays, lists, scalar,
+                  which is useful if it is not known if pint is used
+
+        :param a: values or array with and without pint units
+        :param b: values or array with and without pint units
+        :param tolerant: if true, then tolerance based on
+        :return:
+        """
+        # Case 0: Different type: In general both types to compare are different
+        if type(a) != type(b):
+            Console.printf("error", f"The two arrays must be the same type. But a={type(a)}; b={type(b)}", mute=not verbose)
+            return False
+
+        a_is_pint = isinstance(a, pint.Quantity)
+        b_is_pint = isinstance(b, pint.Quantity)
+
+        # Chase 1: Mixed: One has units, the other not -> not equal
+        if a_is_pint != b_is_pint:
+            Console.printf("error", f"Both arrays must be of type pint.Quantity. But a={type(a)}; b={type(b)}", mute=not verbose)
+            return False
+
+        # Chase 2: Both pint: The units have to match then
+        elif a_is_pint and b_is_pint:
+            if a.units != b.units:
+                Console.printf("error", f"Both arrays must be of same unit. But a unit={a.units}; b unit={b.units}", mute=not verbose)
+                return False
+            else:
+                a, b = a.magnitude, b.magnitude
+
+        # Checking if numpy OR cupy array. Already checked that a,b of same data type at beginning!
+        if isinstance(a, (np.ndarray, cp.ndarray)):
+            xp = ArrayTools.get_backend(a)
+        else:
+            xp = np # by default use numpy, possible to compare lists, scalars, and so on... but not cupy ;)
+
+        # Case 3: Compare values (should work for numpy, cupy, list and scalar!)
+        compare = xp.allclose if tolerant else xp.array_equal
+        compared = bool(compare(a, b))
+        Console.printf("error", f"The values of a and b are different! (using tolerant={tolerant})", mute=not verbose)
+
+        return compared
+
+
+
+    @staticmethod
     def remove_unit(array: pint.Quantity | np.ndarray | cp.ndarray) -> np.ndarray | cp.ndarray | int | float:
         """
         If pint.Quantity is inserted then the underlying array/values are returned.
@@ -2135,6 +2184,83 @@ class UnitTools:
             return result
 
         return wrapper
+
+class DictionaryTools:
+    """
+    Created this extra class since reading data from json files and then creating dict objects
+    might be highly important. Therefore, it is easy to extend functionalities and to unify
+    multiple libraries.
+    """
+
+    @staticmethod
+    def get(dictionary: dict, key: str | list, separator: str = "."):
+        """
+        Access a nested dict value using a single dotted-path string.
+
+        Useful when a method accepts only one string key, but the underlying
+        dict has become more deeply nested (e.g. after a JSON schema change).
+
+        Example:
+            Before: MyClass.get_path(map_type="T1")                 -> dict["T1"]
+            After:  MyClass.get_path(map_type="maps.structured.T1") -> dict["maps"]["structured"]["T1"]
+
+            The method's signature stays the same; only the key string changes.
+
+        :param dictionary: the dictionary of type dict
+        :param key: the key of the dict as string, and if nested then e.g., 'maps.structured.T1'. With desired separator!
+        :param separator: By default, ".", but can be any custom one!
+        :return: The values of the dict
+        """
+
+        # If only one string, then make list out of it and then format properly for glom.
+        # If user e.g., handles in ["maps.structured", "T1"] -> convert to tuple(["maps", "structured", "T1])
+
+        original_key = key
+        if isinstance(key, str):
+            key = [key]
+        key = tuple(k for s in key for k in s.split(separator) if k)
+
+        # Get the values via glom and the formatted key
+        try:
+            return glom.glom(dictionary, key)
+        except glom.PathAccessError:
+            Console.printf("error", f"Could not get values for key '{original_key}' with separator '{separator}'\n"
+                                    f"Maybe wrong key or separator?")
+            return None
+
+
+    @staticmethod
+    def set(dictionary: dict, key: str, value, separator: str = ".", create_missing: bool = True):
+        """
+        Set a nested dict value using a single path string.
+
+        Useful when a method accepts only one string, but the underlying
+        dict is deeply nested. Mirrors the 'get' method.
+
+        Example:
+            set(d, "T1", path_obj)                          -> d["T1"] = path_obj
+            set(d, "maps.structured.T1", path_obj)          -> d["maps"]["structured"]["T1"] = path_obj
+            set(d, "maps/structured/T1", path_obj, sep="/") -> d["maps"]["structured"]["T1"] = path_obj
+
+            If intermediate keys don't exist yet, they get created automatically
+            (set `create_missing=False` to disable).
+
+        :param dictionary:     the dictionary of type dict (modified in place!)
+        :param key:       the key path as string, and if nested then e.g., 'maps.structured.T1'. With desired separator!
+        :param value:          the value to assign at the given path
+        :param separator:      By default, ".", but can be any custom one!
+        :param create_missing: If True (default), missing intermediate dicts are created. If False, raises on missing path.
+        :return: None (the dictionary is modified in place)
+        """
+
+        try:
+            glom.assign(dictionary, glom.Path(*key.split(separator)), value, missing=dict if create_missing else None)
+        except glom.PathAccessError:
+            Console.printf("error", f"Could not set value for key '{key}' with separator '{separator}'. "
+                                    f"Intermediate keys missing and create_missing=False.")
+
+
+
 
 
 class ArrayTools:
@@ -2320,7 +2446,6 @@ class ArrayTools:
         """
         To check if NaNs are present. Numpy or cupy array is possible.
 
-
         :param array: numpy or cupy array
         :return: True if NaNs are present
         """
@@ -2357,7 +2482,8 @@ class ArrayTools:
                 Console.printf("warning", f"NaNs are presents ({nan_percent:.5g})%. NaNs/(array size): {nan_count}/{size_array}.")
             return True
         else:
-            Console.printf("success", "NaNs are NOT present!")
+            if verbose:
+                Console.printf("success", "NaNs are NOT present!")
             return False
 
     @staticmethod

@@ -210,11 +210,22 @@ set -e
 
 PORT="${JUPYTER_PORT:-8888}"
 
+# Use JUPYTER_TOKEN if provided, otherwise generate a fresh one
+if [ -z "${JUPYTER_TOKEN}" ]; then
+    export JUPYTER_TOKEN=$(python -c "import secrets; print(secrets.token_hex(24))")
+fi
+
 echo ""
-echo "============================================="
-echo "  JupyterLab is starting... The monkeys wish you lots of fun! 🐒🐒🐒"
-echo "  Port: ${PORT}"
-echo "============================================="
+echo "==================================================================="
+echo "  🐒🐒🐒  JupyterLab is starting... The monkeys wish you fun!  🐒🐒🐒"
+echo ""
+echo "  🍌 The monkeys handed you this access token: 🍌"
+echo ""
+echo "      ${JUPYTER_TOKEN}"
+echo ""
+echo "  Paste it into the JupyterLab login page (or append"
+echo "  ?token=${JUPYTER_TOKEN} to your URL) to get in."
+echo "==================================================================="
 echo ""
 
 exec jupyter lab \
@@ -223,6 +234,7 @@ exec jupyter lab \
   --no-browser \
   --allow-root \
   --notebook-dir=/ \
+  --ServerApp.token="${JUPYTER_TOKEN}" \
   --ServerApp.terminado_settings='{"shell_command": ["/bin/bash", "-l"]}' \
   2>&1
 EOF

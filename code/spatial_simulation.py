@@ -1,0 +1,478 @@
+import time
+
+from tools import JupyterPlotManager
+from tools import CustomArray, GPUTools, SortingTools, DaskTools, InterpolationTools
+from cupyx.scipy.ndimage import zoom as zoom_gpu
+from scipy.ndimage import zoom as zoom_cpu
+from dataclasses import dataclass
+from tools import UnitTools, SpaceEstimator, ArrayTools
+from prettyconsole import Console
+import dask.array as da
+from tqdm import tqdm
+import numpy as np
+import cupy as cp
+import pint
+import sys
+
+from interface import Interpolation
+
+
+class Model:
+    # TODO
+    def __init__(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+    def add_mask(self):
+        # TODO. Create masks in the simulator. Right place there?
+        raise NotImplementedError("This method is not yet implemented")
+
+    def add_t1_image(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+    def add_subject_variability(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+    def add_pathological_alterations(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+
+class MetabolicAtlas:
+    # TODO
+    def __init__(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+    def transform_to_t1(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+    def load(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+
+class ParameterMap(Interpolation):
+    """
+    This holds a map of a certain type (e.g., T1) of a certain metabolite (e.g., NAA). It's possible to interpolate
+    the map to a certain target shape and to push it to the respective device (GPU <-> CPU). Ist also possible to
+    change the unit and the data type.
+    """
+    def __init__(self, map_type: str, metabolite_name: str, values: np.ndarray | np.memmap, unit: pint.Unit, affine: np.ndarray=None):
+        self.map_type: str = map_type                 # e.g., T1
+        self.metabolite_name: str = metabolite_name   # e.g., NAA
+        self.values: np.ndarray = values              # a numpy array
+        self.unit: pint.Unit = unit                   # the unit
+        self.affine: np.ndarray = affine              # TODO: Not yet used. E.g., if volumes obtain a different orientation.
+
+        self.applied_methods = [] # Just to collect already applied methods to this object
+
+    def to_device(self, device, verbose=False):
+        """
+        To bring the values of the maps object to the desired device.
+
+        :param device: "cpu" or "cuda"/"gpu"
+        :param verbose: if True then prints to the console.
+        :return: the object itself
+        """
+        self.values = GPUTools.to_device(self.values, device=device)
+        Console.printf("success", f"Brought Maps values to device: {device}", mute=not verbose)
+
+        self.applied_methods.append(f"put array on device: {device}")
+
+        return self
+
+    def interpolate(self, target_size: tuple, order: int, device: str, target_gpu: int = 0, verbose: bool=False):
+        """
+        To interpolate a volume to a certain size with a certain order.
+
+        :param device: on which device it should be computed
+        :param target_size: the desired shape
+        :param order: the interpolation order
+        :param target_gpu: When gpu is used then the index of the gpu. By default, the first one.
+        :param verbose: If true then prints to console.
+        :return: Nothing
+        """
+
+        self.values = InterpolationTools.interpolate(array=self.values,
+                                                     target_size=target_size,
+                                                     order=order,
+                                                     compute_on_device=device,
+                                                     return_on_device="cpu",
+                                                     target_gpu=target_gpu,
+                                                     verbose=verbose)
+
+        self.applied_methods.append(f"interpolate with order {order} to shape: {target_size}")
+
+        return self
+
+
+    def change_unit(self, target_unit: str, verbose: bool=True):
+        """
+        To change to the current unit (e.g., mmol -> mol)
+        :param target_unit: the desired unit as string
+        :param verbose: if True then prints to the console.
+        :return: the object itself
+        """
+        unit_before = self.unit  # just for self.applied_methods
+        unit_after = target_unit # just for self.applied_methods
+
+        self.values, self.unit = UnitTools.to_unit(values=self.values,current_units=self.unit, target_units=target_unit, return_separate=True, verbose=verbose)
+
+        self.applied_methods.append(f"change unit from {unit_before} to {unit_after}")
+
+        return self
+
+    def change_data_type(self, data_type, verbose: bool=True):
+        """
+        To change the values to a desired data type. Possible for numpy and cupy.
+
+        :param data_type: data type as string (e.g. float32)
+        :param verbose: if True, then print to console
+        :return: the object itself
+        """
+        data_type_before = self.values.dtype
+        data_type_after = data_type
+        self.values = self.values.astype(data_type_after)
+        Console.printf("success", f"Changed data type from '{data_type_before}' => '{data_type_after}'", mute=not verbose)
+
+        self.applied_methods.append(f"change data type from {data_type_before} to {data_type_after}")
+
+        return self
+
+    def check_nan(self):
+        """
+        Check if Not a Number (NaN) are present in the array of this object. Just prints the result to the console.
+        :return: object itself to apply further methods
+        """
+        nans_present = ArrayTools.check_nan(self.values, verbose=True)
+
+        self.applied_methods.append(f"checked for NaNs: {nans_present}")
+
+        return self
+
+    def enforce_positive_values(self, convert_negative, convert_zeros):
+        """
+        To convert negative values and/or zeros values to eps value.
+
+        :return: the object itself to concatenate further method calls
+        """
+
+        self.values = ArrayTools.enforce_min_eps(array=self.values, convert_negative=convert_negative, convert_zeros=convert_zeros)
+
+        self.applied_methods.append(f"Enforce positive eps. Converting negative values: {convert_negative}; converting zero values: {convert_zeros}")
+
+        return self
+
+    def __str__(self):
+        """
+        Print to the console the name(s) of the chemical compounds in the FID and the signal shape.
+        """
+        display_unit = "MiB"
+
+        Console.add_lines(f"The parameter map contains the following properties:")
+        Console.add_lines(f" => {'map type: ':.<20} {self.map_type}")
+        Console.add_lines(f" => {'metabolite: ':.<20} {self.metabolite_name}")
+        Console.add_lines(f" => {'unit: ':.<20} {self.unit}")
+        Console.add_lines(f" => {'values shape: ':.<20} {self.values.shape}")
+        Console.add_lines(f" => {'values data type: ':.<20} {self.values.dtype}")
+        Console.add_lines(f" => {'required space: ':.<20} {SpaceEstimator.for_array(self.values, unit=display_unit, verbose=False):.5g} ({display_unit})")
+        Console.printf_collected_lines("info")
+        return "\n"
+
+
+class ParameterVolume(Interpolation):
+    """
+    Can only be of one type of map (e.g., T1, or T2, ...), but it should be with multiple metabolites.
+    """
+
+    def __init__(self, maps_type):
+        self.maps_type: str = maps_type # e.g, T1
+        self.maps: list[ParameterMap, ...] = []
+
+        # Relevant fields after the 4D volume is created:
+        self.volume: np.ndarray = None
+        self.metabolites: list[str] = [] # list of names of the metabolites, corresponds to the 4D array (1st dimension)
+        self.unit: list = []
+        self.data_type = None
+
+    def add_map(self, map: ParameterMap, verbose: bool = False):
+        """
+        To add a ParameterMap to the current object.
+
+        :param map: Parameter Map of class ParameterMap
+        :param verbose: if True then print to console.
+        :return: Nothing
+        """
+
+        if not map.map_type == self.maps_type:
+            Console.printf("error", f"Cannot add Parameter Map of type {map.map_type} to {self.maps_type}. Create new object instead.")
+            sys.exit()
+
+        self.maps.append(map)
+        Console.printf("success", f"Added to Parameter Maps of type {self.maps_type} the metabolite: {map.metabolite_name}.", mute=not verbose)
+
+
+    def interpolate_maps(self, target_size: tuple, order: int = 3, device: str = "cpu", target_gpu: int = 0, verbose: bool = False):
+        """
+        To interpolate to the desired target size with desired order. Note, that this is done for each map but not the volume.
+
+        :param target_size: the desired target size as tuple
+        :param order: the interpolation order
+        :param device: the device. Either "cpu", "gpu"/"cuda"
+        :param target_gpu: if "gpu"/"cuda" is selected then the index of the gpu
+        :param verbose: print to console if true
+        :return: the object itself
+        """
+        for i, m in enumerate(self.maps):
+            self.maps[i] = m.interpolate(target_size=target_size, order=order, device=device, target_gpu=target_gpu, verbose=verbose)
+
+        self.to_volume(verbose=verbose)
+        Console.printf("warning", "The individual maps are interpolated, and then the 4D volume is created again. This might slow down the process.")
+
+        return self
+
+    # called previously interpolate_volume to distinguish between interpolate_maps but sice inherits from Interpolation it is not possible anymore....
+    def interpolate(self, target_size: tuple, order: int = 3, device: str = "cpu", target_gpu: int = 0, verbose: bool = False):
+        """
+        To interpolate to the desired target size with desired order. This is done for the whole 4D volume.
+
+        Note: target size is only the size of one metabolite map, therefore 3D
+
+        :param target_size: the desired target size as tuple
+        :param order: the interpolation order
+        :param device: the device. Either "cpu", "gpu"/"cuda"
+        :param target_gpu: if "gpu"/"cuda" is selected then the index of the gpu
+        :param verbose: print to console if true
+        :return: the object itself
+        """
+
+        # When no Parameter Map is in the list
+        if not self.maps:
+            Console.printf("error", "First add at least one 3D Parameter Map to the object to create a 4D volume.")
+            return
+        # When at least one Parameter Map is in the list
+        else:
+            shape_old = self.volume.shape
+            target_size = (shape_old[0], *target_size)  # to get 4D tuple
+            self.volume = InterpolationTools.interpolate(
+                array=self.volume,
+                target_size=target_size,
+                order=order,
+                compute_on_device=device,
+                return_on_device="cpu",
+                target_gpu=target_gpu,
+                verbose=verbose
+            )
+
+        return self
+
+    def to_volume(self, verbose=True):
+        """
+        To create 4D volume out of individual 3D volumes. Thus, 3D maps of different metabolites by same map type (e.g. T1)
+        are assembled to one 4D array of (metabolite, X,Y,Z).
+
+        :param verbose: if True then prints to the console.
+        :return: the object itself
+        """
+
+        # When no Parameter Map is in the list
+        if not self.maps:
+            Console.printf("error", "First add at least one 3D Parameter Map to the object to create a 4D volume.")
+        # When at least one Parameter Map is in the list
+        else:
+            # Some check are required:
+            # 1 check all objects same type (e.g., T1) -> already to when call add_map
+
+            metabolites = [] # list of names of the metabolites
+            volumes = []     # list of the volumes
+
+            # 2 check all objects same shape
+            #shapes = set([m.values.shape for m in self.maps])
+            shapes = set([(next(iter(m.values.values())) if isinstance(m.values, dict) else m.values).shape for m in self.maps])
+
+            units = set([m.unit for m in self.maps])
+            if len(shapes) > 1:
+                Console.printf("error", f"Cannot create 4D array of the 3D arrays since they exhibiting different shapes: {shapes}")
+
+            # 3 check all objects same unit
+            elif len(units) > 1:
+                Console.printf("error", f"Cannot create 4D array of the 3D arrays since they exhibiting different units: {units} ")
+            # 4 All objects are of same map type, exhibit same shape (X,Y,Z) and also h ave the same unit
+            else:
+                for m in self.maps:
+                    metabolites.append(m.metabolite_name)
+                    #volumes.append(m.values)  # shape (X,Y,Z)
+                    volumes.append(next(iter(m.values.values())) if isinstance(m.values, dict) else m.values)  # shape (X,Y,Z)
+
+                self.metabolites = metabolites
+                self.volume = np.stack(volumes, axis=0)       # shape (metabolite, X,Y,Z)
+                self.unit = self.maps[0].unit               # tale unit of first object since all must exhibit the in the list at this point (see above)
+                Console.printf("success",
+                               f"Created 4D volume of metabolite maps: {self.metabolites}. \n"
+                               f" {'Map type: ':.<17} {self.maps_type} \n"
+                               f" {'Unit: ':.<17} {self.unit} \n"
+                               f" {'Shape: ':.<17} {self.volume.shape} \n"
+                               f" {'Data type: ':.<17} {self.volume.dtype} \n"
+                               f" {'Space: ':.<17} {SpaceEstimator.for_array(self.volume, unit='MiB', verbose=False):.5g}",
+                               mute=not verbose)
+
+        return self
+
+
+    def size(self, unit="MiB", verbose=True) -> pint.Quantity:
+        """
+        To calculate the required size on the disk.
+
+        :param unit: the desired unit (e.g., MiB, GiB, ...)
+        :param verbose: prints the calculated size to the console if True
+        :return:
+        """
+        return SpaceEstimator.for_array(self.volume, unit=unit, verbose=verbose)
+
+    def to_data_type(self, data_type: str):
+        """
+        To just change the data type. E.g., from float46 to float32
+
+        :param data_type: to change to data type
+        :return: Nothing
+        """
+        if self.volume is None:
+            Console.printf("error", "First run 'to_volume' to create th 4D volume, then it is possible to change the data type.")
+        else:
+            data_type_before = self.volume.dtype
+            space_required_before = SpaceEstimator.for_array(self.volume, unit="MiB")
+            #self.volume = self.volume.astype(data_type)
+            self.volume = ArrayTools.to_data_type(self.volume, data_type=data_type, verbose=False)
+            data_type_after = self.volume.dtype
+            space_required_after = SpaceEstimator.for_array(self.volume, unit="MiB")
+            Console.printf("success", f"Changed the data type from {data_type_before} ({space_required_before:.5g}) -> {data_type_after} ({space_required_after:.5g})")
+
+
+    def reorder_metabolites(self, metabolites: list[str]):
+        """
+        To reorder the metabolites order of the list of the Parameter Maps. If already a volume out of them is created, then this is also reordered.
+
+        As input simply a list of the names of the metabolite sin the desired order is required.
+
+        :param metabolites: list of metabolites. E.g., ["NAA", "Glu", Glx", ...]
+        :return: the object itself
+        """
+        current_order = list(self.metabolites)  # current metabolite names
+        desired_order = list(metabolites)  # desired metabolite names
+
+        # Error if there are not the same metabolite names inside both lists
+        if set(current_order) != set(desired_order):
+            missing = set(desired_order) - set(current_order)
+            extra = set(current_order) - set(desired_order)
+            Console.printf("error", f"Cannot sort. Metabolite sets do not match. Missing: {sorted(missing)}; Extra: {sorted(extra)}")
+        # Warning if already desired order
+        elif current_order == desired_order:
+            Console.printf("warning", "No sorting is applied since already desired order is given!")
+        # Otherwise, sort maps and value
+        else:
+            # Map current name -> current index, then build permutation for desired order
+            idx = {name: i for i, name in enumerate(current_order)}
+            perm = [idx[name] for name in desired_order]
+
+            # (Option A) Reorder the metabolites in the list (of ParameterMaps)
+            if self.maps is not None:
+                # If maps is a list aligned with self.metabolites
+                if len(self.maps) != len(current_order):
+                    Console.printf("error", f"Containing {len(self.maps)} Parameter Maps but metabolites length is {len(current_order)}")
+                else:
+                    self.maps = [self.maps[i] for i in perm]
+                    # Update metabolite order names in list
+                    self.metabolites = desired_order
+            else:
+                Console.printf("warning", "The Parameter Maps cannot eb sorted since no elements are available.")
+
+            # (Option B) Reorder the metabolite axis of the volume (axis 0)
+            if self.volume is not None:
+                if self.volume.shape[0] != len(current_order):
+                    Console.printf("error", f"Volume first dimension is {self.volume.shape[0]} but metabolite length is {len(current_order)}")
+                else:
+                    self.volume = self.volume[perm, ...]
+                    # Update metabolite order names in list
+                    self.metabolites = desired_order
+            else:
+                Console.printf("warning", "The metabolite axis of the volume cannot be rearranged since it is empty. Run 'to_volume' first!")
+
+        return self
+
+
+    def __str__(self):
+        """
+        For using tge print function on the object. A pretty output ;)
+
+        :return: Nothing (Except a new line ;))
+        """
+        display_unit = "MiB"
+
+        Console.add_lines(f"The parameter map contains the following properties:")
+        Console.add_lines(f" => {'maps type: ':.<20} {self.maps_type}")
+        Console.add_lines(f" => {'metabolites: ':.<20} {self.metabolites}")
+        Console.add_lines(f" => {'unit: ':.<20} {self.unit}")
+        Console.add_lines(f" => {'values shape: ':.<20} {self.volume.shape}")
+        Console.add_lines(f" => {'values data type: ':.<20} {self.volume.dtype}")
+        Console.add_lines(f" => {'required space: ':.<20} {SpaceEstimator.for_array(self.volume, unit=display_unit, verbose=False):.5g} ({display_unit})")
+        Console.printf_collected_lines("info")
+        return "\n"
+
+
+    def display_jupyter(self, display: str = "maps"):
+        """
+        To display this volume interactive. Either the maps of the transformed volume is displayed. To distinguish only necessary
+        if manually a change was made at maps or volume.
+
+        One use case for example: Crating this object, holding volumes in dict, transforming to 4D volume. If change in volume
+        and if only then maps were displayed, the change is not plotted. Therefore, this two ways are available.
+
+        :param display:
+        :return:
+        """
+
+        if not display in ("maps", "volume"):
+            Console.printf("error", f"Only possible arguments for 'display' are 'volume' and 'maps'. But was given: {display}")
+        else:
+            maps_volumes_list = None
+            maps_names_list = None
+
+            if display == "maps":
+                maps_volumes_list = [m.values for m in self.maps]
+                maps_names_list = [m.metabolite_name for m in self.maps]
+            elif display == "volume":
+                if self.volume is None:
+                    Console.printf("error", "Cannot display the volume. Run to_volume first to create the 4D volume.")
+                else:
+                    maps_volumes_list = list(self.volume)
+                    maps_names_list = self.metabolites
+            else:
+                # I assume this cas will never happen ;)
+                Console.printf("error", "An error occurred while trying to display the volume.")
+
+            JupyterPlotManager.volume_grid_viewer(vols=maps_volumes_list, rows=1, cols=len(maps_names_list), titles=maps_names_list)
+
+
+
+class Simulator:
+    # TODO
+
+    def __init__(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+    def transform_metabolic_atlas_to_t1(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+    def create_masks(self):
+        # TODO
+        raise NotImplementedError("This method is not yet implemented")
+
+
+if __name__ == "__main__":
+    pass
