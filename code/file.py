@@ -36,7 +36,8 @@ if TYPE_CHECKING:
 
 
 # For enabling to use units
-u = pint.UnitRegistry()
+#u = pint.UnitRegistry()
+from units import u
 
 class BasisSet:
 
@@ -132,14 +133,14 @@ class BasisSet:
 
         # Give error if no names provided
         if len(compound_name) == 0:
-            Console.printf("Error", "No compound name(s) provided", verbose=verbose)
+            Console.printf("error", "No compound name(s) provided", verbose=verbose)
             return
 
         # Give error if any required key is missing in the dictionary
         required_keys = ['parameters', 'signal', 'time', 'name']
         missing_keys = [k for k in required_keys if k not in data]
         if missing_keys:
-            Console.printf("Error", f"Key(s) missing in data: {missing_keys}", verbose=verbose)
+            Console.printf("error", f"Key(s) missing in data: {missing_keys}", verbose=verbose)
             return
 
         # Find which of the requested names exist and which do not:
@@ -150,12 +151,12 @@ class BasisSet:
 
         # Give error if not a single requested name was found
         if len(found) == 0:
-            Console.printf("Error", f"None of the requested name(s) found: {compound_name}", verbose=verbose)
+            Console.printf("error", f"None of the requested name(s) found: {compound_name}", verbose=verbose)
             return
 
         # Just a warning if some names are missing but at least one is found
         if missing:
-            Console.printf("Warning", f"Name(s) not found and skipped: {missing}", verbose=verbose)
+            Console.printf("warning", f"Name(s) not found and skipped: {missing}", mute=False)
 
         # Get all the indices of the found names and then build the subset:
         #  -> select the respective rows from the signal array,
@@ -630,7 +631,7 @@ class NeuroImage:
 
 
 
-
+# TODO: Use ParameterMaps instead!!! & REMOVE THIS IN FUTURE!
 class Mask(Plot):
     """
     For loading a mask from a file (e.g., metabolic mask, lipid mask, B0 inhomogeneities, ...). It requires a
@@ -749,16 +750,20 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
     """
     # TODO: Maybe program more flexible
 
-    u = pint.UnitRegistry() # class variable, same for all instances
+    #u = pint.UnitRegistry() # class variable, same for all instances
 
     def __init__(self, configurator: Configurator, map_type_name: str):
         self.configurator = configurator
+
+
+        # TODO: CHANGE HERE TO MAKE MORE FLEXIBLE ==> from map_type_name ==> map_key? OR REMOVE HERE?!
         self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
         self.loaded_maps: dict[str, np.memmap | h5py._hl.dataset.Dataset] | np.memmap | np.ndarray = None
         self.loaded_maps_unit = None
         self.file_type_allowed = ['.nii', '.nii.gz', '.h5', '.hdf5']
 
-
+        # TODO: MODIFICATION!
+        # TODO: ==> like BasisSet, use maps.txt.lala and so on... instead of => self.configurator.data["maps"][self.map_type_name]["path"]
         self.main_path = Path(self.configurator.data["maps"][self.map_type_name]["path"])
         if self.main_path.is_file():
             # Case 1: the main_path points to just one file
@@ -787,6 +792,7 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
         self.configurator.load()
 
 
+    # TODO: LET PROGRAM DECIDE IF PROVIDED PATH IS FOLDER OR FILE LIKE IN CLASS: BasisSet
     def load_file(self) -> Self:
         """
         Load a single map from file.
@@ -842,6 +848,8 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
 
         return self
 
+    # TODO: LET PROGRAM DECIDE IF PROVIDED PATH IS FOLDER OR FILE LIKE IN CLASS: BasisSet
+    # TODO: ==> BUT HERE A BIT MORE COMPLICATED?!!!
     def load_files_from_folder(self, working_name_and_file_name: dict[str, str]) -> Self:
         """
         (!) At the moment mainly for loading metabolites. As example use the dictionary to load:
@@ -890,11 +898,12 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
 
         # Try to convert provided string in the config file to pint unit, and assign "dimensionless" if it fails
         try:
-            self.loaded_maps_unit = ParameterMaps.u.Unit(unit_string)
+            self.loaded_maps_unit = u.Unit(unit_string) #ParameterMaps.u.Unit(unit_string)
         except:
             Console.printf("error", f"Could not convert loaded unit '{unit_string}' to pint unit. Therefore, assigned 'dimensionless'!")
 
 
+    # TODO: USE TOOLS.UNITTOOLS INSTEAD!
     def to_base_units(self, verbose=False):
         """
         To convert all loaded arrays to the base units.
@@ -1221,7 +1230,7 @@ class Trajectory:
     """
 
     # Class variable (thus not bound to an object)
-    u = pint.UnitRegistry()  # for using units with the same Registry
+    #u = pint.UnitRegistry()  # for using units with the same Registry
 
     def __init__(self, configurator: Configurator):
         """

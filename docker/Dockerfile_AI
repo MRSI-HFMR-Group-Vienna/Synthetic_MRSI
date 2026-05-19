@@ -1,0 +1,624 @@
+# syntax=docker/dockerfile:1
+
+############################
+# Local AI code advisor base
+############################
+FROM ollama/ollama:latest
+
+############################
+# OS setup
+############################
+# 🔹 Core packages: FUSE, rclone, tini, Python tools for Aider, and file listing helpers
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      wget \
+      git \
+      fuse3 \
+      rclone \
+      tini \
+      nano \
+      bash \
+      locales \
+      coreutils \
+      findutils \
+      tree \
+      file \
+      procps \
+      python3 \
+      python3-venv \
+      python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# 🔹 Allow non-root users to use `-o allow_other` with FUSE mounts
+RUN echo "user_allow_other" >> /etc/fuse.conf || true
+
+# 🔹 UTF-8 locale
+RUN locale-gen en_US.UTF-8 || true
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
+
+############################
+# FUSE / rclone helper
+############################
+# 🔹 Make absolutely sure a "fusermount3" command exists in PATH
+RUN if ! command -v fusermount3 >/dev/null 2>&1 && command -v fusermount >/dev/null 2>&1; then \
+      ln -s "$(command -v fusermount)" /usr/local/bin/fusermount3; \
+    fi
+
+# 🔹 Hint rclone which helper to use
+ENV RCLONE_FUSE_COMMAND=fusermount3
+
+############################
+# AI model configuration
+############################
+# 🔹 Strong local coding model for repository advice
+ARG AI_MODEL=qwen3-coder:30b
+ENV AI_MODEL=${AI_MODEL}
+
+# 🔹 Use a non-root-accessible HOME at runtime
+ENV HOME=/workspace/home
+
+# 🔹 Store Ollama models in a non-root-accessible directory
+ENV OLLAMA_MODELS=/opt/ollama/models
+
+# 🔹 Keep Ollama local inside this container
+ENV OLLAMA_HOST=127.0.0.1:11434
+ENV OLLAMA_API_BASE=http://127.0.0.1:11434
+
+############################
+# Aider Web UI configuration
+############################
+# 🔹 Aider browser UI port
+ENV AIDER_WEB_PORT=8501
+
+# 🔹 Make browser UI reachable through Docker port forwarding
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_PORT=8501
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# 🔹 Avoid trying to open a browser inside the container
+ENV BROWSER=echo
+
+############################
+# AI coding advisor setup
+############################
+# 🔹 Install Aider with browser UI support into a small isolated Python environment
+RUN python3 -m venv /opt/aider-venv && \
+    /opt/aider-venv/bin/python -m pip install --upgrade pip && \
+    /opt/aider-venv/bin/python -m pip install --no-cache-dir 'aider-chat[browser]' && \
+    /opt/aider-venv/bin/python -c "import streamlit; print('Aider browser dependencies installed')" && \
+    chmod -R 777 /opt/aider-venv
+
+# 🔹 Put Aider venv first on PATH
+ENV PATH=/opt/aider-venv/bin:${PATH}
+
+# 🔹 Disable analytics/update noise
+ENV AIDER_ANALYTICS_DISABLE=true
+ENV AIDER_CHECK_UPDATE=false
+ENV AIDER_CHAT_LANGUAGE=English
+
+# 🔹 Default mounted-code base path; override at runtime if needed
+ENV AI_DEFAULT_MOUNT_BASE=/code
+
+# 🔹 Default UI mode: web or terminal
+ENV AI_ADVISOR_UI=web
+
+# 🔹 File listing/context selection defaults
+ENV AI_LIST_MAX_DEPTH=8
+ENV AI_MAX_CONTEXT_FILES=80
+
+# 🔹 Writable folders for non-root runtime users
+RUN mkdir -p \
+      /opt/ollama/models \
+      /workspace/ai-agent \
+      /workspace/logs \
+      /workspace/home && \
+    chmod -R 777 /opt/ollama /workspace
+
+############################
+# Bake local AI model into image
+############################
+# 🔹 Start Ollama during build, pull the model, then stop Ollama again
+RUN set -eu; \
+    mkdir -p "${OLLAMA_MODELS}"; \
+    echo "Starting temporary Ollama server during Docker build..."; \
+    OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS="${OLLAMA_MODELS}" ollama serve > /tmp/ollama-build.log 2>&1 & \
+    OLLAMA_PID=$!; \
+    READY=0; \
+    for i in $(seq 1 180); do \
+      if ! kill -0 "${OLLAMA_PID}" 2>/dev/null; then \
+        echo "ERROR: Ollama server exited before becoming ready."; \
+        echo "----- /tmp/ollama-build.log -----"; \
+        cat /tmp/ollama-build.log || true; \
+        echo "---------------------------------"; \
+        exit 1; \
+      fi; \
+      if OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS="${OLLAMA_MODELS}" ollama list >/dev/null 2>&1; then \
+        READY=1; \
+        break; \
+      fi; \
+      sleep 1; \
+    done; \
+    if [ "${READY}" != "1" ]; then \
+      echo "ERROR: Ollama server did not become ready during Docker build."; \
+      echo "----- /tmp/ollama-build.log -----"; \
+      cat /tmp/ollama-build.log || true; \
+      echo "---------------------------------"; \
+      kill "${OLLAMA_PID}" || true; \
+      exit 1; \
+    fi; \
+    echo "Temporary Ollama server is ready."; \
+    echo "Pulling baked-in model: ${AI_MODEL}"; \
+    OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS="${OLLAMA_MODELS}" ollama pull "${AI_MODEL}"; \
+    echo "Installed Ollama models:"; \
+    OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS="${OLLAMA_MODELS}" ollama list; \
+    kill "${OLLAMA_PID}" || true; \
+    wait "${OLLAMA_PID}" 2>/dev/null || true; \
+    chmod -R 777 /opt/ollama /workspace; \
+    rm -f /tmp/ollama-build.log
+
+############################
+# Helper scripts
+############################
+# 🔹 Start local Ollama in the background
+RUN cat << 'EOF' > /usr/local/bin/start-ollama.sh
+#!/bin/bash
+set -e
+
+mkdir -p /workspace/logs /workspace/home
+
+export HOME="${HOME:-/workspace/home}"
+export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
+export OLLAMA_MODELS="${OLLAMA_MODELS:-/opt/ollama/models}"
+
+if curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+    echo "Local Ollama server already running."
+    exit 0
+fi
+
+ollama serve > /workspace/logs/ollama.log 2>&1 &
+
+for i in $(seq 1 120); do
+    if curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+        echo "Local Ollama server started."
+        echo "Model:"
+        echo "  ${AI_MODEL}"
+        echo "Logs:"
+        echo "  /workspace/logs/ollama.log"
+        exit 0
+    fi
+    sleep 1
+done
+
+echo "ERROR: Ollama did not become ready."
+echo "Check logs:"
+echo "  /workspace/logs/ollama.log"
+exit 1
+EOF
+
+# 🔹 Start scoped AI code advisor with terminal or browser UI
+RUN cat << 'EOF' > /usr/local/bin/start-ai-advisor.sh
+#!/bin/bash
+set -euo pipefail
+
+export HOME="${HOME:-/workspace/home}"
+mkdir -p "${HOME}" /workspace/ai-agent /workspace/logs
+
+AI_MODEL="${AI_MODEL:-qwen3-coder:30b}"
+AI_DEFAULT_MOUNT_BASE="${AI_DEFAULT_MOUNT_BASE:-/code}"
+AI_ADVISOR_UI="${AI_ADVISOR_UI:-web}"
+AI_LIST_MAX_DEPTH="${AI_LIST_MAX_DEPTH:-8}"
+AI_MAX_CONTEXT_FILES="${AI_MAX_CONTEXT_FILES:-80}"
+AIDER_WEB_PORT="${AIDER_WEB_PORT:-8501}"
+OLLAMA_API_BASE="${OLLAMA_API_BASE:-http://127.0.0.1:11434}"
+
+export OLLAMA_API_BASE
+export AIDER_ANALYTICS_DISABLE="${AIDER_ANALYTICS_DISABLE:-true}"
+export AIDER_CHECK_UPDATE="${AIDER_CHECK_UPDATE:-false}"
+export AIDER_CHAT_LANGUAGE="${AIDER_CHAT_LANGUAGE:-English}"
+export STREAMLIT_SERVER_ADDRESS="${STREAMLIT_SERVER_ADDRESS:-0.0.0.0}"
+export STREAMLIT_SERVER_PORT="${STREAMLIT_SERVER_PORT:-${AIDER_WEB_PORT}}"
+export STREAMLIT_SERVER_HEADLESS="${STREAMLIT_SERVER_HEADLESS:-true}"
+export STREAMLIT_BROWSER_GATHER_USAGE_STATS="${STREAMLIT_BROWSER_GATHER_USAGE_STATS:-false}"
+export BROWSER="${BROWSER:-echo}"
+
+echo ""
+echo "==================================================================="
+echo "  Local AI Code Advisor"
+echo "==================================================================="
+echo ""
+echo "Model:"
+echo "  ${AI_MODEL}"
+echo ""
+echo "UI mode:"
+echo "  ${AI_ADVISOR_UI}"
+echo ""
+echo "Purpose:"
+echo "  - inspect selected project files"
+echo "  - explain existing functions/classes/tools"
+echo "  - suggest how to implement new functionality"
+echo "  - maximize reuse of current project code"
+echo "  - show example function usage"
+echo "  - do not modify files"
+echo ""
+echo "Important:"
+echo "  You will be asked which mounted folder the advisor may inspect."
+echo "  The advisor will only accept a selected folder and its subfolders."
+echo "  Mount your code however you want."
+echo ""
+
+read -r -p "Mounted filesystem base path [${AI_DEFAULT_MOUNT_BASE}] : " USER_BASE
+USER_BASE="${USER_BASE:-${AI_DEFAULT_MOUNT_BASE}}"
+
+if [ ! -d "${USER_BASE}" ]; then
+    echo "ERROR: Base path does not exist or is not a directory: ${USER_BASE}"
+    exit 1
+fi
+
+BASE_DIR="$(realpath -m "${USER_BASE}")"
+
+echo ""
+echo "Selected mounted base:"
+echo "  ${BASE_DIR}"
+echo ""
+echo "Now choose the folder the AI advisor may inspect."
+echo "Use '.' for the selected base itself, or a relative subfolder."
+echo ""
+
+read -r -p "Allowed folder below ${BASE_DIR} [.] : " REL_PATH
+REL_PATH="${REL_PATH:-.}"
+
+# 🔹 Reject absolute paths and parent traversal
+case "${REL_PATH}" in
+    /*)
+        echo "ERROR: Absolute paths are not allowed here. Use a relative path below ${BASE_DIR}."
+        exit 1
+        ;;
+    *..*)
+        echo "ERROR: Parent traversal '..' is not allowed."
+        exit 1
+        ;;
+esac
+
+TARGET_DIR="$(realpath -m "${BASE_DIR}/${REL_PATH}")"
+
+# 🔹 Enforce that selected folder stays below the chosen mounted base
+case "${TARGET_DIR}" in
+    "${BASE_DIR}"|"${BASE_DIR}"/*)
+        ;;
+    *)
+        echo "ERROR: Selected folder is outside ${BASE_DIR}"
+        exit 1
+        ;;
+esac
+
+if [ ! -d "${TARGET_DIR}" ]; then
+    echo "ERROR: Allowed folder does not exist: ${TARGET_DIR}"
+    exit 1
+fi
+
+# 🔹 Reject symlinks that resolve outside the selected allowed folder
+ESCAPING_SYMLINKS="$(
+    find "${TARGET_DIR}" -type l -print0 2>/dev/null | \
+    while IFS= read -r -d '' LINK_PATH; do
+        RESOLVED_PATH="$(realpath -m "${LINK_PATH}" 2>/dev/null || true)"
+        case "${RESOLVED_PATH}" in
+            "${TARGET_DIR}"|"${TARGET_DIR}"/*)
+                ;;
+            *)
+                echo "${LINK_PATH} -> ${RESOLVED_PATH}"
+                ;;
+        esac
+    done
+)"
+
+if [ -n "${ESCAPING_SYMLINKS}" ]; then
+    echo ""
+    echo "ERROR: The selected folder contains symlinks that point outside the allowed folder."
+    echo "This would break the requested folder/subfolder access boundary."
+    echo ""
+    echo "${ESCAPING_SYMLINKS}"
+    echo ""
+    exit 1
+fi
+
+echo ""
+echo "==================================================================="
+echo "  Files and folders below selected path"
+echo "==================================================================="
+echo ""
+echo "Allowed folder:"
+echo "  ${TARGET_DIR}"
+echo ""
+echo "Listing depth:"
+echo "  ${AI_LIST_MAX_DEPTH}"
+echo ""
+
+cd "${TARGET_DIR}"
+
+# 🔹 Show folder/file overview so the user can choose what to add to AI context
+if command -v tree >/dev/null 2>&1; then
+    tree -a -L "${AI_LIST_MAX_DEPTH}" \
+      -I '.git|__pycache__|.ipynb_checkpoints|.pytest_cache|.mypy_cache|.ruff_cache|node_modules|dist|build|.venv|venv|*.pyc' \
+      "${TARGET_DIR}" || true
+else
+    find "${TARGET_DIR}" -maxdepth "${AI_LIST_MAX_DEPTH}" \
+      \( -path '*/.git/*' -o -path '*/__pycache__/*' -o -path '*/.ipynb_checkpoints/*' -o -path '*/.pytest_cache/*' -o -path '*/.mypy_cache/*' -o -path '*/.ruff_cache/*' -o -path '*/node_modules/*' -o -path '*/dist/*' -o -path '*/build/*' -o -path '*/.venv/*' -o -path '*/venv/*' \) -prune -o \
+      -print || true
+fi
+
+echo ""
+echo "==================================================================="
+echo "  Optional explicit context selection"
+echo "==================================================================="
+echo ""
+echo "You can now specify files or folders that should be explicitly added"
+echo "to the AI context as read-only material."
+echo ""
+echo "Examples:"
+echo "  src/main.py, src/io, README.md"
+echo ""
+echo "Use empty input to let the advisor rely on repo map/search context."
+echo "Use 'all' to add code/config/text files below the selected folder."
+echo ""
+echo "Limit:"
+echo "  ${AI_MAX_CONTEXT_FILES} files"
+echo ""
+
+read -r -p "Files/folders to add to AI context [] : " CONTEXT_INPUT
+CONTEXT_INPUT="${CONTEXT_INPUT:-}"
+
+SELECTED_CONTEXT_FILE="/workspace/ai-agent/selected-context-files.txt"
+: > "${SELECTED_CONTEXT_FILE}"
+
+add_context_file() {
+    local candidate="$1"
+
+    case "${candidate}" in
+        "")
+            return 0
+            ;;
+        /*)
+            echo "WARNING: Ignoring absolute path: ${candidate}"
+            return 0
+            ;;
+        *..*)
+            echo "WARNING: Ignoring path with '..': ${candidate}"
+            return 0
+            ;;
+    esac
+
+    local full_path
+    full_path="$(realpath -m "${TARGET_DIR}/${candidate}")"
+
+    case "${full_path}" in
+        "${TARGET_DIR}"|"${TARGET_DIR}"/*)
+            ;;
+        *)
+            echo "WARNING: Ignoring path outside allowed folder: ${candidate}"
+            return 0
+            ;;
+    esac
+
+    if [ -f "${full_path}" ]; then
+        echo "${full_path}" >> "${SELECTED_CONTEXT_FILE}"
+    elif [ -d "${full_path}" ]; then
+        find "${full_path}" \
+          \( -path '*/.git/*' -o -path '*/__pycache__/*' -o -path '*/.ipynb_checkpoints/*' -o -path '*/.pytest_cache/*' -o -path '*/.mypy_cache/*' -o -path '*/.ruff_cache/*' -o -path '*/node_modules/*' -o -path '*/dist/*' -o -path '*/build/*' -o -path '*/.venv/*' -o -path '*/venv/*' \) -prune -o \
+          -type f \
+          \( -name '*.py' -o -name '*.ipynb' -o -name '*.md' -o -name '*.txt' -o -name '*.toml' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.ini' -o -name '*.cfg' -o -name '*.sh' \) \
+          -print >> "${SELECTED_CONTEXT_FILE}" || true
+    else
+        echo "WARNING: Path does not exist and will be ignored: ${candidate}"
+    fi
+}
+
+if [ "${CONTEXT_INPUT}" = "all" ]; then
+    find "${TARGET_DIR}" \
+      \( -path '*/.git/*' -o -path '*/__pycache__/*' -o -path '*/.ipynb_checkpoints/*' -o -path '*/.pytest_cache/*' -o -path '*/.mypy_cache/*' -o -path '*/.ruff_cache/*' -o -path '*/node_modules/*' -o -path '*/dist/*' -o -path '*/build/*' -o -path '*/.venv/*' -o -path '*/venv/*' \) -prune -o \
+      -type f \
+      \( -name '*.py' -o -name '*.ipynb' -o -name '*.md' -o -name '*.txt' -o -name '*.toml' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.ini' -o -name '*.cfg' -o -name '*.sh' \) \
+      -print > "${SELECTED_CONTEXT_FILE}" || true
+elif [ -n "${CONTEXT_INPUT}" ]; then
+    OLD_IFS="${IFS}"
+    IFS=','
+    for raw_item in ${CONTEXT_INPUT}; do
+        item="$(echo "${raw_item}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        add_context_file "${item}"
+    done
+    IFS="${OLD_IFS}"
+fi
+
+# 🔹 De-duplicate, filter readable text-like files, and cap context file count
+if [ -s "${SELECTED_CONTEXT_FILE}" ]; then
+    sort -u "${SELECTED_CONTEXT_FILE}" > "${SELECTED_CONTEXT_FILE}.tmp"
+    mv "${SELECTED_CONTEXT_FILE}.tmp" "${SELECTED_CONTEXT_FILE}"
+
+    FILTERED_CONTEXT_FILE="/workspace/ai-agent/selected-context-files.filtered.txt"
+    : > "${FILTERED_CONTEXT_FILE}"
+
+    while IFS= read -r candidate_file; do
+        if [ ! -r "${candidate_file}" ]; then
+            echo "WARNING: Skipping unreadable file: ${candidate_file}"
+            continue
+        fi
+
+        if file --mime "${candidate_file}" | grep -Eiq 'charset=binary|application/octet-stream'; then
+            echo "WARNING: Skipping binary-looking file: ${candidate_file}"
+            continue
+        fi
+
+        echo "${candidate_file}" >> "${FILTERED_CONTEXT_FILE}"
+    done < "${SELECTED_CONTEXT_FILE}"
+
+    head -n "${AI_MAX_CONTEXT_FILES}" "${FILTERED_CONTEXT_FILE}" > "${SELECTED_CONTEXT_FILE}"
+fi
+
+CONTEXT_COUNT=0
+if [ -s "${SELECTED_CONTEXT_FILE}" ]; then
+    CONTEXT_COUNT="$(wc -l < "${SELECTED_CONTEXT_FILE}" | tr -d ' ')"
+fi
+
+echo ""
+echo "Explicit context files selected:"
+echo "  ${CONTEXT_COUNT}"
+echo ""
+
+if [ "${CONTEXT_COUNT}" -gt 0 ]; then
+    sed "s#^${TARGET_DIR}/##" "${SELECTED_CONTEXT_FILE}" | sed 's/^/  - /'
+fi
+
+# 🔹 Store advisor rules outside the inspected code tree
+AGENT_RULES="/workspace/ai-agent/AGENTS.md"
+
+cat > "${AGENT_RULES}" << RULES
+# AI Code Advisor Rules
+
+- Answer in English.
+- You are a codebase question-answering assistant.
+- You provide advice only.
+- Do not modify files.
+- Do not ask to edit files.
+- Do not create commits.
+- Do not run shell commands unless explicitly asked.
+- You are only allowed to inspect files below:
+  ${TARGET_DIR}
+- Do not inspect parent folders.
+- Treat all project files as read-only.
+- Prefer reusing existing project functions, classes, utilities, parsers, loaders, validators, config helpers, and test helpers.
+- Before proposing new code, identify existing reusable code in the selected folder.
+- For each relevant existing function/class, show:
+  - file path
+  - function/class name
+  - what it does
+  - why it should be reused
+  - example usage
+- If new code is needed, explain why existing code is not sufficient.
+- When asked how to implement something, answer with:
+  1. Relevant existing files/modules
+  2. Existing functions/classes/utilities to reuse
+  3. Best integration point
+  4. Proposed implementation design
+  5. Example function usage
+  6. Example code snippet if useful
+  7. Tests to add
+  8. Risks and edge cases
+- When asked how to load or process data, explain:
+  1. Which existing loader/reader/parser to use
+  2. Which data structure/class is returned
+  3. Which processing functions/classes should be called next
+  4. What each function/class does
+  5. Minimal example usage for the requested use case
+- Always prefer concrete references to existing files, functions, classes, and example calls.
+- If information is missing, state exactly what is missing.
+RULES
+
+AIDER_ARGS=()
+AIDER_ARGS+=(--model "ollama_chat/${AI_MODEL}")
+AIDER_ARGS+=(--chat-mode ask)
+AIDER_ARGS+=(--read "${AGENT_RULES}")
+AIDER_ARGS+=(--dry-run)
+AIDER_ARGS+=(--subtree-only)
+AIDER_ARGS+=(--no-auto-commits)
+AIDER_ARGS+=(--no-auto-lint)
+AIDER_ARGS+=(--no-auto-test)
+AIDER_ARGS+=(--no-suggest-shell-commands)
+AIDER_ARGS+=(--no-gitignore)
+AIDER_ARGS+=(--chat-language English)
+AIDER_ARGS+=(--input-history-file /workspace/ai-agent/.aider.input.history)
+AIDER_ARGS+=(--chat-history-file /workspace/ai-agent/.aider.chat.history.md)
+
+# 🔹 Add explicitly selected project files as read-only context
+if [ "${CONTEXT_COUNT}" -gt 0 ]; then
+    while IFS= read -r context_file; do
+        AIDER_ARGS+=(--read "${context_file}")
+    done < "${SELECTED_CONTEXT_FILE}"
+fi
+
+# 🔹 Add browser UI switch if requested
+case "${AI_ADVISOR_UI}" in
+    web|browser|gui)
+        AIDER_ARGS+=(--browser)
+        ;;
+    terminal|cli)
+        ;;
+    *)
+        echo "ERROR: Unknown AI_ADVISOR_UI value: ${AI_ADVISOR_UI}"
+        echo "Allowed values: web, browser, gui, terminal, cli"
+        exit 1
+        ;;
+esac
+
+echo ""
+echo "==================================================================="
+echo "  AI access request confirmed"
+echo "==================================================================="
+echo ""
+echo "Mounted base:"
+echo "  ${BASE_DIR}"
+echo ""
+echo "Allowed folder:"
+echo "  ${TARGET_DIR}"
+echo ""
+echo "Explicit context files:"
+echo "  ${CONTEXT_COUNT}"
+echo ""
+echo "The advisor will run with:"
+echo "  --chat-mode ask"
+echo "  --dry-run"
+echo "  --subtree-only"
+echo "  --chat-language English"
+echo ""
+
+if [ "${AI_ADVISOR_UI}" = "web" ] || [ "${AI_ADVISOR_UI}" = "browser" ] || [ "${AI_ADVISOR_UI}" = "gui" ]; then
+    echo "Aider Web UI:"
+    echo "  Container port: ${AIDER_WEB_PORT}"
+    echo "  Open from host, for example:"
+    echo "  http://127.0.0.1:${AIDER_WEB_PORT}"
+    echo ""
+fi
+
+echo "Example questions:"
+echo ""
+echo "  I want to implement FID support for .lala files."
+echo "  Inspect this codebase and suggest the best approach with maximum reuse"
+echo "  of existing code. Show relevant functions/classes and example usage."
+echo ""
+echo "  I want to load this data format and process it."
+echo "  Which existing loaders/classes/functions should I use, what do they do,"
+echo "  and what is the correct call sequence?"
+echo ""
+
+cd "${TARGET_DIR}"
+
+exec aider "${AIDER_ARGS[@]}"
+EOF
+
+# 🔹 Start Ollama plus terminal/browser AI advisor
+RUN cat << 'EOF' > /usr/local/bin/start-ai-stack.sh
+#!/bin/bash
+set -e
+
+start-ollama.sh
+exec start-ai-advisor.sh
+EOF
+
+RUN chmod +x \
+      /usr/local/bin/start-ollama.sh \
+      /usr/local/bin/start-ai-advisor.sh \
+      /usr/local/bin/start-ai-stack.sh
+
+############################
+# Runtime setup
+############################
+WORKDIR /workspace
+
+# 🔹 Aider Browser/Web UI default port
+EXPOSE 8501
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+CMD ["start-ai-stack.sh"]

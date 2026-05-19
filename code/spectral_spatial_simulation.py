@@ -29,6 +29,8 @@ import pint
 import sys
 import os
 
+import difflib
+
 import xarray as xr
 
 
@@ -41,8 +43,8 @@ class FID:
     necessary, decrease the memory load.
     """
     def __init__(self,
-                 signal: np.ndarray = None,
-                 time: np.ndarray | pint.Quantity = None, # TODO: Pint Quantity not yet taken into account
+                 signal: np.ndarray | pint.Quantity = None,
+                 time: np.ndarray | pint.Quantity = None,
                  name: list[str] = None,
                  signal_data_type: np.dtype = None):
                  #sampling_period: float = None,
@@ -104,7 +106,6 @@ class FID:
 
         return fid
 
-
     def merge_signals(self, names: list[str], new_name: str, divisor: int):
         """
         Merge selected FID signal into one. Also, therefore a divisor can be specified. E.g., (signal 1 + signal 2)/divisor.
@@ -123,17 +124,25 @@ class FID:
         """
         indices = []
 
-        signal = np.zeros(self.signal.shape[1], dtype=self.signal.dtype) # empty array of fid length
+        signal = np.zeros(self.signal.shape[1], dtype=self.signal.dtype)  # empty array of fid length
         for name in names:
-            signal += self.get_signal_by_name(name).signal
+            # To get the signal by name. If the name is unknown, get_signal_by_name() returns None
+            # and prints a detailed error via Console.printf_collected_lines.
+            # => Catch the resulting AttributeError here and abort, since merging is invalid then.
+            try:
+                signal += self.get_signal_by_name(name).signal
+            except AttributeError:
+                Console.printf("error", f"Aborting merging the signals: unknown compound name '{name}'. No changes applied.")
+                return
+
             index = self.name.index(name)
             indices.append(index)
 
-        signal *= 1/divisor
+        signal *= 1 / divisor
 
         # delete OLD entries
         self.signal = np.delete(self.signal, indices, axis=0)
-        self.name = [name for name in self.name if name not in names] # delete the OLD names by getting subset
+        self.name = [name for name in self.name if name not in names]  # delete the OLD names by getting subset
 
         # insert new entries
         self.signal = np.vstack((self.signal, signal))
@@ -238,8 +247,30 @@ class FID:
             signal = self.signal[index, :]
             return FID(signal=signal, name=[compound_name], time=self.time)
         except ValueError:
-            Console.printf("error", f"Chemical compound not available: {compound_name}. Please check your spelling and possible whitespaces!")
-            return
+            # 1) To get the available names and find the closest match (if any) to catch typos / whitespaces
+            available = list(self.name) if self.name is not None else []
+            suggestion = difflib.get_close_matches(compound_name, available, n=1, cutoff=0.6)
+            suggestion_str = f" Did you mean: '{suggestion[0]}'?" if suggestion else ""
+
+            # 2) To collect the main error message including the suggestion
+            Console.add_lines(
+                f"Chemical compound not available: '{compound_name}'. "
+                f"Please check your spelling and possible whitespaces!{suggestion_str}"
+            )
+
+            # 3) To collect the list of available names (quotes => whitespaces visible)
+            if available:
+                Console.add_lines(f"Available names ({len(available)}):")
+                for n in available:
+                    Console.add_lines(f"  - '{n}'")
+            else:
+                Console.add_lines("Available names: (none — self.name is empty)")
+
+            # 4) To print the whole collected error block at once
+            Console.printf_collected_lines("error")
+
+            return None
+
 
     def get_signal(self, signal_data_type: np.dtype=np.complex64, mute=True):
         """
@@ -543,15 +574,16 @@ class FID:
             scales = spectrum_dict["x"]
             signal = spectrum_dict["y"]
 
-        # 3a) Left subplot: To create the figure and plot all signals
-        fig, (ax_main, ax_sidebar) = plt.subplots(
-            figsize=figsize,
-            nrows=1,
-            ncols=2,
-            gridspec_kw={"width_ratios": [5, 1]},
-        )
+        # 2b) (NEW) Force the signal to be 2D in every code path. Otherwise zip(self.name, scales, signal)
+        #     can iterate over scalar samples and produce a near-empty plot in JupyterLab.
+        if np.asarray(signal).ndim == 1:
+            signal = np.asarray(signal)[np.newaxis, :]
 
-        #  -> Convert complex signal to possible quantity and print error if quantity not supported
+        # 2c) (NEW) Normalise self.name to a list, so iterating doesn't accidentally walk over the
+        #     characters of a single string when only one signal is present.
+        names = self.name if isinstance(self.name, (list, tuple)) else [self.name]
+
+        # 2d) (NEW) Convert complex signal to chosen quantity (moved up so we can validate before layout)
         if not y_type in y_type_possible:
             Console.printf(
                 "error",
@@ -561,17 +593,8 @@ class FID:
         else:
             transform = y_type_possible[y_type]
 
-        #  -> Plot all signals
-        for i, (name, scale, signal) in enumerate(zip(self.name, scales, signal)):
-            ax_main.plot(scales, transform(signal) + (i * plot_offset), label=name, linewidth=0.8)
-        ax_main.set_title("Absolute Values of the FID")
-        ax_main.set_xlabel(f"{x_type}")
-
-
-        # 3b) Top subplot: Show the available metabolites as list and a dot where a peak occurs.
-        #                  Further, plot horizontal lines at the 'peak position'/'center of peaks'
-
-        #     To load the data and assign it to object variable
+        # 2e) (MOVED) Load metabolite reference data *before* creating axes, so the layout decision below
+        #     can be based on the actual data and we never reserve an empty top track.
         path = Path.cwd().parent / "docs" / "chemical_compounds.json"
         with path.open("r", encoding="utf-8") as f:
             compounds = json.load(f)
@@ -580,85 +603,119 @@ class FID:
         for key in compounds["metabolites"].keys():
             self.metabolites_ideal_ppm[key] = compounds["metabolites"][key]["ppm"]
 
-        #     To create the plot
-        ax_top = None  # (optional) keep reference if created
-        if show_metabolites_ideal_position and x_type == "ppm":
-            metab_dict = getattr(self, "metabolites_ideal_ppm", None)
+        # 2f) (NEW) Decide once whether the top metabolite track is actually needed.
+        #     This drives the gridspec below; no axis is created unless it will be filled.
+        metab_dict = self.metabolites_ideal_ppm
+        needs_top = bool(
+            show_metabolites_ideal_position
+            and x_type == "ppm"
+            and isinstance(metab_dict, dict)
+            and len(metab_dict) > 0
+        )
+        if show_metabolites_ideal_position and x_type == "ppm" and not needs_top:
+            Console.printf(
+                "warning",
+                "show_metabolites_ideal_position=True, but self.metabolites_ideal_ppm is missing/empty. No overlay plotted.",
+            )
 
-            if isinstance(metab_dict, dict) and len(metab_dict) > 0:
-                from mpl_toolkits.axes_grid1 import make_axes_locatable
-                from matplotlib.transforms import blended_transform_factory
+        # 3a) (CHANGED) Build the whole layout with a single gridspec instead of plt.subplots +
+        #     make_axes_locatable. Reason: make_axes_locatable interacts badly with tight_layout()
+        #     and plt.subplots_adjust(), which is what caused JupyterLab to sometimes render only
+        #     reserved empty space. Doing the layout in one shot is robust and reproducible.
+        fig = plt.figure(figsize=figsize, constrained_layout=False)
 
-                metabs = list(metab_dict.keys())
-                cmap = plt.get_cmap("Dark2")
-                color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
+        # -> Outer split: main column (5) vs. sidebar (1)
+        outer_gs = fig.add_gridspec(
+            nrows=1, ncols=2, width_ratios=[5, 1],
+            left=0.06, right=0.98, top=0.92, bottom=0.10, wspace=0.10,
+        )
 
-                # a) vlines across full main-plot height
-                y0, y1 = ax_main.get_ylim()
-                ymin, ymax = (y0, y1) if y0 < y1 else (y1, y0)
+        if needs_top:
+            # -> Inside the main column, split into top track (1) and main plot (4)
+            inner_gs = outer_gs[0, 0].subgridspec(nrows=2, ncols=1, height_ratios=[1, 4], hspace=0.05)
+            ax_top = fig.add_subplot(inner_gs[0, 0])
+            ax_main = fig.add_subplot(inner_gs[1, 0], sharex=ax_top)
+        else:
+            ax_top = None
+            ax_main = fig.add_subplot(outer_gs[0, 0])
 
-                for m in metabs:
-                    ppms = np.asarray(metab_dict[m], dtype=float)
-                    ax_main.vlines(
-                        ppms,
-                        ymin=ymin,
-                        ymax=ymax,
-                        colors=color_map[m],
-                        lw=0.8,
-                        alpha=0.25,
-                        zorder=0,
-                        label="_nolegend_",
-                    )
+        ax_sidebar = fig.add_subplot(outer_gs[0, 1])
 
-                # b) top axis (track) above ax_main
-                divider = make_axes_locatable(ax_main)
-                ax_top = divider.append_axes("top", size="22%", pad=0.06, sharex=ax_main)
+        # -> Plot all signals (loop var renamed from 'signal' to 'sig' to avoid shadowing the outer array;
+        #    'names' instead of 'self.name' to be safe against single-string self.name)
+        for i, (name, sig) in enumerate(zip(names, signal)):
+            ax_main.plot(scales, transform(sig) + (i * plot_offset), label=name, linewidth=0.8)
+        ax_main.set_title("Absolute Values of the FID")
+        ax_main.set_xlabel(f"{x_type}")
 
-                n = len(metabs)
-                ax_top.set_ylim(-0.5, n - 0.5)
-                ax_top.set_yticks([])  # no y ticks here
-                ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False, top=False, labeltop=False)
-                for s in ["left", "right", "bottom"]:
-                    ax_top.spines[s].set_visible(False)
+        # 3b) Top subplot: Show the available metabolites as list and a dot where a peak occurs.
+        #                  Further, plot horizontal lines at the 'peak position'/'center of peaks'
+        #     NOTE (CHANGED): ax_top is now created above via gridspec, no longer via make_axes_locatable.
+        if needs_top:
+            from matplotlib.transforms import blended_transform_factory
 
-                # x in axes fraction (0..1), y in row index units
-                trans = blended_transform_factory(ax_top.transAxes, ax_top.transData)
+            metabs = list(metab_dict.keys())
+            cmap = plt.get_cmap("Dark2")
+            color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
 
-                for i, m in enumerate(metabs):
-                    col = color_map[m]
-                    ppms = np.asarray(metab_dict[m], dtype=float)
+            # a) vlines across full main-plot height
+            y0, y1 = ax_main.get_ylim()
+            ymin, ymax = (y0, y1) if y0 < y1 else (y1, y0)
 
-                    # dots in row i
-                    ax_top.scatter(ppms, np.full_like(ppms, i, dtype=float), s=18, color=col, alpha=0.9, linewidths=0)
-
-                    # top-left metabolite list (colored)
-                    ax_top.text(
-                        0.01,
-                        i,
-                        m,
-                        transform=trans,
-                        ha="left",
-                        va="center",
-                        color=col,
-                        alpha=0.9,
-                        fontsize=9,
-                        clip_on=True,
-                    )
-
-                # optional subtle row guides
-                ax_top.hlines(
-                    np.arange(n),
-                    xmin=ax_main.get_xlim()[0],
-                    xmax=ax_main.get_xlim()[1],
-                    colors="k",
-                    alpha=0.06,
+            for m in metabs:
+                ppms = np.asarray(metab_dict[m], dtype=float)
+                ax_main.vlines(
+                    ppms,
+                    ymin=ymin,
+                    ymax=ymax,
+                    colors=color_map[m],
                     lw=0.8,
+                    alpha=0.25,
+                    zorder=0,
+                    label="_nolegend_",
                 )
-            else:
-                Console.printf(
-                    "warning",
-                    "show_metabolites_ideal_position=True, but self.metabolites_ideal_ppm is missing/empty. No overlay plotted.",
+
+            # b) configure the top track axis (already created via gridspec above)
+            n = len(metabs)
+            ax_top.set_ylim(-0.5, n - 0.5)
+            ax_top.set_yticks([])  # no y ticks here
+            ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False, top=False, labeltop=False)
+            for s in ["left", "right", "bottom"]:
+                ax_top.spines[s].set_visible(False)
+
+            # x in axes fraction (0..1), y in row index units
+            trans = blended_transform_factory(ax_top.transAxes, ax_top.transData)
+
+            for i, m in enumerate(metabs):
+                col = color_map[m]
+                ppms = np.asarray(metab_dict[m], dtype=float)
+
+                # dots in row i
+                ax_top.scatter(ppms, np.full_like(ppms, i, dtype=float), s=18, color=col, alpha=0.9, linewidths=0)
+
+                # top-left metabolite list (colored)
+                ax_top.text(
+                    0.01,
+                    i,
+                    m,
+                    transform=trans,
+                    ha="left",
+                    va="center",
+                    color=col,
+                    alpha=0.9,
+                    fontsize=9,
+                    clip_on=True,
                 )
+
+            # optional subtle row guides
+            ax_top.hlines(
+                np.arange(n),
+                xmin=ax_main.get_xlim()[0],
+                xmax=ax_main.get_xlim()[1],
+                colors="k",
+                alpha=0.06,
+                lw=0.8,
+            )
 
         # 3c) Right subplot: To create the description
         ax_sidebar.axis("off")
@@ -708,17 +765,23 @@ class FID:
         # 5c) Create the whole figure
         ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False, ncol=1)
 
-        plt.tight_layout()
-
-        # 5d) For top metabolites plot: If the top axis exists, give the figure a bit more headroom so labels never get clipped
-        if ax_top is not None:
-            plt.subplots_adjust(top=0.90)
+        # 5d) (CHANGED) Do NOT call plt.tight_layout() / plt.subplots_adjust() here. The layout is
+        #     already fully specified by the gridspec above. Mixing tight_layout with manual adjusts
+        #     was the root cause of the 'empty reserved space' rendering bug in JupyterLab.
 
         # 6) Save to desired path and/or show
         if save_path is not None:
-            fig.savefig(save_path)
+            fig.savefig(save_path, bbox_inches="tight")  # bbox_inches="tight" so saved file isn't clipped
+
+        # 6b) (CHANGED) In JupyterLab, force a draw on *this* figure before showing. plt.show() alone
+        #     can occasionally display a stale/empty canvas if the layout was reflowed late.
         if show:
+            fig.canvas.draw_idle()
             plt.show()
+        else:
+            # If we are not showing, close to prevent JupyterLab from auto-displaying the figure
+            # at the end of the cell (which would otherwise also look like 'empty space').
+            plt.close(fig)
 
 
     def change_signal_data_type(self, signal_data_type: np.dtype, verbose=True) -> None:
@@ -799,6 +862,7 @@ class FID:
 
             return fid
 
+
     def interpolate(self, timepoints: int):
         """
         Interpolate the signal and time to a desired length (time points). Therefore, the fourier-based resampling interpolation
@@ -808,21 +872,29 @@ class FID:
         :return: Nothing
         """
 
-        signal_shape_before = self.signal.shape
-        time_shape_before = self.time.shape
+        # Extract the array if pint Quantity
+        signal = self.signal.magnitude if isinstance(self.signal, pint.Quantity) else self.signal
+        time = self.time.magnitude if isinstance(self.time, pint.Quantity) else self.time
 
-        self.signal = resample(self.signal, timepoints, axis=-1) # interpolation along last axis
-        self.time = resample(self.time, timepoints)
+        signal_shape_before = signal.shape
+        time_shape_before = time.shape
+
+        signal = resample(signal, timepoints, axis=-1) # interpolation along last axis
+        time = resample(time, timepoints)
 
         Console.printf("success",
                        f"Interpolated FID: \n"
-                       f" => time shape:   {str(time_shape_before):<15} --> {self.time.shape} \n"
-                       f" => signal shape: {str(signal_shape_before):<15} --> {self.signal.shape}")
+                       f" => time shape:   {str(time_shape_before):<15} --> {time.shape} \n"
+                       f" => signal shape: {str(signal_shape_before):<15} --> {signal.shape}")
 
-        if ArrayTools.check_nan(self.signal, verbose=False):
+        if ArrayTools.check_nan(signal, verbose=False):
             Console.printf("warning", "Interpolated signal of FID contains NaNs.")
-        if ArrayTools.check_nan(self.time, verbose=False):
+        if ArrayTools.check_nan(time, verbose=False):
             Console.printf("warning", "Interpolated time vector of FID contains NaNs.")
+
+        # Add again the units and thus create pint Quantity if original array is also pint Quantity
+        self.signal = signal * self.signal.units if isinstance(self.signal, pint.Quantity) else signal
+        self.time = time * self.time.units if isinstance(self.time, pint.Quantity) else time
 
 
 
@@ -1628,8 +1700,9 @@ class LookupTableWET: # Note: was before LookupTableWET2
         # Optional metabolite overlay (reference fixed to 7T / Xin / occipital, self.TR assumed in ms).
         ax_top = None
         if show_metabolites_position:
-            import pint
-            ureg = pint.UnitRegistry()
+            #import pint
+            #ureg = pint.UnitRegistry()
+            from units import u as ureg
 
             # Load the compound database.
             path = Path.cwd().parent / "docs" / "chemical_compounds.json"

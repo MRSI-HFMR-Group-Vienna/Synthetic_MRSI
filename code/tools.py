@@ -15,7 +15,8 @@ from functools import wraps
 from typing import Callable
 from prettyconsole import Console
 
-u = pint.UnitRegistry()  # for using units
+#u = pint.UnitRegistry()  # for using units
+from units import u
 
 import dask.array as da
 import dask
@@ -2558,6 +2559,112 @@ class ArrayTools:
         Console.printf("info", f"Found number of zeros: {number_zeros}", mute=not verbose)
 
         return int(number_zeros)
+
+    @staticmethod
+    def create_volume(shape: tuple | None = None,
+                      value: int | float | list[int | float] | None = None,
+                      mask: np.ndarray | list[np.ndarray] | None = None
+                      ) -> np.ndarray:
+        """
+        This method is useful to create different arrays of desired shape and filled with the desired values.
+        If a mask is provided, the shape don't need to be specified and the desired values will be created
+        where the mask==1. The following use cases are possible:
+
+            * Case 1: Provide shape and value:
+                        => array of respective shape containing the desired value everywhere.
+
+            * Case 2: Provide only one mask and value:
+                        => the value appear everywhere in the array where mask==1; shape equals to mask
+                           (!) Please note: Don't provide then the shape.
+
+            * Case 3: Provide multiple masks (in a list) of same shape and a list of the values
+                        => The respective areas where mask[i]==1 will be filled with the value[i]
+                           (!) Please note: Mask are not allowed to intersect!
+
+        :param shape: The shape of any dimensionality as tuple, e.g., (X,Y,Z,...)
+        :param value: The value as scalar or list[scalar, scalar, scalar, ...]
+        :param mask: One binary numpy array or multiple binary numpy arrays in a list
+        :return: The created numpy array
+        """
+
+        ## Use case #1: Just a shape and a value, no mask
+        #  => Just fill the whole array with the value.
+        if mask is None:
+            if shape is None:
+                Console.printf('error', "Either 'shape' or 'mask' must be provided!")#, raise_error=ValueError)
+                return None
+            if not isinstance(value, (int, float)):
+                Console.printf('error', f"The 'value' must be a scalar, got {type(value).__name__}")#, raise_error=TypeError)
+                return None
+            return np.full(shape, value)
+
+        ## Use case #2: A single mask + a single value (shape comes from the mask)
+        if isinstance(mask, np.ndarray):
+            if not isinstance(value, (int, float)):
+                Console.printf('error', f"With a single mask, 'value' must be a scalar, got {type(value).__name__}",
+                               raise_error=TypeError)
+            # Mask must be binary (only 0 and 1)
+            if mask.dtype != bool and not np.all((mask == 0) | (mask == 1)):
+                Console.printf('error', "The 'mask' must be binary (only 0 and 1)!")#, raise_error=ValueError)
+                return None
+            return np.where(mask == 1, value, 0).astype(np.result_type(value, 0))
+
+        ## Use case #3: A list of masks + a list of values
+        #  => Each mask gets its value, but masks must NOT intersect!
+        if isinstance(mask, list):
+            mask_list, value_list = mask, value
+
+            # Basic sanity checks: value must also be a list, same length, not empty
+            if not isinstance(value_list, list):
+                Console.printf('error', "When 'mask' is a list, 'value' must also be a list!")#, raise_error=TypeError)
+                return None
+            if len(mask_list) != len(value_list):
+                Console.printf('error',
+                               f"The 'mask' and 'value' must have the same length, got {len(mask_list)} masks and {len(value_list)} values!") #,
+                               #raise_error=ValueError)
+                return None
+            if len(mask_list) == 0:
+                Console.printf('error', "The 'mask' list is empty.")#, raise_error=ValueError)
+                return None
+
+            # All masks must be ndarrays of the same shape AND binary
+            reference_shape = mask_list[0].shape
+            for mask_index, current_mask in enumerate(mask_list):
+                if not isinstance(current_mask, np.ndarray):
+                    Console.printf('error',
+                                   f"mask[{mask_index}] is {type(current_mask).__name__}, expected np.ndarray!") #,
+                                   #raise_error=TypeError)
+                    return None
+                if current_mask.shape != reference_shape:
+                    Console.printf('error',
+                                   f"All masks must share the same shape. mask[0].shape={reference_shape}, mask[{mask_index}].shape={current_mask.shape}")#,
+                                   #raise_error=ValueError)
+                    return None
+
+                if current_mask.dtype != bool and not np.all((current_mask == 0) | (current_mask == 1)):
+                    Console.printf('error', f"'mask[{mask_index}]' must be binary (only 0 and 1)")#,
+                                   #raise_error=ValueError)
+                    return None
+
+            # Check that masks do NOT intersect (stack -> sum -> any voxel > 1 means overlap!)
+            overlap_count_per_voxel = np.stack([(m == 1).astype(np.uint8) for m in mask_list], axis=0).sum(axis=0)
+            if overlap_count_per_voxel.max() > 1:
+                number_of_overlapping_voxels = int((overlap_count_per_voxel > 1).sum())
+                Console.printf('error',
+                               f"Masks overlap at {number_of_overlapping_voxels} voxel(s); masks must be mutually exclusive!") #,
+                               #raise_error=ValueError)
+                return None
+
+            # Build the volume: start with zeros, then paint each mask with its value
+            output_volume = np.zeros(reference_shape, dtype=np.result_type(*value_list, 0))
+            for current_mask, current_value in zip(mask_list, value_list):
+                output_volume[current_mask == 1] = current_value
+            return output_volume
+
+        Console.printf('error', f"The 'mask' must be None, an ndarray, or a list of ndarrays; got {type(mask).__name__}")# ,
+                       #raise_error=TypeError)
+        return None
+
 
 class InterpolationTools:
     ## TODO: here also add fft interpolation (e.g., which used for the FID?)

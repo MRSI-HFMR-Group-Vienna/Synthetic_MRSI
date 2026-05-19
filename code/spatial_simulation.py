@@ -215,6 +215,14 @@ class ParameterVolume(Interpolation):
         self.maps.append(map)
         Console.printf("success", f"Added to Parameter Maps of type {self.maps_type} the metabolite: {map.metabolite_name}.", mute=not verbose)
 
+    def simulate_dummy_map(self):
+        # input parameters => a: only one value (for e.g., water)
+        #                     b: only one value for GM, WM, CSF (for e.g., water)
+        #                     c: name: e.g., "water" and then load it from chemical_compounds.json
+
+        # ===> create ParameterMap and add here! -> also size custom or same as other maps
+
+        raise NotImplementedError
 
     def interpolate_maps(self, target_size: tuple, order: int = 3, device: str = "cpu", target_gpu: int = 0, verbose: bool = False):
         """
