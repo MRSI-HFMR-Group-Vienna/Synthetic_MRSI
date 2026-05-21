@@ -987,7 +987,7 @@ class Trajectory:
                 sets_for_plotting = [launch_track_GV.magnitude, loop_track_GM, normalised_GM.magnitude]
                 sets_names = ["Launch tracks GMs", "Loop tracks GMs", "Normalised GMs"]
                 for u, (set_name, set_values) in enumerate(zip(sets_names, sets_for_plotting)):
-                    # Plot real and imaginary parts
+                    # PlotInterface real and imaginary parts
                     axs[u, 0].plot(set_values.real, set_values.imag, linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
                     axs[u, 1].plot(set_values.real, label="Real Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)
                     axs[u, 2].plot(set_values.imag, label="Imaginary Part", linestyle='-', linewidth=0.5, marker='.', markersize=1.5)

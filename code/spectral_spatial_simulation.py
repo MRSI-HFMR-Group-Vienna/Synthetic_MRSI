@@ -440,7 +440,7 @@ class FID:
 ###        else:
 ###            transform = y_type_possible[y_type]
 ###
-###        #  -> Plot all signals
+###        #  -> PlotInterface all signals
 ###        for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
 ###            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.8)
 ###        ax_main.set_title('Absolute Values of the FID')
@@ -449,7 +449,7 @@ class FID:
 ###        # 3b) Right subplot: To create the description
 ###        ax_sidebar.axis('off')
 ###        ax_sidebar.set_title('Description')  # keep the box/frame
-###        text_description = (f"{'Plot offset':.<17}: {plot_offset}\n"
+###        text_description = (f"{'PlotInterface offset':.<17}: {plot_offset}\n"
 ###                            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
 ###                            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}")
 ###
@@ -595,7 +595,7 @@ class FID:
 
         # 2e) (MOVED) Load metabolite reference data *before* creating axes, so the layout decision below
         #     can be based on the actual data and we never reserve an empty top track.
-        path = Path.cwd().parent / "docs" / "chemical_compounds.json"
+        path = Path.cwd().parent / "docs" / "chemical_compounds_OLD.json"
         with path.open("r", encoding="utf-8") as f:
             compounds = json.load(f)
 
@@ -641,7 +641,7 @@ class FID:
 
         ax_sidebar = fig.add_subplot(outer_gs[0, 1])
 
-        # -> Plot all signals (loop var renamed from 'signal' to 'sig' to avoid shadowing the outer array;
+        # -> PlotInterface all signals (loop var renamed from 'signal' to 'sig' to avoid shadowing the outer array;
         #    'names' instead of 'self.name' to be safe against single-string self.name)
         for i, (name, sig) in enumerate(zip(names, signal)):
             ax_main.plot(scales, transform(sig) + (i * plot_offset), label=name, linewidth=0.8)
@@ -721,7 +721,7 @@ class FID:
         ax_sidebar.axis("off")
         ax_sidebar.set_title("Description")  # keep the box/frame
         text_description = (
-            f"{'Plot offset':.<17}: {plot_offset}\n"
+            f"{'PlotInterface offset':.<17}: {plot_offset}\n"
             f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
             f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}"
         )
@@ -1635,7 +1635,7 @@ class LookupTableWET: # Note: was before LookupTableWET2
             metabolites_tissue: str = "both",
     ):
         """
-        Plot the lookup table as a heatmap using matplotlib. Negative values
+        PlotInterface the lookup table as a heatmap using matplotlib. Negative values
         are overlaid in red, inf values in magenta, NaN values appear as white.
 
         :param show_metabolites_position: If True, overlay metabolite T1/TR positions
@@ -1663,7 +1663,7 @@ class LookupTableWET: # Note: was before LookupTableWET2
         pos_data = np.ma.masked_where((data_clean < 0) | np.isnan(data_clean), data_clean)
         neg_data = np.ma.masked_where((data_clean >= 0) | np.isnan(data_clean), data_clean)
 
-        # Plot non-negative values using the viridis colormap.
+        # PlotInterface non-negative values using the viridis colormap.
         im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
 
         # Overlay negative values in red.
@@ -1705,7 +1705,7 @@ class LookupTableWET: # Note: was before LookupTableWET2
             from units import u as ureg
 
             # Load the compound database.
-            path = Path.cwd().parent / "docs" / "chemical_compounds.json"
+            path = Path.cwd().parent / "docs" / "chemical_compounds_OLD.json"
             with path.open("r", encoding="utf-8") as f:
                 compounds = json.load(f)
 
@@ -2535,7 +2535,7 @@ class LookupTableWET_OLD:
 
     def plot(self):
         """
-        Plot the lookup table as a heatmap using matplotlib. Negative values
+        PlotInterface the lookup table as a heatmap using matplotlib. Negative values
         are overlaid in red.
         :return: Nothing
         """
@@ -2553,7 +2553,7 @@ class LookupTableWET_OLD:
         pos_data = np.ma.masked_less(data, 0)
         neg_data = np.ma.masked_greater_equal(data, 0)
 
-        # Plot non-negative values using the viridis colormap.
+        # PlotInterface non-negative values using the viridis colormap.
         im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
 
         # Overlay negative values in red.
@@ -2644,7 +2644,7 @@ class LookupTableWET_OLD:
 
         # Update the layout for improved aesthetics.
         fig.update_layout(
-            title='Interactive Waterfall Plot with Negative Value Overlay',
+            title='Interactive Waterfall PlotInterface with Negative Value Overlay',
             xaxis_title='B1 Scale Value (offset applied)',
             yaxis_title='Signal Amplitude (offset applied)',
             template='plotly_white'
@@ -2654,7 +2654,7 @@ class LookupTableWET_OLD:
 
     def plot_waterfall(self):
         """
-        Plot each column of the lookup table as an offset signal (waterfall plot)
+        PlotInterface each column of the lookup table as an offset signal (waterfall plot)
         and overlay a transparent red fill where the original signal is below 0.
         Additionally, annotate each curve with its T1/TR value next to the line.
         """
@@ -2679,7 +2679,7 @@ class LookupTableWET_OLD:
             x_vals = B1_scale_values + i * horizontal_offset
             y_vals = signal + i * vertical_offset
 
-            # Plot the offset signal.
+            # PlotInterface the offset signal.
             plt.plot(x_vals, y_vals, lw=1)
 
             # Determine the baseline (offset level) for this curve.
@@ -2702,7 +2702,7 @@ class LookupTableWET_OLD:
 
         plt.xlabel('B1 Scale Value (with horizontal offset...)')
         plt.ylabel('Signal Amplitude (with vertical offset...)')
-        plt.title('Waterfall Plot of Lookup Table')
+        plt.title('Waterfall PlotInterface of Lookup Table')
         plt.tight_layout()
         plt.show()
 
@@ -2792,7 +2792,7 @@ class LookupTableWET_OLD:
 if __name__ == '__main__':
 
     # ========================= TO LOAD THE MAPS ANS INTERPOLATE IT ====================================================
-    from configurator import Configurator
+    from resources import Configurator
     from file import ParameterMaps as FileParameterMaps
     configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
                                      file_name="paths_14032025.json")
@@ -2895,7 +2895,7 @@ if __name__ == '__main__':
 ###    # Create a figure and axis.
 ###    fig, ax = plt.subplots(figsize=(8, 6))
 ###
-###    # Plot the positive differences using the viridis colormap.
+###    # PlotInterface the positive differences using the viridis colormap.
 ###    im = ax.imshow(pos_data, cmap='viridis', aspect='auto')
 ###
 ###    # Set x and y ticks with custom labels.
@@ -3036,7 +3036,7 @@ if __name__ == '__main__':
     ####plt.show()
     # ==================================================================================================================
 
-    # ==================== Plot combination GM+WM+CSF ==================================================================
+    # ==================== PlotInterface combination GM+WM+CSF ==================================================================
 
 
     plt.figure(4)

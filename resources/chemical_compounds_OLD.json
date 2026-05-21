@@ -1,7 +1,7 @@
 {
   "Author": "Markus Schuster",
   "Description": "This file contains mainly the parts per million (ppm) information about chemical compounds for 1H-MRS (e.g., metabolites) and some additional information.",
-  "version": "2026-03-24",
+  "version": "2026-05-21",
 
   "references": "docs/references.bib",
 
@@ -208,5 +208,103 @@
       "reference_keys": [{"deGraaf":"deGraaf2019InVivoNMR"}, {"Pouwels":"Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
     }
   },
+  "H2O": {
+  "name_full": "Water",
+  "ppm": [4.70],
+  "concentration": {
+    "Okada2021Repeatability7T": {
+      "GM":  { "value": 43300, "unit": "mM" },
+      "WM":  { "value": 35880, "unit": "mM" },
+      "CSF": { "value": 55556, "unit": "mM" }
+    },
+    "Gasparovic2006TissueWaterReference": {
+      "basis": {
+        "pure_water": { "value": 55.51, "unit": "mol/kg" },
+        "relative_MR_visible_water_density": {
+          "GM": 0.78,
+          "WM": 0.65,
+          "CSF": 0.97
+        }
+      }
+    }
+  },
+  "T1": {
+    "7T": {
+      "Rooney2007WaterT1": {
+        "WM": {
+          "frontal": {
+            "mean": 1.220,
+            "sd": 0.036,
+            "range": [1.184, 1.256],
+            "unit": "s"
+          }
+        },
+        "GM": {
+          "cortical": {
+            "mean": 2.132,
+            "sd": 0.103,
+            "range": [2.029, 2.235],
+            "unit": "s"
+          }
+        },
+        "CSF": {
+          "ventricular": {
+            "mean": 4.425,
+            "sd": 0.137,
+            "range": [4.288, 4.562],
+            "unit": "s"
+          }
+        }
+      }
+    }
+  },
+  "T2": {
+    "7T": {
+      "Yacoub2003SpinEcho7T": {
+        "GM": {
+          "visual_cortex": {
+            "mean": 0.0550,
+            "sd": 0.0041,
+            "range": [0.0509, 0.0591],
+            "unit": "s"
+          }
+        },
+        "WM": {
+          "white_matter": {
+            "mean": 0.0459,
+            "sd": 0.0019,
+            "range": [0.0440, 0.0478],
+            "unit": "s"
+          }
+        }
+      },
+      "Spijkerman2018CSFT2": {
+        "CSF": {
+          "ventricular": {
+            "value": 1.05,
+            "unit": "s"
+          },
+          "peripheral_partial_volume_corrected": {
+            "value": 1.01,
+            "unit": "s"
+          },
+          "recommended_range": {
+            "range": [1.01, 1.05],
+            "unit": "s"
+          }
+        }
+      }
+    }
+  },
+  "note": "The concentration values are conventional MRS water-reference values and are not field-strength dependent. T1/T2 values are 7T human brain values. Ranges above are mean ± SD where the source reports mean ± SD; CSF T2 range reflects peripheral corrected versus ventricular CSF.",
+  "reference_keys": [
+    {"Okada2021Repeatability7T": "Okada2021Repeatability7T"},
+    {"Gasparovic2006TissueWaterReference": "Gasparovic2006TissueWaterReference"},
+    {"Rooney2007WaterT1": "Rooney2007WaterT1"},
+    {"Yacoub2003SpinEcho7T": "Yacoub2003SpinEcho7T"},
+    {"Spijkerman2018CSFT2": "Spijkerman2018CSFT2"},
+    {"Xin2017PracticalGuide": "Xin2017PracticalGuide"}
+  ]
+},
   "macromolecules": {}
 }

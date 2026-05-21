@@ -1,0 +1,280 @@
+{
+  "Author": "Markus Schuster",
+  "Description": "This file contains mainly the parts per million (ppm) information about chemical compounds for 1H-MRS (e.g., metabolites) and some additional information.",
+  "version": "2026-03-24",
+
+  "references": "docs/references.bib",
+
+  "metabolites": {
+    "NAA": {
+      "name_full": "N-acetylaspartate",
+      "ppm": [2.01, 2.49, 2.67, 4.38, 7.82],
+      "concentration": {
+        "deGraaf": {
+          "GM": {"range": [8, 10], "unit": "mM"},
+          "WM": {"range": [6, 9], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"mean": 8.1, "sd": 0.9, "unit": "mM"},
+            "parietal":  {"mean": 8.0, "sd": 1.0, "unit": "mM"},
+            "occipital": {"mean": 7.8, "sd": 0.9, "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"mean": 7.7, "sd": 1.0, "unit": "mM"},
+            "parietal":  {"mean": 8.2, "sd": 0.8, "unit": "mM"},
+            "occipital": {"mean": 9.2, "sd": 0.9, "unit": "mM"},
+            "insular":   {"mean": 8.7, "sd": 0.8, "unit": "mM"}
+          }
+        }
+      },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": {
+              "occipital": {"mean": 1.90, "sd": 0.06, "unit": "s"}
+            },
+            "GM": {
+              "occipital": {"mean": 1.83, "sd": 0.05, "unit": "s"}
+            }
+          }
+        }
+      },
+      "biosignificance": "the exact function remains largely unknown; suggested functions are: osmoregulation and precursor of neurotransmitter NAAG, involvement in in fatty acid and myelin synthesis",
+      "note": "higher concentration in gray matter than white matter; secound most concentrated metabolite in brain after glutamate; used as marker for neuronal density, but it differ among neuron types",
+      "reference_keys": [{"deGraaf": "deGraaf2019InVivoNMR"}, {"Pouwels": "Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
+    },
+    "Glu": {
+      "name_full": "Glutamate",
+      "ppm": [3.75, 2.04, 2.35],
+      "concentration": {
+        "deGraaf": {
+          "average_brain": {"range": [8, 12], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"mean": 7.0, "sd": 2.6, "unit": "mM"},
+            "parietal":  {"mean": 6.7, "sd": 1.8, "unit": "mM"},
+            "occipital": {"mean": 6.0, "sd": 1.2, "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"mean": 8.5, "sd": 1.0, "unit": "mM"},
+            "parietal":  {"mean": 8.2, "sd": 1.1, "unit": "mM"},
+            "occipital": {"mean": 8.6, "sd": 1.1, "unit": "mM"},
+            "insular":   {"mean": 8.8, "sd": 0.8, "unit": "mM"}
+          }
+        }
+      },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": {
+              "occipital": {"mean": 1.75, "sd": 0.04, "unit": "s"}
+            },
+            "GM": {
+              "occipital": {"mean": 1.61, "sd": 0.09, "unit": "s"}
+            }
+          }
+        }
+      },
+      "biosignificance": "excitatory neurotransmitter in mammalian brain; precursor of inhibitory neurotransmitter GABA; important component in synthetics of other small metabolites (e.g., glutathione) and also larger peptides and proteins; occurs in cell walls of escherichia coli.",
+      "note": "significant concentration difference in gray matter and white matter ",
+      "reference_keys": [{"deGraaf": "deGraaf2019InVivoNMR"}, {"Pouwels": "Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
+    },
+    "Gln": {
+      "name_full": "Glutamine",
+      "ppm": [3.77, 2.12, 2.46, 6.8, 7.5],
+      "concentration": {
+        "deGraaf": {
+          "astroglia": {"range": [2, 4], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"mean": 1.8, "sd": 1.6, "unit": "mM"},
+            "parietal":  {"mean": 1.5, "sd": 1.3, "unit": "mM"},
+            "occipital": {"mean": 2.2, "sd": 1.6, "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"mean": 4.4, "sd": 1.4, "unit": "mM"},
+            "parietal":  {"mean": 3.8, "sd": 1.4, "unit": "mM"},
+            "occipital": {"mean": 3.9, "sd": 1.1, "unit": "mM"},
+            "insular":   {"mean": 4.9, "sd": 1.6, "unit": "mM"}
+          }
+        }
+      },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": {
+              "occipital": {"mean": 1.74, "sd": 0.23, "unit": "s"}
+            },
+            "GM": {
+              "occipital": {"mean": 1.64, "sd": 0.07, "unit": "s"}
+            }
+          }
+        }
+      },
+      "biosignificance": "main function is ammonia detoxification; it is fuel source for a number of cancers; it is synthesised from Glutamate in astroglia; can cross brain blood barrier; glutamate-glutamine neurotransmitter cycle",
+      "note": "At min 7T the the glutamate and glutamine H4 resonances are visually separated (see de Graaf)",
+      "reference_keys": [{"deGraaf": "deGraaf2019InVivoNMR"}, {"Pouwels": "Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
+    },
+    "m-Ins": {
+      "name_full": "myo-Inositol",
+      "ppm": [3.53, 3.61, 3.27, 4.05],
+      "concentration": {
+        "deGraaf": {
+          "average_brain": {"range": [4, 8], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"mean": 3.8, "sd": 0.9, "unit": "mM"},
+            "parietal":  {"mean": 3.1, "sd": 0.6, "unit": "mM"},
+            "occipital": {"mean": 4.1, "sd": 0.8, "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"mean": 4.3, "sd": 0.9, "unit": "mM"},
+            "parietal":  {"mean": 4.3, "sd": 0.7, "unit": "mM"},
+            "occipital": {"mean": 4.1, "sd": 0.6, "unit": "mM"},
+            "insular":   {"mean": 4.7, "sd": 0.6, "unit": "mM"}
+          }
+        }
+      },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": {
+              "occipital": {"mean": 1.19, "sd": 0.07, "unit": "s"}
+            },
+            "GM": {
+              "occipital": {"mean": 1.28, "sd": 0.08, "unit": "s"}
+            }
+          }
+        }
+      },
+      "biosignificance": "most abundant isomer form of inositol found in tissue; proposed as a glial marker; altered levels found in mild cognitive impairment and Alzheimer's disease and brain injury",
+      "note": "This is one of the nine possible stereoisomers of inositol, thus only difference in orientation of proton H2. But same chemical formular and molar mass.",
+      "reference_keys": [{"deGraaf": "deGraaf2019InVivoNMR"}, {"Pouwels": "Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
+    },
+    "Cr+PCr": {
+      "name_full": "Creatine + Phosphocreatine (total creatine)",
+      "ppm": [3.03, 3.93],
+      "concentration": {
+        "deGraaf": {
+          "WM": {"range": [5.2, 5.7], "unit": "mM"},
+          "GM": {"range": [6.4, 9.7], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"mean": 5.7, "sd": 0.5, "unit": "mM"},
+            "parietal":  {"mean": 5.7, "sd": 0.6, "unit": "mM"},
+            "occipital": {"mean": 5.5, "sd": 0.8, "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"mean": 6.4, "sd": 0.7, "unit": "mM"},
+            "parietal":  {"mean": 6.5, "sd": 0.6, "unit": "mM"},
+            "occipital": {"mean": 6.9, "sd": 0.7, "unit": "mM"},
+            "insular":   {"mean": 7.0, "sd": 0.6, "unit": "mM"}
+          }
+        }
+      },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": {
+              "occipital": {"mean": 1.78, "sd": 0.04, "unit": "s"}
+            },
+            "GM": {
+              "occipital": {"mean": 1.74, "sd": 0.06, "unit": "s"}
+            }
+          }
+        }
+      },
+      "biosignificance": "creatine and phosphocreatine together with ATP crucial role energy metabolism of tissue; total creatine tCr does not change over age or in various diseases, but decrease levels in chronic phase  of pathologies like stroke and tumours; present in neuronal and glial cells; tCr + creatine kinase: keeps ATP steady by quickly regenerating it (energy 'buffer'); carries energy from mitochondria to where it's used most (muscle fibers, nerve terminals).",
+      "note": "chemical shift between creatine (3.027 ppm) and phosphocreatine (3.029 ppm) methyl is is too small to detect in vivo, but possible for creatine (3.913 ppm) and phosphocreatine (3.930 ppm) methylene at min 7T scanner",
+      "reference_keys": [{"deGraaf": "deGraaf2019InVivoNMR"}, {"Pouwels": "Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
+    },
+    "GPC+PCh": {
+      "name_full": "Glycerophosphocholine + Phosphorylcholine (total choline)",
+      "ppm": [3.21, 3.66, 4.31],
+      "ppm_ranges": [[3.6, 4.3]],
+      "concentration": {
+        "deGraaf": {
+          "average_brain": {"range": [1, 2], "unit": "mM"}
+        },
+        "Pouwels": {
+          "WM": {
+            "frontal":   {"mean": 1.78, "sd": 0.41, "unit": "mM"},
+            "parietal":  {"mean": 1.68, "sd": 0.27, "unit": "mM"},
+            "occipital": {"mean": 1.64, "sd": 0.21, "unit": "mM"}
+          },
+          "GM": {
+            "frontal":   {"mean": 1.38, "sd": 0.17, "unit": "mM"},
+            "parietal":  {"mean": 1.10, "sd": 0.14, "unit": "mM"},
+            "occipital": {"mean": 0.88, "sd": 0.10, "unit": "mM"},
+            "insular":   {"mean": 1.30, "sd": 0.19, "unit": "mM"}
+          }
+        }
+      },
+      "T1": {
+        "7T": {
+          "Xin": {
+            "WM": {
+              "occipital": {"mean": 1.32, "sd": 0.06, "unit": "s"}
+            },
+            "GM": {
+              "occipital": {"mean": 1.51, "sd": 0.11, "unit": "s"}
+            }
+          }
+        }
+      },
+      "biosignificance": "tied to phospholipid synthesis/degradation, therefore marker for membrane turnover; higher total creatine tCr in Alzheimer's disease and multiple sclerosis (suggesting altered membrane turnover); lower choline level in stroke",
+      "note": "total choline tCho at about 3.2 ppm is a composite signal (Cho, PC, GPC), not well separable; ppm_ranges is added since multiple peaks in this range!",
+      "reference_keys": [{"deGraaf": "deGraaf2019InVivoNMR"}, {"Pouwels": "Pouwels1998Regional"}, {"Xin": "Xin2013ProtonT1"}]
+    }
+  },
+  "H2O": {
+    "name_full": "Water",
+    "ppm": [4.70],
+    "concentration": {
+      "Okada2021Repeatability7T": {
+        "GM":  {"value": 43300, "unit": "mM"},
+        "WM":  {"value": 35880, "unit": "mM"},
+        "CSF": {"value": 55556, "unit": "mM"}
+      },
+      "Gasparovic2006TissueWaterReference": {
+        "basis": {
+          "pure_water": {"value": 55.51, "unit": "mol/kg"},
+          "relative_MR_visible_water_density": {"GM": 0.78, "WM": 0.65, "CSF": 0.97}
+        }
+      }
+    },
+    "T1": {
+      "7T": {
+        "Rooney2007WaterT1": {
+          "WM": {"frontal": {"mean": 1.220, "sd": 0.036, "unit": "s"}},
+          "GM": {"cortical": {"mean": 2.132, "sd": 0.103, "unit": "s"}},
+          "CSF": {"ventricular": {"mean": 4.425, "sd": 0.137, "unit": "s"}}
+        }
+      }
+    },
+    "T2": {
+      "7T": {
+        "Yacoub2003SpinEcho7T": {
+          "GM": {
+            "visual_cortex": {"mean": 0.0550, "sd": 0.0041, "unit": "s"}},
+          "WM": {"white_matter": {"mean": 0.0459, "sd": 0.0019, "unit": "s"}}
+        },
+        "Spijkerman2018CSFT2": {
+          "CSF": {
+            "ventricular":                         {"value": 1.05, "unit": "s"},
+            "peripheral_partial_volume_corrected": {"value": 1.01, "unit": "s"},
+            "recommended_range":                   {"range": [1.01, 1.05], "unit": "s"}
+          }
+        }
+      }
+    },
+    "note": "The concentration values are conventional MRS water-reference values and are not field-strength dependent. T1/T2 values are 7T human brain values. Where sources report mean ± SD, values are stored as mean and sd; CSF T2 range reflects peripheral corrected versus ventricular CSF.",
+    "reference_keys": [{"Okada2021Repeatability7T": "Okada2021Repeatability7T"}, {"Gasparovic2006TissueWaterReference": "Gasparovic2006TissueWaterReference"}, {"Rooney2007WaterT1": "Rooney2007WaterT1"}, {"Yacoub2003SpinEcho7T": "Yacoub2003SpinEcho7T"}, {"Spijkerman2018CSFT2": "Spijkerman2018CSFT2"}, {"Xin2017PracticalGuide": "Xin2017PracticalGuide"}]
+  },
+  "macromolecules": {}
+}

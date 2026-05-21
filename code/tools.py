@@ -56,7 +56,6 @@ from cupy.fft  import fftn as fftn_gpu, fftshift as fftshift_gpu # gpu case: for
 import glom
 
 
-
 class CitationManager:
     def __init__(self, bib_file_path):
         """
@@ -2577,13 +2576,22 @@ class ArrayTools:
                         => the value appear everywhere in the array where mask==1; shape equals to mask
                            (!) Please note: Don't provide then the shape.
 
-            * Case 3: Provide multiple masks (in a list) of same shape and a list of the values
+            * Case 3: Provide multiple BINARY masks (in a list) of same shape and a list of the values
                         => The respective areas where mask[i]==1 will be filled with the value[i]
-                           (!) Please note: Mask are not allowed to intersect!
+                           (!) Please note: Masks are not allowed to intersect!
+
+            * Case 4: Provide multiple FRACTIONAL masks (in a list) of same shape with values in [0,1]
+                      that sum to 1 at each voxel, plus a list of the values
+                        => Linear combination: output = value[0]*mask[0] + value[1]*mask[1] + ... + value[n]*mask[n]
+                           Useful for e.g. concentration maps where each voxel is a weighted mix.
+                           (!) Please note: All masks together must sum to 1 at each voxel (partition of unity).
+
+        Case 3 and Case 4 are auto-detected from the mask values: if all masks are strictly binary
+        (only 0 and 1), Case 3 is used; otherwise Case 4 is used.
 
         :param shape: The shape of any dimensionality as tuple, e.g., (X,Y,Z,...)
         :param value: The value as scalar or list[scalar, scalar, scalar, ...]
-        :param mask: One binary numpy array or multiple binary numpy arrays in a list
+        :param mask: One binary numpy array or multiple binary/fractional numpy arrays in a list
         :return: The created numpy array
         """
 
@@ -2591,11 +2599,11 @@ class ArrayTools:
         #  => Just fill the whole array with the value.
         if mask is None:
             if shape is None:
-                Console.printf('error', "Either 'shape' or 'mask' must be provided!")#, raise_error=ValueError)
-                return None
+                Console.printf('error', "Either 'shape' or 'mask' must be provided!", raise_error=ValueError)
+                #return None
             if not isinstance(value, (int, float)):
-                Console.printf('error', f"The 'value' must be a scalar, got {type(value).__name__}")#, raise_error=TypeError)
-                return None
+                Console.printf('error', f"The 'value' must be a scalar, got {type(value).__name__}", raise_error=TypeError)
+                #return None
             return np.full(shape, value)
 
         ## Use case #2: A single mask + a single value (shape comes from the mask)
@@ -2605,64 +2613,94 @@ class ArrayTools:
                                raise_error=TypeError)
             # Mask must be binary (only 0 and 1)
             if mask.dtype != bool and not np.all((mask == 0) | (mask == 1)):
-                Console.printf('error', "The 'mask' must be binary (only 0 and 1)!")#, raise_error=ValueError)
-                return None
+                Console.printf('error', "The 'mask' must be binary (only 0 and 1)!", raise_error=ValueError)
+                #return None
             return np.where(mask == 1, value, 0).astype(np.result_type(value, 0))
 
-        ## Use case #3: A list of masks + a list of values
-        #  => Each mask gets its value, but masks must NOT intersect!
+        ## Use case #3 and #4: A list of masks + a list of values
+        #  => Case 3 (binary, exclusive): each mask gets its value, masks must NOT intersect.
+        #  => Case 4 (fractional, partition of unity): linear combination of values weighted by masks.
         if isinstance(mask, list):
             mask_list, value_list = mask, value
 
             # Basic sanity checks: value must also be a list, same length, not empty
             if not isinstance(value_list, list):
-                Console.printf('error', "When 'mask' is a list, 'value' must also be a list!")#, raise_error=TypeError)
-                return None
+                Console.printf('error', "When 'mask' is a list, 'value' must also be a list!", raise_error=TypeError)
+                #return None
             if len(mask_list) != len(value_list):
                 Console.printf('error',
-                               f"The 'mask' and 'value' must have the same length, got {len(mask_list)} masks and {len(value_list)} values!") #,
-                               #raise_error=ValueError)
-                return None
+                               f"The 'mask' and 'value' must have the same length, got {len(mask_list)} masks and {len(value_list)} values!",
+                               raise_error=ValueError)
+                #return None
             if len(mask_list) == 0:
-                Console.printf('error', "The 'mask' list is empty.")#, raise_error=ValueError)
-                return None
+                Console.printf('error', "The 'mask' list is empty.", raise_error=ValueError)
+                #return None
 
-            # All masks must be ndarrays of the same shape AND binary
+            # All masks must be ndarrays of the same shape
             reference_shape = mask_list[0].shape
             for mask_index, current_mask in enumerate(mask_list):
                 if not isinstance(current_mask, np.ndarray):
                     Console.printf('error',
-                                   f"mask[{mask_index}] is {type(current_mask).__name__}, expected np.ndarray!") #,
-                                   #raise_error=TypeError)
-                    return None
+                                   f"mask[{mask_index}] is {type(current_mask).__name__}, expected np.ndarray!",
+                                   raise_error=TypeError)
+                    #return None
                 if current_mask.shape != reference_shape:
                     Console.printf('error',
-                                   f"All masks must share the same shape. mask[0].shape={reference_shape}, mask[{mask_index}].shape={current_mask.shape}")#,
-                                   #raise_error=ValueError)
-                    return None
+                                   f"All masks must share the same shape. mask[0].shape={reference_shape}, mask[{mask_index}].shape={current_mask.shape}",
+                                   raise_error=ValueError)
+                    #return None
 
-                if current_mask.dtype != bool and not np.all((current_mask == 0) | (current_mask == 1)):
-                    Console.printf('error', f"'mask[{mask_index}]' must be binary (only 0 and 1)")#,
-                                   #raise_error=ValueError)
-                    return None
+            # Decide: are ALL masks strictly binary? => Case 3. Otherwise => Case 4 (fractional).
+            masks_are_binary = all(
+                current_mask.dtype == bool or np.all((current_mask == 0) | (current_mask == 1))
+                for current_mask in mask_list
+            )
 
-            # Check that masks do NOT intersect (stack -> sum -> any voxel > 1 means overlap!)
-            overlap_count_per_voxel = np.stack([(m == 1).astype(np.uint8) for m in mask_list], axis=0).sum(axis=0)
-            if overlap_count_per_voxel.max() > 1:
-                number_of_overlapping_voxels = int((overlap_count_per_voxel > 1).sum())
+            ## Use case #3: Binary masks => mutually exclusive partitioning
+            if masks_are_binary:
+                # Check that masks do NOT intersect (stack -> sum -> any voxel > 1 means overlap!)
+                overlap_count_per_voxel = np.stack([(m == 1).astype(np.uint8) for m in mask_list], axis=0).sum(axis=0)
+                if overlap_count_per_voxel.max() > 1:
+                    number_of_overlapping_voxels = int((overlap_count_per_voxel > 1).sum())
+                    Console.printf('error',
+                                   f"Binary masks overlap at {number_of_overlapping_voxels} voxel(s); masks must be mutually exclusive!",
+                                   raise_error=ValueError)
+                    #return None
+
+                # Build the volume: start with zeros, then paint each mask with its value
+                output_volume = np.zeros(reference_shape, dtype=np.result_type(*value_list, 0))
+                for current_mask, current_value in zip(mask_list, value_list):
+                    output_volume[current_mask == 1] = current_value
+                return output_volume
+
+            ## Use case #4: Fractional masks in [0,1] summing to 1 => linear combination
+            #  => output = value[0]*mask[0] + value[1]*mask[1] + ... + value[n]*mask[n]
+            # Each mask must have values within [0,1]
+            for mask_index, current_mask in enumerate(mask_list):
+                if current_mask.min() < 0.0 or current_mask.max() > 1.0:
+                    Console.printf('error',
+                                   f"Fractional mask[{mask_index}] has values outside [0,1] (min={current_mask.min()}, max={current_mask.max()})",
+                                   raise_error=ValueError)
+                    #return None
+
+            # All masks together must sum to 1 at every voxel (partition of unity)
+            sum_per_voxel = np.sum(np.stack(mask_list, axis=0), axis=0)
+            if not np.allclose(sum_per_voxel, 1.0, atol=1e-6):
+                maximum_deviation_from_one = float(np.max(np.abs(sum_per_voxel - 1.0)))
                 Console.printf('error',
-                               f"Masks overlap at {number_of_overlapping_voxels} voxel(s); masks must be mutually exclusive!") #,
-                               #raise_error=ValueError)
-                return None
+                               f"Fractional masks must sum to 1 at each voxel; max deviation = {maximum_deviation_from_one}",
+                               raise_error=ValueError)
+                #return None
 
-            # Build the volume: start with zeros, then paint each mask with its value
-            output_volume = np.zeros(reference_shape, dtype=np.result_type(*value_list, 0))
+            # Build the volume as a linear combination of all (value_i * mask_i)
+            output_dtype = np.result_type(*value_list, *(m.dtype for m in mask_list), 0.0)
+            output_volume = np.zeros(reference_shape, dtype=output_dtype)
             for current_mask, current_value in zip(mask_list, value_list):
-                output_volume[current_mask == 1] = current_value
+                output_volume += current_value * current_mask
             return output_volume
 
-        Console.printf('error', f"The 'mask' must be None, an ndarray, or a list of ndarrays; got {type(mask).__name__}")# ,
-                       #raise_error=TypeError)
+        Console.printf('error', f"The 'mask' must be None, an ndarray, or a list of ndarrays; got {type(mask).__name__}",
+                       raise_error=TypeError)
         return None
 
 
@@ -2751,7 +2789,6 @@ class InterpolationTools:
             mute=not verbose
         )
         return array
-
 
 
 class JupyterPlotManager:
@@ -3478,6 +3515,9 @@ class JupyterPlotManager:
         # ---------------- fixed pixel layout ----------------
         _need_relayout = [True]
         _draw_guard = [False]
+        # ipympl: canvas size at last completed layout, used to detect a
+        # silent resize between our first layout_all() and the first real draw
+        _last_layout_size = [(0, 0)]
 
         def layout_all():
             w_px, h_px = canvas_wh_px()
@@ -3571,6 +3611,10 @@ class JupyterPlotManager:
                 clear_ax.set_position([lp_x0 / w_px, btn3_y0 / h_px, BTN_W_PX / w_px, BTN_H_PX / h_px])
 
         def _on_resize(_evt):
+            # canvas size changed: also drop the anchor so it gets recomputed
+            # from panel_box_rect on the new canvas size (matches first-layout behavior)
+            left_panel_anchor_px[0] = None
+            left_panel_anchor_px[1] = None
             _need_relayout[0] = True
             fig.canvas.draw_idle()
 
@@ -3578,9 +3622,18 @@ class JupyterPlotManager:
             if _draw_guard[0]:
                 _draw_guard[0] = False
                 return
-            if _need_relayout[0]:
+            # ipympl: the first "real" canvas size sometimes arrives between our
+            # initial layout_all() and the first draw, without firing a resize_event.
+            # Re-check the size on every draw and re-layout if it doesn't match.
+            cur_size = canvas_wh_px()
+            size_changed = cur_size != _last_layout_size[0]
+            if _need_relayout[0] or size_changed:
+                if size_changed:
+                    left_panel_anchor_px[0] = None
+                    left_panel_anchor_px[1] = None
                 _need_relayout[0] = False
                 layout_all()
+                _last_layout_size[0] = canvas_wh_px()
                 _draw_guard[0] = True
                 fig.canvas.draw_idle()
 
@@ -3721,13 +3774,48 @@ class JupyterPlotManager:
         fig._volume_grid_slice_box = slice_box
         fig._volume_grid_marker_buttons = (mark_toggle_btn, undo_btn, clear_btn)
 
-        fig.canvas.draw()
-        layout_all()
-        fig.canvas.draw_idle()
+        # ipympl fix: connect resize/draw handlers BEFORE plt.show(), so the
+        # canvas resize that happens when the figure is first shown in JupyterLab
+        # is caught and layout_all() re-runs with the real canvas size.
+        # NOTE: do NOT call fig.canvas.draw()/draw_idle() here — in ipympl the
+        # canvas manager is still None at this point and draw() would raise
+        # AttributeError on self.manager.refresh_all(). plt.show() triggers the
+        # first real draw, which fires _on_draw and relays out if needed.
         fig.canvas.mpl_connect("resize_event", _on_resize)
         fig.canvas.mpl_connect("draw_event", _on_draw)
 
+        layout_all()
+        _last_layout_size[0] = canvas_wh_px()
+
         plt.show()
+
+        # ipympl in JupyterLab often finishes fitting the canvas to the cell
+        # AFTER plt.show() returns and without firing a resize_event our
+        # handler can pick up — that's why a manual resize "fixes" the layout.
+        # Schedule a few delayed forced relayouts so layout_all() re-runs once
+        # ipympl has settled on the real canvas size. Cheap if nothing changed.
+        def _delayed_relayout(*_a):
+            left_panel_anchor_px[0] = None
+            left_panel_anchor_px[1] = None
+            _need_relayout[0] = True
+            try:
+                fig.canvas.draw_idle()
+            except Exception:
+                pass
+
+        _initial_relayout_timers = []
+        try:
+            for _delay_ms in (100, 350, 800):
+                _t = fig.canvas.new_timer(interval=_delay_ms)
+                _t.single_shot = True
+                _t.add_callback(_delayed_relayout)
+                _t.start()
+                _initial_relayout_timers.append(_t)
+        except Exception:
+            pass
+
+        # keep timer refs alive (matplotlib timers can be GC'd otherwise)
+        fig._volume_grid_initial_timers = _initial_relayout_timers
 
         state = {
             "layout_all": layout_all,
@@ -3743,6 +3831,996 @@ class JupyterPlotManager:
             "slider_tick_lines": slider_tick_lines,
         }
         return fig, axs, state
+
+###class JupyterPlotManager:
+###    """
+###    Convenience wrapper for the volume grid viewer.
+###
+###    Usage:
+###        fig, axs, state = JupyterPlotManager.volume_grid_viewer(
+###            vols, rows=1, cols=8, titles=titles
+###        )
+###
+###    Defaults are intentionally set to the "perfect" configuration you currently have.
+###    You can still override any keyword argument supported by the underlying implementation.
+###    """
+###
+###    @staticmethod
+###    def get_slice(vol, axis, i):
+###        if axis == 0:
+###            return vol[i, :, :]
+###        if axis == 1:
+###            return vol[:, i, :]
+###        return vol[:, :, i]
+###
+###    @staticmethod
+###    def _auto_figsize_px(
+###        rows, cols,
+###        *,
+###        unit_img_px,
+###        internal_h_px,
+###        unit_wgap_px,
+###        unit_hgap_px,
+###        left_panel_px,
+###        left_panel_gap_px,
+###        outer_pad_px=(30, 20, 30, 30),  # (left, right, bottom, top)
+###        dpi=100,
+###    ):
+###        pad_l, pad_r, pad_b, pad_t = outer_pad_px
+###        unit_w_px = unit_img_px
+###        unit_h_px = unit_img_px + internal_h_px
+###
+###        grid_w_px = cols * unit_w_px + (cols - 1) * unit_wgap_px
+###        grid_h_px = rows * unit_h_px + (rows - 1) * unit_hgap_px
+###
+###        fig_w_px = pad_l + left_panel_px + (left_panel_gap_px if left_panel_px > 0 else 0) + grid_w_px + pad_r
+###        fig_h_px = pad_b + grid_h_px + pad_t
+###
+###        return (fig_w_px / dpi, fig_h_px / dpi)
+###
+###    @staticmethod
+###    def volume_grid_viewer(
+###        vols,
+###        rows,
+###        cols,
+###        titles=None,
+###        **kwargs,
+###    ):
+###        """
+###        Minimal required args: vols, rows, cols, titles (titles optional)
+###
+###        All other settings default to your current "perfect" configuration, and can be overridden via **kwargs.
+###        """
+###
+###        # --- Defaults (your current "perfect" call configuration) ---
+###        defaults = dict(
+###            figsize="auto",
+###            auto_figsize=False,
+###            dpi=None,
+###            unit_img_px=220,
+###            axis=0,
+###
+###            enable_axis_change=True,
+###            per_panel_axis=True,
+###            enable_click_select=True,
+###            enable_keyboard_nav=True,
+###            enable_markers=True,
+###
+###            # margins
+###            left=0.05, right=0.98, bottom=0.08, top=0.95,
+###
+###            # widget sizing
+###            slider_h_px=18,
+###            slider_pad_px=20,   # NOTE: your call uses 20
+###            slider_len=0.70,
+###            cbar_h_px=14,
+###            cbar_gap_px=5,      # NOTE: your call uses 5
+###
+###            # gaps
+###            unit_wgap_px=6,
+###            unit_hgap_px=30,
+###            left_panel_gap_px=12,
+###
+###            grid_align_x="left",
+###            grid_align_y="center",
+###            panel_box_rect=(0.03, 0.68, 0.08, 0.05),
+###        )
+###
+###        # user overrides
+###        cfg = {**defaults, **kwargs}
+###
+###        # ---- Implementation (same as your current perfect version) ----
+###
+###        def get_slice(vol, axis, i):
+###            return JupyterPlotManager.get_slice(vol, axis, i)
+###
+###        def _auto_figsize_px(*args, **kws):
+###            return JupyterPlotManager._auto_figsize_px(*args, **kws)
+###
+###        n_panels = rows * cols
+###        vols = list(vols)[:n_panels]
+###
+###        if titles is None:
+###            titles = [f"Vol {i+1}" for i in range(len(vols))]
+###        else:
+###            titles = list(titles) + [f"Vol {i+1}" for i in range(len(titles), len(vols))]
+###            titles = titles[:len(vols)]
+###
+###        dpi = cfg["dpi"]
+###        if dpi is None:
+###            dpi = float(plt.rcParams.get("figure.dpi", 100))
+###
+###        cbar_h_px = cfg["cbar_h_px"]
+###        cbar_gap_px = cfg["cbar_gap_px"]
+###        slider_h_px = cfg["slider_h_px"]
+###        slider_pad_px = cfg["slider_pad_px"]
+###        internal_h_px = cbar_h_px + cbar_gap_px + slider_h_px + slider_pad_px
+###
+###        enable_axis_change = cfg["enable_axis_change"]
+###        per_panel_axis = cfg["per_panel_axis"]
+###        enable_markers = cfg["enable_markers"]
+###
+###        left_panel_px = 0
+###        if (enable_axis_change and per_panel_axis) or enable_markers:
+###            left_panel_px = 78
+###
+###        figsize = cfg["figsize"]
+###        if cfg["auto_figsize"] or (isinstance(figsize, str) and figsize.lower() == "auto"):
+###            figsize = _auto_figsize_px(
+###                rows, cols,
+###                unit_img_px=cfg["unit_img_px"],
+###                internal_h_px=internal_h_px,
+###                unit_wgap_px=cfg["unit_wgap_px"],
+###                unit_hgap_px=cfg["unit_hgap_px"],
+###                left_panel_px=left_panel_px,
+###                left_panel_gap_px=cfg["left_panel_gap_px"],
+###                dpi=dpi,
+###            )
+###
+###        fig, axs = plt.subplots(rows, cols, figsize=figsize, dpi=dpi)
+###        axs = np.array(axs).reshape(rows, cols)
+###        fig.subplots_adjust(left=cfg["left"], right=cfg["right"], bottom=cfg["bottom"], top=cfg["top"])
+###
+###        images = {}
+###        sliders = {}
+###        slider_axes = {}
+###        cbar_axes = {}
+###        cbars = {}
+###        frames = {}
+###
+###        axis_per_panel = [int(cfg["axis"])] * len(vols)
+###        selected_panel = [0]
+###
+###        axes_to_panel = {}
+###        image_axes_set = set()
+###
+###        # per-panel axis badge (top-left, yellow)
+###        axis_badge = {}
+###
+###        # Left UI (axis stuff)
+###        radio = None
+###        radio_ax = None
+###        panel_box = None
+###        panel_box_ax = None
+###        slice_box = None
+###        slice_box_ax = None
+###        slice_box_guard = [False]
+###        panel_label = None
+###        slice_label = None
+###
+###        # Marker UI
+###        mark_toggle_ax = None
+###        mark_toggle_btn = None
+###        undo_ax = None
+###        undo_btn = None
+###        clear_ax = None
+###        clear_btn = None
+###
+###        marking_enabled = [False]
+###        marker_stack = []
+###        marker_counter = [0]
+###
+###        # caches for "real coordinates" readout
+###        slice_hw = {}
+###        slice_off = {}
+###        slice_data = {}
+###
+###        # slider ticks: (panel, axis, k) -> count / line
+###        marker_counts = {}
+###        slider_tick_lines = {}
+###
+###        # Left UI sizes (px)
+###        BOX_W_PX = 78
+###        BOX_H_PX = 22
+###        BOX_GAP_PX = 28
+###        LABEL_PAD_PX = 3
+###
+###        RADIO_W_PX = BOX_W_PX
+###        RADIO_H_PX = 70
+###        RADIO_GAP_PX = 10
+###
+###        BTN_W_PX = BOX_W_PX
+###        BTN_H_PX = 22
+###        BTN_GAP_PX = 8
+###
+###        left_panel_anchor_px = [None, None]
+###
+###        AXIS_LABELS = ("axis 1", "axis 2", "axis 3")
+###        LABEL_TO_AXIS = {lab: i for i, lab in enumerate(AXIS_LABELS)}
+###
+###        MARKER_REMOVE_TOL_PX = 10
+###
+###        def canvas_wh_px():
+###            return fig.canvas.get_width_height()
+###
+###        def set_slider_range(sl, n_slices, new_val):
+###            new_val = int(np.clip(int(new_val), 0, n_slices - 1))
+###            sl.eventson = False
+###            sl.valmin = 0
+###            sl.valmax = n_slices - 1
+###            sl.ax.set_xlim(0, n_slices - 1)
+###            sl.valstep = 1
+###            sl.set_val(new_val)
+###            sl.eventson = True
+###            return new_val
+###
+###        def centered_extent(frame_h, frame_w, h, w):
+###            x0 = (frame_w - w) / 2.0
+###            y0 = (frame_h - h) / 2.0
+###            return (x0 - 0.5, x0 + w - 0.5, y0 + h - 0.5, y0 - 0.5)
+###
+###        def update_selected_slice_box():
+###            if slice_box is None:
+###                return
+###            i = selected_panel[0]
+###            if i not in sliders or slice_box_guard[0]:
+###                return
+###            slice_box_guard[0] = True
+###            try:
+###                slice_box.set_val(str(int(sliders[i].val)))
+###            finally:
+###                slice_box_guard[0] = False
+###
+###        def _index_to_label(n: int) -> str:
+###            n = int(n)
+###            s = ""
+###            while True:
+###                n, r = divmod(n, 26)
+###                s = chr(ord("A") + r) + s
+###                if n == 0:
+###                    break
+###                n -= 1
+###            return s
+###
+###        VALUE_FMT = "{:.4g}"
+###
+###        def _slice_offsets_in_frame(panel_i: int, slc_shape):
+###            frame_h, frame_w = frames[panel_i]
+###            h, w = slc_shape
+###            x0 = (frame_w - w) / 2.0
+###            y0 = (frame_h - h) / 2.0
+###            return x0, y0
+###
+###        def _update_slice_cache(panel_i: int, slc: np.ndarray):
+###            h, w = slc.shape
+###            x0, y0 = _slice_offsets_in_frame(panel_i, (h, w))
+###            slice_hw[panel_i] = (h, w)
+###            slice_off[panel_i] = (x0, y0)
+###            slice_data[panel_i] = slc
+###
+###        def _axis_short(a: int) -> str:
+###            return ("Scroll 1", "Scroll 2", "Scroll 3")[int(a)]
+###
+###        def update_axis_badge(panel_i: int):
+###            if panel_i in axis_badge:
+###                axis_badge[panel_i].set_text(f"{_axis_short(axis_per_panel[panel_i])}")
+###
+###        def make_format_coord(panel_i: int):
+###            def _fmt(xf, yf):
+###                if panel_i not in slice_hw or panel_i not in slice_off:
+###                    return ""
+###                h, w = slice_hw[panel_i]
+###                x0, y0 = slice_off[panel_i]
+###
+###                xs = xf - x0
+###                ys = yf - y0
+###                if not (0 <= xs < w and 0 <= ys < h):
+###                    return ""
+###
+###                xi = int(np.floor(xs + 0.5))
+###                yi = int(np.floor(ys + 0.5))
+###                xi = int(np.clip(xi, 0, w - 1))
+###                yi = int(np.clip(yi, 0, h - 1))
+###
+###                slc = slice_data.get(panel_i, None)
+###                v_txt = "?"
+###                if slc is not None and slc.shape == (h, w):
+###                    v_txt = VALUE_FMT.format(float(slc[yi, xi]))
+###
+###                ax_sel = axis_per_panel[panel_i]
+###                k = int(sliders[panel_i].val) if panel_i in sliders else 0
+###
+###                if ax_sel == 0:
+###                    z, yv, xv = k, yi, xi
+###                elif ax_sel == 1:
+###                    z, yv, xv = yi, k, xi
+###                else:
+###                    z, yv, xv = yi, xi, k
+###
+###                return f"vol[{z},{yv},{xv}] = {v_txt}"
+###            return _fmt
+###
+###        # slider tick management
+###        def _mk_key(panel_i: int, ax_sel: int, k: int):
+###            return (int(panel_i), int(ax_sel), int(k))
+###
+###        def _ensure_slider_tick(panel_i: int, ax_sel: int, k: int):
+###            key = _mk_key(panel_i, ax_sel, k)
+###            if key in slider_tick_lines:
+###                return
+###            sax = slider_axes.get(panel_i, None)
+###            if sax is None:
+###                return
+###            ln = sax.axvline(k, ymin=0.0, ymax=1.0, color="yellow", lw=1.2, alpha=0.9, zorder=50)
+###            slider_tick_lines[key] = ln
+###
+###        def _remove_slider_tick(panel_i: int, ax_sel: int, k: int):
+###            key = _mk_key(panel_i, ax_sel, k)
+###            ln = slider_tick_lines.pop(key, None)
+###            if ln is not None:
+###                try:
+###                    ln.remove()
+###                except Exception:
+###                    pass
+###
+###        def _refresh_slider_ticks_for_panel(panel_i: int):
+###            cur_axis = int(axis_per_panel[panel_i])
+###            for (p, a, _k), ln in list(slider_tick_lines.items()):
+###                if p != panel_i:
+###                    continue
+###                ln.set_visible(a == cur_axis)
+###
+###        def _inc_marker_count(panel_i: int, ax_sel: int, k: int):
+###            key = _mk_key(panel_i, ax_sel, k)
+###            marker_counts[key] = marker_counts.get(key, 0) + 1
+###            if marker_counts[key] == 1:
+###                _ensure_slider_tick(panel_i, ax_sel, k)
+###                _refresh_slider_ticks_for_panel(panel_i)
+###
+###        def _dec_marker_count(panel_i: int, ax_sel: int, k: int):
+###            key = _mk_key(panel_i, ax_sel, k)
+###            if key not in marker_counts:
+###                return
+###            marker_counts[key] -= 1
+###            if marker_counts[key] <= 0:
+###                marker_counts.pop(key, None)
+###                _remove_slider_tick(panel_i, ax_sel, k)
+###                _refresh_slider_ticks_for_panel(panel_i)
+###
+###        # marker helpers
+###        def refresh_markers_for_panel(panel_i: int):
+###            if not marker_stack or panel_i not in sliders:
+###                return
+###
+###            ax_sel = axis_per_panel[panel_i]
+###            k_now = int(sliders[panel_i].val)
+###
+###            if panel_i in slice_off:
+###                x0, y0 = slice_off[panel_i]
+###            else:
+###                slc = get_slice(vols[panel_i], ax_sel, k_now)
+###                h, w = slc.shape
+###                x0, y0 = _slice_offsets_in_frame(panel_i, (h, w))
+###
+###            for m in marker_stack:
+###                if m["panel"] != panel_i:
+###                    continue
+###                visible = (m["axis"] == ax_sel and m["k"] == k_now)
+###                m["line"].set_visible(visible)
+###                m["ann"].set_visible(visible)
+###                if visible:
+###                    xf = x0 + m["x"]
+###                    yf = y0 + m["y"]
+###                    m["line"].set_data([xf], [yf])
+###                    m["ann"].xy = (xf, yf)
+###
+###        def _find_marker_hit(panel_i: int, event, x0: float, y0: float):
+###            if event.x is None or event.y is None:
+###                return None
+###            ax_sel = int(axis_per_panel[panel_i])
+###            k_now = int(sliders[panel_i].val)
+###
+###            ax = axs.ravel()[panel_i]
+###            click_xy_disp = np.array([event.x, event.y], dtype=float)
+###
+###            best = None
+###            best_d = float("inf")
+###
+###            for m in marker_stack:
+###                if m["panel"] != panel_i or m["axis"] != ax_sel or m["k"] != k_now:
+###                    continue
+###                xf = x0 + m["x"]
+###                yf = y0 + m["y"]
+###                pt_disp = np.array(ax.transData.transform((xf, yf)), dtype=float)
+###                d = float(np.hypot(*(pt_disp - click_xy_disp)))
+###                if d <= MARKER_REMOVE_TOL_PX and d < best_d:
+###                    best_d = d
+###                    best = m
+###            return best
+###
+###        def _remove_marker(m, *, adjust_counter_if_last: bool):
+###            _dec_marker_count(m["panel"], m["axis"], m["k"])
+###            try:
+###                m["line"].remove()
+###            except Exception:
+###                pass
+###            try:
+###                m["ann"].remove()
+###            except Exception:
+###                pass
+###
+###            try:
+###                idx = marker_stack.index(m)
+###            except Exception:
+###                idx = None
+###
+###            if idx is not None:
+###                is_last = (idx == len(marker_stack) - 1)
+###                marker_stack.pop(idx)
+###                if adjust_counter_if_last and is_last:
+###                    marker_counter[0] = max(0, marker_counter[0] - 1)
+###
+###        def update_panel(i, k):
+###            vol = vols[i]
+###            ax_sel = axis_per_panel[i]
+###
+###            slc = get_slice(vol, ax_sel, int(k))
+###            _update_slice_cache(i, slc)
+###
+###            h, w = slc.shape
+###            frame_h, frame_w = frames[i]
+###            ext = centered_extent(frame_h, frame_w, h, w)
+###
+###            im = images[i]
+###            im.set_data(slc)
+###            im.set_extent(ext)
+###
+###            n = vol.shape[ax_sel]
+###            axs.ravel()[i].set_title(f"{titles[i]}")
+###            sliders[i].valtext.set_text(f"{int(k)}/{n-1}")
+###
+###            update_axis_badge(i)
+###
+###            if enable_markers:
+###                refresh_markers_for_panel(i)
+###                _refresh_slider_ticks_for_panel(i)
+###
+###            fig.canvas.draw_idle()
+###
+###        def set_selected_panel(i):
+###            i = int(np.clip(i, 0, len(vols) - 1))
+###            selected_panel[0] = i
+###
+###            if panel_box is not None:
+###                panel_box.set_val(str(i + 1))
+###
+###            if radio is not None:
+###                want_axis = axis_per_panel[i]
+###                want_label = AXIS_LABELS[want_axis]
+###                if getattr(radio, "value_selected", None) != want_label:
+###                    radio.set_active(want_axis)
+###
+###            if per_panel_axis:
+###                update_selected_slice_box()
+###
+###            fig.canvas.draw_idle()
+###
+###        # ---------------- build panels ----------------
+###        for i, ax in enumerate(axs.ravel()):
+###            if i >= len(vols):
+###                ax.axis("off")
+###                continue
+###
+###            vol = vols[i]
+###            Z, Y, X = vol.shape
+###
+###            frame_h = max(Z, Y)
+###            frame_w = max(X, Y)
+###            frames[i] = (frame_h, frame_w)
+###
+###            ax_sel = axis_per_panel[i]
+###            n = vol.shape[ax_sel]
+###            idx0 = n // 2
+###
+###            vmin = float(vol.min())
+###            vmax = float(vol.max())
+###
+###            slc0 = get_slice(vol, ax_sel, idx0)
+###            _update_slice_cache(i, slc0)
+###
+###            h0, w0 = slc0.shape
+###            ext0 = centered_extent(frame_h, frame_w, h0, w0)
+###
+###            #im = ax.imshow(slc0, cmap="gray", vmin=vmin, vmax=vmax, extent=ext0)
+###            # choose cmap: either a single cmap or a per-panel list/tuple
+###            cmap_cfg = cfg.get("cmap", "gray")
+###            cmap_i = cmap_cfg[i] if isinstance(cmap_cfg, (list, tuple)) else cmap_cfg
+###            im = ax.imshow(slc0, cmap=cmap_i, vmin=vmin, vmax=vmax, extent=ext0)
+###
+###            images[i] = im
+###            im.format_cursor_data = lambda data: ""
+###
+###            ax.set_aspect("equal", adjustable="box")
+###            ax.set_anchor("C")
+###            ax.set_xlim(-0.5, frame_w - 0.5)
+###            ax.set_ylim(frame_h - 0.5, -0.5)
+###
+###            ax.set_title(f"{titles[i]}")
+###            ax.set_xticks([]); ax.set_yticks([])
+###
+###            ax.format_coord = make_format_coord(i)
+###
+###            t = ax.text(
+###                0.02, 0.98, "",
+###                transform=ax.transAxes,
+###                ha="left", va="top",
+###                fontsize=9,
+###                color="yellow",
+###                bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.35, lw=0),
+###                zorder=10
+###            )
+###            axis_badge[i] = t
+###            update_axis_badge(i)
+###
+###            # colorbar
+###            cax = fig.add_axes([0, 0, 0.01, 0.01])
+###            cbar_axes[i] = cax
+###            cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+###            cb.ax.tick_params(labelsize=7, pad=1)
+###            cb.outline.set_visible(False)
+###            for sp in cb.ax.spines.values():
+###                sp.set_visible(False)
+###            cbars[i] = cb
+###
+###            # slider
+###            sax = fig.add_axes([0, 0, 0.01, 0.01])
+###            slider_axes[i] = sax
+###            s = Slider(sax, "", 0, n - 1, valinit=idx0, valstep=1)
+###            sliders[i] = s
+###            s.valtext.set_text(f"{idx0}/{n-1}")
+###
+###            # hide red vline (optional)
+###            if hasattr(s, "vline") and s.vline is not None:
+###                s.vline.set_visible(False)
+###
+###            def make_update(panel_index):
+###                def _update(_val):
+###                    ax_sel_local = axis_per_panel[panel_index]
+###                    n_ref = vols[panel_index].shape[ax_sel_local]
+###                    k = int(np.clip(int(sliders[panel_index].val), 0, n_ref - 1))
+###                    update_panel(panel_index, k)
+###                return _update
+###
+###            s.on_changed(make_update(i))
+###
+###            axes_to_panel[ax] = i
+###            axes_to_panel[cax] = i
+###            axes_to_panel[sax] = i
+###            image_axes_set.add(ax)
+###
+###        # ---------------- optional left UI (axis) ----------------
+###        if enable_axis_change:
+###            if per_panel_axis:
+###                panel_box_ax = fig.add_axes([0, 0, 0.01, 0.01])
+###                panel_box = TextBox(panel_box_ax, "", initial="1")
+###                panel_label = fig.text(0, 0, "panel", transform=fig.transFigure,
+###                                       ha="left", va="bottom", fontsize=9)
+###
+###                def on_panel_submit(text):
+###                    try:
+###                        i_user = int(text.strip())
+###                        i0 = i_user - 1
+###                    except Exception:
+###                        panel_box.set_val(str(selected_panel[0] + 1))
+###                        return
+###                    set_selected_panel(i0)
+###
+###                panel_box.on_submit(on_panel_submit)
+###
+###                slice_box_ax = fig.add_axes([0, 0, 0.01, 0.01])
+###                slice_box = TextBox(slice_box_ax, "", initial=str(int(sliders[selected_panel[0]].val)))
+###                slice_label = fig.text(0, 0, "slice", transform=fig.transFigure,
+###                                       ha="left", va="bottom", fontsize=9)
+###
+###                def apply_left_slice(text):
+###                    if slice_box_guard[0]:
+###                        return
+###                    i0 = selected_panel[0]
+###                    try:
+###                        k = int(str(text).strip())
+###                    except Exception:
+###                        update_selected_slice_box()
+###                        return
+###
+###                    ax_sel_local = axis_per_panel[i0]
+###                    n_ref = vols[i0].shape[ax_sel_local]
+###                    k = int(np.clip(k, 0, n_ref - 1))
+###
+###                    sl = sliders[i0]
+###                    sl.eventson = False
+###                    sl.set_val(k)
+###                    sl.eventson = True
+###
+###                    update_panel(i0, k)
+###
+###                    slice_box_guard[0] = True
+###                    try:
+###                        slice_box.set_val(str(k))
+###                    finally:
+###                        slice_box_guard[0] = False
+###
+###                slice_box.on_submit(apply_left_slice)
+###
+###            radio_ax = fig.add_axes([0, 0, 0.01, 0.01])
+###            radio = RadioButtons(
+###                radio_ax,
+###                AXIS_LABELS,
+###                active=axis_per_panel[selected_panel[0]] if per_panel_axis else int(cfg["axis"]),
+###            )
+###
+###            def on_axis_change(label):
+###                #new_axis = LABEL_TO_AXIS.get(label, None)
+###                #if new_axis is None:
+###                #    new_axis = 0 if "Z" in label else (1 if "Y" in label else 2)
+###                new_axis = LABEL_TO_AXIS.get(label, 0)
+###
+###                if per_panel_axis:
+###                    i0 = selected_panel[0]
+###                    axis_per_panel[i0] = new_axis
+###
+###                    new_n = vols[i0].shape[new_axis]
+###                    old_n = max(1, int(sliders[i0].valmax) + 1)
+###                    frac = float(sliders[i0].val) / max(old_n - 1, 1)
+###                    new_k = int(round(frac * (new_n - 1))) if new_n > 1 else 0
+###
+###                    new_k = set_slider_range(sliders[i0], new_n, new_k)
+###                    update_panel(i0, new_k)
+###                    if slice_box is not None:
+###                        update_selected_slice_box()
+###                else:
+###                    for j in range(len(vols)):
+###                        axis_per_panel[j] = new_axis
+###                        new_n = vols[j].shape[new_axis]
+###                        old_n = max(1, int(sliders[j].valmax) + 1)
+###                        frac = float(sliders[j].val) / max(old_n - 1, 1)
+###                        new_k = int(round(frac * (new_n - 1))) if new_n > 1 else 0
+###                        new_k = set_slider_range(sliders[j], new_n, new_k)
+###                        update_panel(j, new_k)
+###
+###            radio.on_clicked(on_axis_change)
+###
+###        # ---------------- marker controls (left panel) ----------------
+###        if enable_markers:
+###            mark_toggle_ax = fig.add_axes([0, 0, 0.01, 0.01])
+###            mark_toggle_btn = Button(mark_toggle_ax, "Marking: OFF")
+###
+###            undo_ax = fig.add_axes([0, 0, 0.01, 0.01])
+###            undo_btn = Button(undo_ax, "Undo")
+###
+###            clear_ax = fig.add_axes([0, 0, 0.01, 0.01])
+###            clear_btn = Button(clear_ax, "Clear")
+###
+###            def _set_marking_label():
+###                mark_toggle_btn.label.set_text("Mark: ON" if marking_enabled[0] else "Mark: OFF")
+###                fig.canvas.draw_idle()
+###
+###            def _toggle_marking(_evt):
+###                marking_enabled[0] = not marking_enabled[0]
+###                _set_marking_label()
+###
+###            def _undo_last(_evt):
+###                if not marker_stack:
+###                    return
+###                m = marker_stack[-1]
+###                _remove_marker(m, adjust_counter_if_last=True)
+###                fig.canvas.draw_idle()
+###
+###            def _clear_all(_evt):
+###                if not marker_stack:
+###                    return
+###
+###                while marker_stack:
+###                    m = marker_stack.pop()
+###                    try: m["line"].remove()
+###                    except Exception: pass
+###                    try: m["ann"].remove()
+###                    except Exception: pass
+###
+###                for ln in list(slider_tick_lines.values()):
+###                    try:
+###                        ln.remove()
+###                    except Exception:
+###                        pass
+###                slider_tick_lines.clear()
+###                marker_counts.clear()
+###
+###                marker_counter[0] = 0
+###                fig.canvas.draw_idle()
+###
+###            mark_toggle_btn.on_clicked(_toggle_marking)
+###            undo_btn.on_clicked(_undo_last)
+###            clear_btn.on_clicked(_clear_all)
+###
+###            _set_marking_label()
+###
+###        # ---------------- fixed pixel layout ----------------
+###        _need_relayout = [True]
+###        _draw_guard = [False]
+###
+###        def layout_all():
+###            w_px, h_px = canvas_wh_px()
+###
+###            if ((enable_axis_change and per_panel_axis and (panel_box_ax is not None)) or enable_markers):
+###                if left_panel_anchor_px[0] is None:
+###                    left_panel_anchor_px[0] = int(cfg["panel_box_rect"][0] * w_px)
+###                    left_panel_anchor_px[1] = int(cfg["panel_box_rect"][1] * h_px)
+###
+###            area_x0 = int(cfg["left"] * w_px)
+###            area_x1 = int(cfg["right"] * w_px)
+###            area_y0 = int(cfg["bottom"] * h_px)
+###            area_y1 = int(cfg["top"] * h_px)
+###
+###            if left_panel_anchor_px[0] is not None and left_panel_px > 0:
+###                lp_x0 = left_panel_anchor_px[0]
+###                area_x0 = max(area_x0, lp_x0 + BOX_W_PX + cfg["left_panel_gap_px"])
+###
+###            avail_w = max(area_x1 - area_x0, 10)
+###            avail_h = max(area_y1 - area_y0, 10)
+###
+###            internal_h = cfg["cbar_h_px"] + cfg["cbar_gap_px"] + cfg["slider_h_px"] + cfg["slider_pad_px"]
+###
+###            total_v_gaps = (rows - 1) * cfg["unit_hgap_px"]
+###            row_h = (avail_h - total_v_gaps) / max(rows, 1)
+###
+###            img_side_v = row_h - internal_h
+###            total_h_gaps = (cols - 1) * cfg["unit_wgap_px"]
+###            img_side_h = (avail_w - total_h_gaps) / max(cols, 1)
+###            img_side = int(max(5, min(img_side_v, img_side_h)))
+###
+###            unit_w = img_side
+###            unit_h = img_side + internal_h
+###
+###            grid_w = cols * unit_w + (cols - 1) * cfg["unit_wgap_px"]
+###            grid_h = rows * unit_h + (rows - 1) * cfg["unit_hgap_px"]
+###
+###            start_x = area_x0 if cfg["grid_align_x"] != "center" else area_x0 + max(0, (avail_w - grid_w) / 2)
+###            start_y = area_y0 if cfg["grid_align_y"] != "center" else area_y0 + max(0, (avail_h - grid_h) / 2)
+###
+###            for r in range(rows):
+###                for c in range(cols):
+###                    i = r * cols + c
+###                    if i >= len(vols):
+###                        continue
+###
+###                    ux0 = start_x + c * (unit_w + cfg["unit_wgap_px"])
+###                    uy0 = start_y + (rows - 1 - r) * (unit_h + cfg["unit_hgap_px"])
+###
+###                    sx0, sy0, sw, sh = ux0, uy0, unit_w * cfg["slider_len"], cfg["slider_h_px"]
+###                    cx0, cy0, cw, ch = ux0, sy0 + cfg["slider_h_px"] + cfg["slider_pad_px"], unit_w, cfg["cbar_h_px"]
+###                    ix0, iy0, iw, ih = ux0, cy0 + cfg["cbar_h_px"] + cfg["cbar_gap_px"], unit_w, img_side
+###
+###                    axs.ravel()[i].set_position([ix0 / w_px, iy0 / h_px, iw / w_px, ih / h_px])
+###                    cbar_axes[i].set_position([cx0 / w_px, cy0 / h_px, cw / w_px, ch / h_px])
+###                    slider_axes[i].set_position([sx0 / w_px, sy0 / h_px, sw / w_px, sh / h_px])
+###
+###            if enable_axis_change and per_panel_axis and (panel_box_ax is not None):
+###                lp_x0 = left_panel_anchor_px[0]
+###                lp_y0 = left_panel_anchor_px[1]
+###
+###                panel_box_ax.set_position([lp_x0 / w_px, lp_y0 / h_px, BOX_W_PX / w_px, BOX_H_PX / h_px])
+###                panel_label.set_position((lp_x0 / w_px, (lp_y0 + BOX_H_PX + LABEL_PAD_PX) / h_px))
+###
+###                slice_y0 = max(lp_y0 - BOX_H_PX - BOX_GAP_PX, 1)
+###                slice_box_ax.set_position([lp_x0 / w_px, slice_y0 / h_px, BOX_W_PX / w_px, BOX_H_PX / h_px])
+###                slice_label.set_position((lp_x0 / w_px, (slice_y0 + BOX_H_PX + LABEL_PAD_PX) / h_px))
+###
+###                radio_y0 = max(slice_y0 - RADIO_H_PX - RADIO_GAP_PX, 1)
+###                radio_ax.set_position([lp_x0 / w_px, radio_y0 / h_px, RADIO_W_PX / w_px, RADIO_H_PX / h_px])
+###
+###                if enable_markers:
+###                    btn1_y0 = max(radio_y0 - BTN_H_PX - BTN_GAP_PX, 1)
+###                    btn2_y0 = max(btn1_y0 - BTN_H_PX - BTN_GAP_PX, 1)
+###                    btn3_y0 = max(btn2_y0 - BTN_H_PX - BTN_GAP_PX, 1)
+###
+###                    mark_toggle_ax.set_position([lp_x0 / w_px, btn1_y0 / h_px, BTN_W_PX / w_px, BTN_H_PX / h_px])
+###                    undo_ax.set_position([lp_x0 / w_px, btn2_y0 / h_px, BTN_W_PX / w_px, BTN_H_PX / h_px])
+###                    clear_ax.set_position([lp_x0 / w_px, btn3_y0 / h_px, BTN_W_PX / w_px, BTN_H_PX / h_px])
+###
+###            elif enable_markers and left_panel_anchor_px[0] is not None:
+###                lp_x0 = left_panel_anchor_px[0]
+###                lp_y0 = left_panel_anchor_px[1]
+###
+###                btn1_y0 = lp_y0
+###                btn2_y0 = max(btn1_y0 - BTN_H_PX - BTN_GAP_PX, 1)
+###                btn3_y0 = max(btn2_y0 - BTN_H_PX - BTN_GAP_PX, 1)
+###
+###                mark_toggle_ax.set_position([lp_x0 / w_px, btn1_y0 / h_px, BTN_W_PX / w_px, BTN_H_PX / h_px])
+###                undo_ax.set_position([lp_x0 / w_px, btn2_y0 / h_px, BTN_W_PX / w_px, BTN_H_PX / h_px])
+###                clear_ax.set_position([lp_x0 / w_px, btn3_y0 / h_px, BTN_W_PX / w_px, BTN_H_PX / h_px])
+###
+###        def _on_resize(_evt):
+###            _need_relayout[0] = True
+###            fig.canvas.draw_idle()
+###
+###        def _on_draw(_evt):
+###            if _draw_guard[0]:
+###                _draw_guard[0] = False
+###                return
+###            if _need_relayout[0]:
+###                _need_relayout[0] = False
+###                layout_all()
+###                _draw_guard[0] = True
+###                fig.canvas.draw_idle()
+###
+###        # ---------------- click selection + marking ----------------
+###        click_cid = None
+###        if cfg["enable_click_select"] or enable_markers:
+###            def on_click(event):
+###                if event.inaxes is None:
+###                    return
+###                if event.inaxes in axes_to_panel:
+###                    panel_i = axes_to_panel[event.inaxes]
+###                    set_selected_panel(panel_i)
+###
+###                    if enable_markers and marking_enabled[0] and (event.inaxes in image_axes_set) and (event.button == 1):
+###                        if event.xdata is None or event.ydata is None:
+###                            return
+###
+###                        ax_sel = int(axis_per_panel[panel_i])
+###                        k = int(sliders[panel_i].val)
+###
+###                        if panel_i not in slice_off or panel_i not in slice_data or panel_i not in slice_hw:
+###                            slc_tmp = get_slice(vols[panel_i], ax_sel, k)
+###                            _update_slice_cache(panel_i, slc_tmp)
+###
+###                        h, w = slice_hw[panel_i]
+###                        x0, y0 = slice_off[panel_i]
+###                        slc = slice_data[panel_i]
+###
+###                        x = int(np.floor((event.xdata - x0) + 0.5))
+###                        y = int(np.floor((event.ydata - y0) + 0.5))
+###                        if not (0 <= x < w and 0 <= y < h):
+###                            return
+###
+###                        hit = _find_marker_hit(panel_i, event, x0, y0)
+###                        if hit is not None:
+###                            _remove_marker(hit, adjust_counter_if_last=True)
+###                            fig.canvas.draw_idle()
+###                            return
+###
+###                        val = float(slc[y, x])
+###                        v_txt = VALUE_FMT.format(val)
+###
+###                        if ax_sel == 0:
+###                            z, yv, xv = k, y, x
+###                        elif ax_sel == 1:
+###                            z, yv, xv = y, k, x
+###                        else:
+###                            z, yv, xv = y, x, k
+###
+###                        letter = _index_to_label(marker_counter[0])
+###                        label = f"{letter}: [{z},{yv},{xv}]={v_txt}"
+###                        marker_counter[0] += 1
+###
+###                        xf = x0 + x
+###                        yf = y0 + y
+###
+###                        ax = axs.ravel()[panel_i]
+###                        line, = ax.plot(
+###                            [xf], [yf],
+###                            marker="x", linestyle="None",
+###                            markersize=6, markeredgewidth=1.4,
+###                            color="yellow", zorder=5
+###                        )
+###                        ann = ax.annotate(
+###                            label,
+###                            (xf, yf),
+###                            xytext=(6, 6),
+###                            textcoords="offset points",
+###                            fontsize=8,
+###                            color="yellow",
+###                            bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.45, lw=0),
+###                            zorder=6,
+###                        )
+###
+###                        marker_stack.append(
+###                            {"panel": panel_i, "axis": ax_sel, "k": k, "x": x, "y": y, "line": line, "ann": ann}
+###                        )
+###
+###                        _inc_marker_count(panel_i, ax_sel, k)
+###                        fig.canvas.draw_idle()
+###
+###            click_cid = fig.canvas.mpl_connect("button_press_event", on_click)
+###
+###        # ---------------- keyboard navigation ----------------
+###        key_cid = None
+###        if cfg["enable_keyboard_nav"]:
+###            def on_key(event):
+###                if event.key is None:
+###                    return
+###                parts = str(event.key).split("+")
+###                base = parts[-1]
+###                mods = set(parts[:-1])
+###
+###                if base not in ("left", "right"):
+###                    return
+###
+###                i = selected_panel[0]
+###                if i not in sliders:
+###                    return
+###
+###                step = 1
+###                if "shift" in mods:
+###                    step = 10
+###                if "ctrl" in mods or "control" in mods:
+###                    step = 5
+###                if base == "left":
+###                    step = -step
+###
+###                ax_sel_local = axis_per_panel[i]
+###                n_ref = vols[i].shape[ax_sel_local]
+###                k0 = int(sliders[i].val)
+###                k = int(np.clip(k0 + step, 0, n_ref - 1))
+###                if k == k0:
+###                    return
+###
+###                sl = sliders[i]
+###                sl.eventson = False
+###                sl.set_val(k)
+###                sl.eventson = True
+###                update_panel(i, k)
+###
+###                if per_panel_axis and (slice_box is not None):
+###                    slice_box_guard[0] = True
+###                    try:
+###                        slice_box.set_val(str(k))
+###                    finally:
+###                        slice_box_guard[0] = False
+###
+###            key_cid = fig.canvas.mpl_connect("key_press_event", on_key)
+###
+###        # keep refs alive (ipympl)
+###        fig._volume_grid_layout_all = layout_all
+###        fig._volume_grid_axes_to_panel = axes_to_panel
+###        fig._volume_grid_click_cid = click_cid
+###        fig._volume_grid_key_cid = key_cid
+###        fig._volume_grid_radio = radio
+###        fig._volume_grid_panel_box = panel_box
+###        fig._volume_grid_slice_box = slice_box
+###        fig._volume_grid_marker_buttons = (mark_toggle_btn, undo_btn, clear_btn)
+###
+###        fig.canvas.draw()
+###        layout_all()
+###        fig.canvas.draw_idle()
+###        fig.canvas.mpl_connect("resize_event", _on_resize)
+###        fig.canvas.mpl_connect("draw_event", _on_draw)
+###
+###        plt.show()
+###
+###        state = {
+###            "layout_all": layout_all,
+###            "selected_panel": selected_panel,
+###            "axis_per_panel": axis_per_panel,
+###            "sliders": sliders,
+###            "images": images,
+###            "markers": marker_stack,
+###            "marking_enabled": marking_enabled,
+###            "click_cid": click_cid,
+###            "key_cid": key_cid,
+###            "marker_counts": marker_counts,
+###            "slider_tick_lines": slider_tick_lines,
+###        }
+###        return fig, axs, state
 
 
 class PathTools:
@@ -3850,6 +4928,36 @@ class PathTools:
         # Case 3: path does not exist at all
         Console.printf("error", f"Path does not exist: {p}", mute=not verbose)
         return None
+
+    @staticmethod
+    def exists(path: str | Path, verbose=False) -> bool:
+        """
+        Simply checks if the path exists
+
+        :param path: the path as string of Path object
+        :return: True if it exists and False if not
+        """
+        path = Path(path)
+        path_exists = path.exists()
+
+        if path_exists:
+            Console.printf("info", f"The path exists: {path}", mute=not verbose)
+        else:
+            Console.printf("warning", f"The path does not exists: {path}", mute=not verbose)
+
+        return path_exists
+
+    @staticmethod
+    def shorten_path(path: str | Path, level: int = 2):
+        """
+
+        :param path:
+        :param level:
+        :return:
+        """
+        parts = path.replace("\\", "/").split("/")
+        path_short = "/".join(parts[-(level+1):])
+        return path_short
 
 
 
@@ -3964,7 +5072,7 @@ class MRSIVolume:
         :param legend_position: see matplotlib.
         :param figsize: figure size of the whole figure.
         :param show_metabolites_ideal_position: if True and x_type=='ppm', overlays metabolite real
-                                                ppm positions (loaded from chemical_compounds.json).
+                                                ppm positions (loaded from chemical_compounds_OLD.json).
         :return: Nothing
         """
 
@@ -4094,7 +5202,7 @@ class MRSIVolume:
                                                   ncols=2,
                                                   gridspec_kw={'width_ratios': [5, 1]})
 
-        # 3b) Plot bands FIRST so center lines stay on top.
+        # 3b) PlotInterface bands FIRST so center lines stay on top.
         #     Order: widest band (p5-p95) at the bottom, then std, then iqr.
         if "p5_p95_band" in show_statistics:
             ax_main.fill_between(scales, stats_data["p5"], stats_data["p95"],
@@ -4111,14 +5219,14 @@ class MRSIVolume:
                                  color="C1", alpha=0.30, linewidth=0,
                                  label="IQR (Q25-Q75)", zorder=3)
 
-        # 3c) Plot min/max as thin lines (independent of any chosen band)
+        # 3c) PlotInterface min/max as thin lines (independent of any chosen band)
         if "minmax_lines" in show_statistics:
             ax_main.plot(scales, stats_data["min"], color="C3", lw=0.6, alpha=0.7,
                          label="Min", zorder=4)
             ax_main.plot(scales, stats_data["max"], color="C3", lw=0.6, alpha=0.7,
                          label="Max", zorder=4)
 
-        # 3d) Plot center lines (drawn last => on top)
+        # 3d) PlotInterface center lines (drawn last => on top)
         if "mean" in show_statistics:
             ax_main.plot(scales, stats_data["mean"], color="C0", lw=1.3,
                          label="Mean", zorder=5)
@@ -4134,7 +5242,7 @@ class MRSIVolume:
         ax_top = None
         if show_metabolites_ideal_position and x_type == "ppm":
             # To load the data and assign it to the object variable
-            path = Path.cwd().parent / "docs" / "chemical_compounds.json"
+            path = Path.cwd().parent / "docs" / "chemical_compounds_OLD.json"
             with path.open("r", encoding="utf-8") as f:
                 compounds = json.load(f)
 

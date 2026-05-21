@@ -10,7 +10,7 @@ from tools import JsonConverter, UnitTools, JupyterPlotManager, SpaceEstimator, 
 from fsl_mrs.utils.mrs_io import jmrui_io, read_basis
 from spec2nii import jmrui
 
-from configurator import Configurator
+from resources import Configurator
 import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
 from tools import deprecated, ArrayTools, PathTools, DictionaryTools
@@ -27,7 +27,7 @@ import sys
 import os
 from typing import TYPE_CHECKING
 
-from interface import WorkingSource, Plot
+from interface import WorkingSource, PlotInterface
 from spectral_spatial_simulation import FID as SpectralSpatialFID
 
 # Just for type annotations
@@ -632,7 +632,7 @@ class NeuroImage:
 
 
 # TODO: Use ParameterMaps instead!!! & REMOVE THIS IN FUTURE!
-class Mask(Plot):
+class Mask(PlotInterface):
     """
     For loading a mask from a file (e.g., metabolic mask, lipid mask, B0 inhomogeneities, ...). It requires a
     available JSON configuration file. See :class: `Configurator`.
@@ -731,7 +731,7 @@ class MetabolicAtlas:
         pass
 
 
-class ParameterMaps(WorkingSource[ParameterVolume], Plot):
+class ParameterMaps(WorkingSource[ParameterVolume], PlotInterface):
     """
     This class can be used at the moment for various purposes:
 
@@ -754,6 +754,7 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
 
     def __init__(self, configurator: Configurator, map_type_name: str):
         self.configurator = configurator
+        self.configurator.load()
 
 
         # TODO: CHANGE HERE TO MAKE MORE FLEXIBLE ==> from map_type_name ==> map_key? OR REMOVE HERE?!
@@ -788,8 +789,6 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
         if self.file_type not in self.file_type_allowed:
             Console.printf("error", f"Only possible to load formats: {self.file_type_allowed}. But it was given: {self.file_type}")
             sys.exit()
-
-        self.configurator.load()
 
 
     # TODO: LET PROGRAM DECIDE IF PROVIDED PATH IS FOLDER OR FILE LIKE IN CLASS: BasisSet
@@ -939,10 +938,14 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
             Console.printf("error", "Could not convert to base units.")
 
     def plot(self, cmap="viridis"):
-        fig, axs = plt.subplots(figsize=(15, 2), ncols=len(self.loaded_maps.items()), nrows=1, cmap=cmap)
+        number_maps = len(self.loaded_maps.items())
+        fig, axs = plt.subplots(figsize=(15, 2), ncols=number_maps, nrows=1)
+
+        # makes list if just one map, else already list:
+        axs = [axs] if number_maps == 1 else axs
 
         for i, (key, value) in enumerate(self.loaded_maps.items()):
-            image = axs[i].imshow(value[:, :, 40])
+            image = axs[i].imshow(value[:, :, 40], cmap=cmap)
             axs[i].set_title(key)
             axs[i].set_axis_off()
 
@@ -974,7 +977,7 @@ class ParameterMaps(WorkingSource[ParameterVolume], Plot):
         # Create for each metabolite a Parameter Map and add it to the Parameter Volume
         for metabolite, data in self.loaded_maps.items():
             parameter_map = ParameterMap(map_type=self.map_type_name, metabolite_name=metabolite, values=data, unit=self.loaded_maps_unit, affine=None)
-            volume.add_map(map=parameter_map, verbose=False)
+            volume.add_map(map_object=parameter_map, verbose=False)
 
         # To create from all the 3D volumes inside the ParameterVolume actually one 4D volume
         volume.to_volume(verbose=verbose)
@@ -1080,7 +1083,7 @@ class FID(WorkingSource[SpectralSpatialFID]):
         Console.printf_collected_lines("success")
 
 
-class CoilSensitivityMaps(WorkingSource["SamplingCoilSensitivityVolume"], Plot):
+class CoilSensitivityMaps(WorkingSource["SamplingCoilSensitivityVolume"], PlotInterface):
     """
     For loading and interpolating the coil sensitivity maps. At the moment, only HDF5 files are supported.
     The maps can be interpolated on 'cpu' and desired 'gpu'. It is strongly recommended to use the 'gpu'
@@ -1177,7 +1180,7 @@ class CoilSensitivityMaps(WorkingSource["SamplingCoilSensitivityVolume"], Plot):
 
     def plot(self, cmap: str = "gray", **kwargs):
         """
-        Plot one slice per coil.
+        PlotInterface one slice per coil.
         """
 
         slice_position = kwargs.pop("slice_position", None)
