@@ -646,7 +646,7 @@ class FID:
 ###        for fid in tqdm(self.fid, total=len(self.fid.signal)):
 ###            # (1) Prepare the data & reshape it ########################################################################
 ###            #   1a) Get the name of the metabolite (unpack from the list)
-###            metabolite_name = fid.name[0]
+###            map_name = fid.name[0]
 ###
 ###            #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
 ###            fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
@@ -658,8 +658,8 @@ class FID:
 ###            mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
 ###            mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
 ###            #   1f) Get T1 and T2 of respective metabolite with the metabolite name
-###            metabolic_map_t2 = self.metabolic_property_maps[metabolite_name].t2
-###            metabolic_map_t1 = self.metabolic_property_maps[metabolite_name].t1
+###            metabolic_map_t2 = self.metabolic_property_maps[map_name].t2
+###            metabolic_map_t1 = self.metabolic_property_maps[map_name].t1
 ###
 ###            # (2) Convert arrays in graph to cupy or numpy (depending on computation on cpu or gpu)
 ###            fid_signal  = GPUTools.dask_map_blocks(fid_signal,            device=self.compute_on_device)
@@ -717,7 +717,7 @@ class FID:
 ###
 ###
 ###            # (5) Include 4D volume with spatial concentration, thus FID gets scaled locally ###########################
-###            concentration = self.metabolic_property_maps[metabolite_name].concentration # get respective metabolite map
+###            concentration = self.metabolic_property_maps[map_name].concentration # get respective metabolite map
 ###            concentration = GPUTools.dask_map_blocks(concentration, device=self.compute_on_device)
 ###            volume_metabolite *= concentration # scale it
 ###

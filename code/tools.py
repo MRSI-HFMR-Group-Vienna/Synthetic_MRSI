@@ -2227,8 +2227,8 @@ class DictionaryTools:
         dict has become more deeply nested (e.g. after a JSON schema change).
 
         Example:
-            Before: MyClass.get_path(map_type="T1")                 -> dict["T1"]
-            After:  MyClass.get_path(map_type="maps.structured.T1") -> dict["maps"]["structured"]["T1"]
+            Before: MyClass.get_path(map_type_name="T1")                 -> dict["T1"]
+            After:  MyClass.get_path(map_type_name="maps.structured.T1") -> dict["maps"]["structured"]["T1"]
 
             The method's signature stays the same; only the key string changes.
 

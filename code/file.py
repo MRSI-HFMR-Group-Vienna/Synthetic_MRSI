@@ -1406,8 +1406,8 @@ class ParameterMaps(WorkingSourceInterface[ParameterVolume], PlotInterface):
             self.loaded_maps[name] = loaded_map
 
             Console.add_lines(
-                f"  {i}: working name: {name:.>10} | {'Shape:':<8} {loaded_map.shape} | "
-                f"Values range: [{round(np.nanmin(loaded_map), 3)}, {round(np.nanmax(loaded_map), 3)}] "
+                f"  {i+1}: working name: {name:.>10} | {'Shape:':<8} {loaded_map.shape} | "
+                f"Values range: [{np.nanmin(loaded_map):3f}, {np.nanmax(loaded_map):3f}] "
                 f"| Unit: {self.loaded_maps_unit} |"
             )
 
@@ -1415,6 +1415,28 @@ class ParameterMaps(WorkingSourceInterface[ParameterVolume], PlotInterface):
             Console.printf_collected_lines("success")
 
         return self
+
+    def split_to_individual_maps(self):
+
+        if self.loaded_maps is None:
+            Console.printf("error", f"Load maps first and then try to split it!")
+            return
+
+        # Check first if just one name ist available, if multiple, then already individual maps
+        if len(self.loaded_maps.keys()) == 1:
+            name = next(iter(self.loaded_maps.keys()))
+            arrays = self.loaded_maps[name]
+
+            loaded_maps = {}
+
+            for i in range(arrays.shape[0]):
+                loaded_maps[f"{name}_{i}"] = arrays[i, ...]
+
+            self.loaded_maps = loaded_maps
+            Console.printf("success", f"Created from one map of shape {arrays.shape} -> {i+1} maps of shape {loaded_maps[f'{name}_0'].shape}")
+        else:
+            Console.printf("error","Not possible to create individual maps since already individual maps are present!")
+
 
     def _get_map_config(self, map_key: str) -> dict:
         """
@@ -1728,8 +1750,8 @@ class ParameterMaps(WorkingSourceInterface[ParameterVolume], PlotInterface):
         # Create for each metabolite a Parameter Map and add it to the Parameter _Volume
         for metabolite, data in self.loaded_maps.items():
             parameter_map = ParameterMap(
-                map_type=self.map_type_name,
-                metabolite_name=metabolite,
+                map_type_name=self.map_type_name,
+                map_name=metabolite,
                 values=data,
                 unit=self.loaded_maps_unit,
                 affine=self.affine,

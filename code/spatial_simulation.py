@@ -62,14 +62,14 @@ class ParameterMap(InterpolationInterface):
     change the unit and the data type.
     """
     def __init__(self,
-                 map_type: str,
-                 metabolite_name: str,
+                 map_type_name: str,
+                 map_name: str,
                  values: np.ndarray | np.memmap=None,
                  unit: pint.Unit=None,
                  affine: np.ndarray=None):
 
-        self.map_type: str = map_type                 # e.g., T1
-        self.metabolite_name: str = metabolite_name   # e.g., NAA
+        self.map_type: str = map_type_name            # e.g., T1
+        self.map_name: str = map_name                 # e.g., NAA
         self.values: np.ndarray = values              # a numpy array
         self.unit: pint.Unit = unit                   # the unit
         self.affine: np.ndarray = affine              # TODO: Not yet used. E.g., if volumes obtain a different orientation.
@@ -217,7 +217,7 @@ class ParameterMap(InterpolationInterface):
         """
 
         if self.values.dtype.kind != "c":
-            Console.printf("error", f"Cannot complex conjugate the values of the Parameter Map '{self.metabolite_name}' "
+            Console.printf("error", f"Cannot complex conjugate the values of the Parameter Map '{self.map_name}' "
                                     f"with data type: {self.values.dtype}")
         else:
             xp = ArrayTools.get_backend(self.values)
@@ -233,7 +233,7 @@ class ParameterMap(InterpolationInterface):
 
         Console.add_lines(f"The parameter map contains the following properties:")
         Console.add_lines(f" => {'map type: ':.<20} {self.map_type}")
-        Console.add_lines(f" => {'metabolite: ':.<20} {self.metabolite_name}")
+        Console.add_lines(f" => {'map name: ':.<20} {self.map_name}")
         Console.add_lines(f" => {'unit: ':.<20} {self.unit}")
         Console.add_lines(f" => {'values shape: ':.<20} {self.values.shape}")
         Console.add_lines(f" => {'values data type: ':.<20} {self.values.dtype}")
@@ -253,7 +253,7 @@ class ParameterVolume(InterpolationInterface):
 
         # Relevant fields after the 4D volume is created:
         self.volume: np.ndarray = None
-        self.metabolites: list[str] = [] # list of names of the metabolites, corresponds to the 4D array (1st dimension)
+        self.names: list[str] = [] # list of names of the metabolites or other maps, corresponds to the 4D array (1st dimension)
         self.unit: list = []
         self.data_type = None
 
@@ -271,10 +271,10 @@ class ParameterVolume(InterpolationInterface):
             sys.exit()
 
         self.maps.append(map_object)
-        Console.printf("success", f"Added to Parameter Maps of type {self.maps_type} the metabolite: {map_object.metabolite_name}.", mute=not verbose)
+        Console.printf("success", f"Added to Parameter Maps of type {self.maps_type} the map: {map_object.map_name}.", mute=not verbose)
 
     def simulate_dummy_map(self,
-                           metabolite_name: str,
+                           map_name: str,
                            fill_value: int | float,
                            mask: np.ndarray | list[np.ndarray] = None,
                            unit: pint.Unit = None,
@@ -293,7 +293,7 @@ class ParameterVolume(InterpolationInterface):
 
         :param unit: The unit of the ParameterMap (pint.Unit)
         :param mask: One of multiple masks in a list or None
-        :param metabolite_name: the name of the metabolite for what the dummy data will be created
+        :param map_name: the name of the metabolite for what the dummy data will be created
         :param fill_value: The fill value or values in list (need the same length then mask)
 
         :param target_gpu_interpolate: If if created values (array) of the Parameter Map does not fit the other ParameterMaps
@@ -304,8 +304,8 @@ class ParameterVolume(InterpolationInterface):
         """
 
         for m in self.maps:
-            if m.metabolite_name == metabolite_name:
-                Console.printf("error", f"The metabolite name '{metabolite_name}' already exists! Therefore, cannot be created!")
+            if m.map_name == map_name:
+                Console.printf("error", f"The map name '{map_name}' already exists! Therefore, cannot be created!")
                 return
 
         # The shape required for the final ParameterMap.
@@ -316,7 +316,7 @@ class ParameterVolume(InterpolationInterface):
         shape_create_volume = None if mask is None else self.maps[0].values.shape
 
         # To create the dummy values Parameter Map
-        parameter_map = ParameterMap(map_type=self.maps_type, metabolite_name=metabolite_name).create_dummy_volume(shape=shape_create_volume, fill_value=fill_value, mask=mask, unit=unit)
+        parameter_map = ParameterMap(map_type_name=self.maps_type, map_name=map_name).create_dummy_volume(shape=shape_create_volume, fill_value=fill_value, mask=mask, unit=unit)
 
         # If the shape of the created volume (in the ParameterMap) does not fit the shape of the
         # shape of the ParameterMaps already collected in this object (of Parameter _Volume).
@@ -368,7 +368,7 @@ class ParameterVolume(InterpolationInterface):
 
         # When no Parameter Map is in the list
         if not self.maps:
-            Console.printf("error", "First add at least one 3D Parameter Map to the object to create a 4D volume.")
+            Console.printf("error", "First add at least one Parameter Map to the object to create a stacked volume.")
             return
         # When at least one Parameter Map is in the list
         else:
@@ -386,7 +386,6 @@ class ParameterVolume(InterpolationInterface):
 
         return self
 
-
     def drop(self, name: str | list[str]):
         """
         Possible to remove one or multiple maps by name(s). This also remove it from the volume.
@@ -394,42 +393,52 @@ class ParameterVolume(InterpolationInterface):
         :param name: name of the desired chemical compound or metabolite
         :return: The object itself
         """
+        if isinstance(name, str):
+            name = [name]
 
-        if name not in self.metabolites:
-            Console.printf("error", f"Cannot drop '{name}' since not exist. Only possible: {self.metabolites}.")
-            return self
-        else:
-            if isinstance(name, str):
-                names = [name]
-            else:
-                names = name
+        # Check if all names are valid
+        invalid = [n for n in name if n not in self.names]
+        if invalid:
+            Console.add_lines("cannot drop:")
+            for n in invalid:
+                Console.add_lines(f" -> {n}")
 
-            Console.add_lines("Removed the following from Parameter _Volume:")
-            for name in names:
-                # Find the index and the array to remove
-                name_index = self.metabolites.index(name)
-                array_to_delete = self.volume[:, name_index, ...]
+            Console.add_lines("Only possible:")
+            for n in self.names:
+                Console.add_lines(f" -> {n}")
 
-                # Get the backend (cupy or numpy)
-                xp = ArrayTools.get_backend(self.volume)
-                self.volume = xp.delete(array_to_delete, name_index, axis=1)
-
-                # Remove it from the list here
-                self.metabolites.remove(name)
-
-                # Remove it from also from the list of maps
-                self.maps.pop(name_index)
-
-                Console.add_lines(f" => {name}")
-            Console.printf_collected_lines("success")
+            Console.printf_collected_lines("error")
 
             return self
+
+        Console.add_lines("Removed the following from ParameterVolume:", tag="drop")
+        for n in name:
+            # Find the index and the array to remove
+            name_index = self.names.index(n)
+
+            # Get the backend (cupy or numpy)
+            xp = ArrayTools.get_backend(self.volume)
+            self.volume = xp.delete(self.volume, name_index, axis=0)
+
+            # Remove it from the list here
+            self.names.remove(n)
+
+            # Remove it from also from the list of maps
+            self.maps.pop(name_index)
+
+            #print(n)
+
+            Console.add_lines(f" => {n}", tag="drop")
+        Console.printf_collected_lines("success", tag="drop")
+
+        return self
 
 
     def to_volume(self, verbose=True):
         """
-        To create 4D volume out of individual 3D volumes. Thus, 3D maps of different metabolites by same map type (e.g. T1)
-        are assembled to one 4D array of (metabolite, X,Y,Z).
+        To create one stacked volume out of individual parameter map arrays. Maps of different metabolites with
+        the same map type, e.g. T1, are assembled to one array with shape (metabolite, *map_shape).
+        Note: But this class can also be used for other map types, not only metabolites!
 
         :param verbose: if True then prints to the console.
         :return: the object itself
@@ -452,26 +461,27 @@ class ParameterVolume(InterpolationInterface):
 
             units = set([m.unit for m in self.maps])
             if len(shapes) > 1:
-                Console.printf("error", f"Cannot create 4D array of the 3D arrays since they exhibiting different shapes: {shapes}")
+                Console.printf("error", f"Cannot create stacked volume since the parameter map arrays exhibit different shapes: {shapes}")
 
             # 3 check all objects same unit
             elif len(units) > 1:
-                Console.add_lines("Cannot create 4D array of the 3D arrays since they exhibit different units:")
+                Console.add_lines("Cannot create stacked volume since the parameter maps exhibit different units:")
                 for m in self.maps:
-                    Console.add_lines(f" > {m.metabolite_name:.<15}: {str(m.unit):<10}")
+                    Console.add_lines(f" > {m.map_name:.<15}: {str(m.unit):<10}")
                 Console.printf_collected_lines("error")
-            # 4 All objects are of same map type, exhibit same shape (X,Y,Z) and also h ave the same unit
+
+            # 4 All objects are of same map type, exhibit same shape (..., X,Y,Z) and also h ave the same unit
             else:
                 for m in self.maps:
-                    metabolites.append(m.metabolite_name)
-                    #volumes.append(m.values)  # shape (X,Y,Z)
+                    metabolites.append(m.map_name)
+                    #volumes.append(m.values)  # shape (..., X,Y,Z)
                     volumes.append(next(iter(m.values.values())) if isinstance(m.values, dict) else m.values)  # shape (X,Y,Z)
 
-                self.metabolites = metabolites
-                self.volume = np.stack(volumes, axis=0)       # shape (metabolite, X,Y,Z)
+                self.names = metabolites
+                self.volume = np.stack(volumes, axis=0)       # shape (...W,X,Y,Z)
                 self.unit = self.maps[0].unit               # tale unit of first object since all must exhibit the in the list at this point (see above)
                 Console.printf("success",
-                               f"Created 4D volume of metabolite maps: {self.metabolites}. \n"
+                               f"Created stacked volume of the following maps: {self.names}. \n"
                                f" {'Map type: ':.<17} {self.maps_type} \n"
                                f" {'Unit: ':.<17} {self.unit} \n"
                                f" {'Shape: ':.<17} {self.volume.shape} \n"
@@ -557,7 +567,7 @@ class ParameterVolume(InterpolationInterface):
         :param metabolites: list of metabolites. E.g., ["NAA", "Glu", Glx", ...]
         :return: the object itself
         """
-        current_order = list(self.metabolites)  # current metabolite names
+        current_order = list(self.names)  # current metabolite names
         desired_order = list(metabolites)  # desired metabolite names
 
         # Error if there are not the same metabolite names inside both lists
@@ -576,13 +586,13 @@ class ParameterVolume(InterpolationInterface):
 
             # (Option A) Reorder the metabolites in the list (of ParameterMaps)
             if self.maps is not None:
-                # If maps is a list aligned with self.metabolites
+                # If maps is a list aligned with self.names
                 if len(self.maps) != len(current_order):
                     Console.printf("error", f"Containing {len(self.maps)} Parameter Maps but metabolites length is {len(current_order)}")
                 else:
                     self.maps = [self.maps[i] for i in perm]
                     # Update metabolite order names in list
-                    self.metabolites = desired_order
+                    self.names = desired_order
             else:
                 Console.printf("warning", "The Parameter Maps cannot eb sorted since no elements are available.")
 
@@ -593,7 +603,7 @@ class ParameterVolume(InterpolationInterface):
                 else:
                     self.volume = self.volume[perm, ...]
                     # Update metabolite order names in list
-                    self.metabolites = desired_order
+                    self.names = desired_order
             else:
                 Console.printf("warning", "The metabolite axis of the volume cannot be rearranged since it is empty. Run 'to_volume' first!")
 
@@ -610,7 +620,7 @@ class ParameterVolume(InterpolationInterface):
 
         Console.add_lines(f"The parameter map contains the following properties:")
         Console.add_lines(f" => {'maps type: ':.<20} {self.maps_type}")
-        Console.add_lines(f" => {'metabolites: ':.<20} {self.metabolites}")
+        Console.add_lines(f" => {'maps names: ':.<20} {self.names}")
         Console.add_lines(f" => {'unit: ':.<20} {self.unit}")
         Console.add_lines(f" => {'values shape: ':.<20} {self.volume.shape}")
         Console.add_lines(f" => {'values data type: ':.<20} {self.volume.dtype}")
@@ -639,13 +649,13 @@ class ParameterVolume(InterpolationInterface):
 
             if display == "maps":
                 maps_volumes_list = [m.values for m in self.maps]
-                maps_names_list = [m.metabolite_name for m in self.maps]
+                maps_names_list = [m.map_name for m in self.maps]
             elif display == "volume":
                 if self.volume is None:
                     Console.printf("error", "Cannot display the volume. Run to_volume first to create the 4D volume.")
                 else:
                     maps_volumes_list = list(self.volume)
-                    maps_names_list = self.metabolites
+                    maps_names_list = self.names
             else:
                 # I assume this cas will never happen ;)
                 Console.printf("error", "An error occurred while trying to display the volume.")
