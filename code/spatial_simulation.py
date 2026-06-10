@@ -14,7 +14,7 @@ import cupy as cp
 import pint
 import sys
 
-from interface import Interpolation
+from interface import InterpolationInterface
 
 
 class Model:
@@ -55,7 +55,7 @@ class MetabolicAtlas:
         raise NotImplementedError("This method is not yet implemented")
 
 
-class ParameterMap(Interpolation):
+class ParameterMap(InterpolationInterface):
     """
     This holds a map of a certain type (e.g., T1) of a certain metabolite (e.g., NAA). It's possible to interpolate
     the map to a certain target shape and to push it to the respective device (GPU <-> CPU). Ist also possible to
@@ -91,11 +91,12 @@ class ParameterMap(Interpolation):
 
         return self
 
-    def interpolate(self, target_size: tuple, order: int, device: str, target_gpu: int = 0, verbose: bool=False):
+    def interpolate(self, target_size: tuple, order: int, compute_on_device: str = "cpu", target_gpu: int = 0, return_on_device: str = "cpu",verbose: bool=False):
         """
         To interpolate a volume to a certain size with a certain order.
 
-        :param device: on which device it should be computed
+        :param compute_on_device: on which device it should be computed
+        :param return_on_device: on which device it should be returned (not yet possible to specify the gpu id)
         :param target_size: the desired shape
         :param order: the interpolation order
         :param target_gpu: When gpu is used then the index of the gpu. By default, the first one.
@@ -106,8 +107,8 @@ class ParameterMap(Interpolation):
         self.values = InterpolationTools.interpolate(array=self.values,
                                                      target_size=target_size,
                                                      order=order,
-                                                     compute_on_device=device,
-                                                     return_on_device="cpu",
+                                                     compute_on_device=compute_on_device,
+                                                     return_on_device=return_on_device,
                                                      target_gpu=target_gpu,
                                                      verbose=verbose)
 
@@ -176,7 +177,8 @@ class ParameterMap(Interpolation):
     def create_dummy_volume(self,
                             shape: tuple = None,
                             fill_value: float | int | list[int | float] = None,
-                            mask: np.ndarray | list[np.ndarray] = None):
+                            mask: np.ndarray | list[np.ndarray] = None,
+                            unit: pint.Unit = None):
         """
         For now this only supports the following:
 
@@ -192,6 +194,7 @@ class ParameterMap(Interpolation):
                                     The weight(mask_WM) + weight(mask_WM) need to sum up to 1 everywhere
 
 
+        :param unit: The unit of the created array (as pint.Unit)
         :param shape: shape as tuple (e.g., (X, Y, Z, ...)
         :param fill_value: one scalar or array of values
         :param mask: one scalar or array of values
@@ -200,9 +203,26 @@ class ParameterMap(Interpolation):
 
         # Create the array and assign to the current object
         self.values = ArrayTools.create_volume(shape=shape, value=fill_value, mask=mask)
+        self.unit = unit
 
         # Return the object itself with now the created array for the self.values
         return self
+
+
+    def conjugate(self, verbose: bool=False):
+        """
+        The complex conjugate of a complex number is obtained by changing the sign of its imaginary part.
+
+        :return: Nothing
+        """
+
+        if self.values.dtype.kind != "c":
+            Console.printf("error", f"Cannot complex conjugate the values of the Parameter Map '{self.metabolite_name}' "
+                                    f"with data type: {self.values.dtype}")
+        else:
+            xp = ArrayTools.get_backend(self.values)
+            self.values = xp.conjugate(self.values)
+            Console.printf("success", "Complex conjugated the volume of the ParameterMap.", mute=not verbose)
 
 
     def __str__(self):
@@ -222,7 +242,7 @@ class ParameterMap(Interpolation):
         return "\n"
 
 
-class ParameterVolume(Interpolation):
+class ParameterVolume(InterpolationInterface):
     """
     Can only be of one type of map (e.g., T1, or T2, ...), but it should be with multiple metabolites.
     """
@@ -253,19 +273,11 @@ class ParameterVolume(Interpolation):
         self.maps.append(map_object)
         Console.printf("success", f"Added to Parameter Maps of type {self.maps_type} the metabolite: {map_object.metabolite_name}.", mute=not verbose)
 
-#    def simulate_dummy_map(self):
-#        # input parameters => a: only one value (for e.g., water)
-#        #                     b: only one value for GM, WM, CSF (for e.g., water)
-#        #                     c: name: e.g., "water" and then load it from chemical_compounds_OLD.json
-#
-#        # ===> create ParameterMap and add here! -> also size custom or same as other maps
-
-#        raise NotImplementedError
-
     def simulate_dummy_map(self,
                            metabolite_name: str,
                            fill_value: int | float,
                            mask: np.ndarray | list[np.ndarray] = None,
+                           unit: pint.Unit = None,
                            device_interpolate: str ="cpu",
                            target_gpu_interpolate: int =0,
                            verbose: bool = False):
@@ -279,6 +291,7 @@ class ParameterVolume(Interpolation):
                     b) Give the desired fill values and masks
 
 
+        :param unit: The unit of the ParameterMap (pint.Unit)
         :param mask: One of multiple masks in a list or None
         :param metabolite_name: the name of the metabolite for what the dummy data will be created
         :param fill_value: The fill value or values in list (need the same length then mask)
@@ -290,6 +303,11 @@ class ParameterVolume(Interpolation):
         :return:
         """
 
+        for m in self.maps:
+            if m.metabolite_name == metabolite_name:
+                Console.printf("error", f"The metabolite name '{metabolite_name}' already exists! Therefore, cannot be created!")
+                return
+
         # The shape required for the final ParameterMap.
         target_shape = self.maps[0].values.shape
 
@@ -298,10 +316,10 @@ class ParameterVolume(Interpolation):
         shape_create_volume = None if mask is None else self.maps[0].values.shape
 
         # To create the dummy values Parameter Map
-        parameter_map = ParameterMap(map_type=self.maps_type, metabolite_name=metabolite_name).create_dummy_volume(shape=shape_create_volume, fill_value=fill_value, mask=mask)
+        parameter_map = ParameterMap(map_type=self.maps_type, metabolite_name=metabolite_name).create_dummy_volume(shape=shape_create_volume, fill_value=fill_value, mask=mask, unit=unit)
 
         # If the shape of the created volume (in the ParameterMap) does not fit the shape of the
-        # shape of the ParameterMaps already collected in this object (of Parameter Volume).
+        # shape of the ParameterMaps already collected in this object (of Parameter _Volume).
         # (!) Please note: Interpolation after creating the ParameterMap.values since it is better
         #                  to interpolate the final results than multiple times multiple masks (if
         #                  provided)
@@ -312,19 +330,20 @@ class ParameterVolume(Interpolation):
 
         return self
 
-    def interpolate_maps(self, target_size: tuple, order: int = 3, device: str = "cpu", target_gpu: int = 0, verbose: bool = False):
+    def interpolate_maps(self, target_size: tuple, order: int = 3, compute_on_device: str = "cpu", target_gpu: int = 0, return_on_device: str = "cpu", verbose: bool = False):
         """
         To interpolate to the desired target size with desired order. Note, that this is done for each map but not the volume.
 
         :param target_size: the desired target size as tuple
         :param order: the interpolation order
-        :param device: the device. Either "cpu", "gpu"/"cuda"
+        :param compute_on_device: interpolation of desired device. Either "cpu", "gpu"/"cuda". GPU is usually much faster!
+        :param return_on_device: after interpolation on which device the array should reside. CPU is preferred.
         :param target_gpu: if "gpu"/"cuda" is selected then the index of the gpu
         :param verbose: print to console if true
         :return: the object itself
         """
         for i, m in enumerate(self.maps):
-            self.maps[i] = m.interpolate(target_size=target_size, order=order, device=device, target_gpu=target_gpu, verbose=verbose)
+            self.maps[i] = m.interpolate(target_size=target_size, order=order, compute_on_device=compute_on_device, target_gpu=target_gpu, return_on_device=return_on_device, verbose=verbose)
 
         self.to_volume(verbose=verbose)
         Console.printf("warning", "The individual maps are interpolated, and then the 4D volume is created again. This might slow down the process.")
@@ -332,7 +351,7 @@ class ParameterVolume(Interpolation):
         return self
 
     # called previously interpolate_volume to distinguish between interpolate_maps but sice inherits from Interpolation it is not possible anymore....
-    def interpolate(self, target_size: tuple, order: int = 3, device: str = "cpu", target_gpu: int = 0, verbose: bool = False):
+    def interpolate(self, target_size: tuple, order: int = 3, compute_on_device: str = "cpu", target_gpu: int = 0, return_on_device: str = "cpu", verbose: bool = False):
         """
         To interpolate to the desired target size with desired order. This is done for the whole 4D volume.
 
@@ -340,7 +359,8 @@ class ParameterVolume(Interpolation):
 
         :param target_size: the desired target size as tuple
         :param order: the interpolation order
-        :param device: the device. Either "cpu", "gpu"/"cuda"
+        :param compute_on_device: to compute on the desired device. Either "cpu", "gpu"/"cuda". GPU is much faster!
+        :param return_on_device: to bring the array to cpu or gpu after computation. Either "cpu", "gpu"/"cuda
         :param target_gpu: if "gpu"/"cuda" is selected then the index of the gpu
         :param verbose: print to console if true
         :return: the object itself
@@ -358,13 +378,53 @@ class ParameterVolume(Interpolation):
                 array=self.volume,
                 target_size=target_size,
                 order=order,
-                compute_on_device=device,
-                return_on_device="cpu",
+                compute_on_device=compute_on_device,
+                return_on_device=return_on_device,
                 target_gpu=target_gpu,
                 verbose=verbose
             )
 
         return self
+
+
+    def drop(self, name: str | list[str]):
+        """
+        Possible to remove one or multiple maps by name(s). This also remove it from the volume.
+
+        :param name: name of the desired chemical compound or metabolite
+        :return: The object itself
+        """
+
+        if name not in self.metabolites:
+            Console.printf("error", f"Cannot drop '{name}' since not exist. Only possible: {self.metabolites}.")
+            return self
+        else:
+            if isinstance(name, str):
+                names = [name]
+            else:
+                names = name
+
+            Console.add_lines("Removed the following from Parameter _Volume:")
+            for name in names:
+                # Find the index and the array to remove
+                name_index = self.metabolites.index(name)
+                array_to_delete = self.volume[:, name_index, ...]
+
+                # Get the backend (cupy or numpy)
+                xp = ArrayTools.get_backend(self.volume)
+                self.volume = xp.delete(array_to_delete, name_index, axis=1)
+
+                # Remove it from the list here
+                self.metabolites.remove(name)
+
+                # Remove it from also from the list of maps
+                self.maps.pop(name_index)
+
+                Console.add_lines(f" => {name}")
+            Console.printf_collected_lines("success")
+
+            return self
+
 
     def to_volume(self, verbose=True):
         """
@@ -396,7 +456,10 @@ class ParameterVolume(Interpolation):
 
             # 3 check all objects same unit
             elif len(units) > 1:
-                Console.printf("error", f"Cannot create 4D array of the 3D arrays since they exhibiting different units: {units} ")
+                Console.add_lines("Cannot create 4D array of the 3D arrays since they exhibit different units:")
+                for m in self.maps:
+                    Console.add_lines(f" > {m.metabolite_name:.<15}: {str(m.unit):<10}")
+                Console.printf_collected_lines("error")
             # 4 All objects are of same map type, exhibit same shape (X,Y,Z) and also h ave the same unit
             else:
                 for m in self.maps:
@@ -417,6 +480,43 @@ class ParameterVolume(Interpolation):
                                mute=not verbose)
 
         return self
+
+
+    def conjugate(self, apply_to_maps: bool = True, verbose: bool = True):
+        """
+        The complex conjugate of a complex number is obtained by changing the sign of its imaginary part.
+
+        :return: Nothing
+        """
+
+        if not self.volume.dtype.kind == 'c':
+            Console.printf("error", f"Cannot complex conjugate the volume since data type: {self.volume.dtype}")
+            return self
+
+        Console.add_lines(f"Complex conjugated:")
+
+        # Conjugate the whole volume
+        xp = ArrayTools.get_backend(self.volume)
+        self.volume = xp.conjugate(self.volume)
+        Console.add_lines(f" {'> The volume of the Parameter _Volume:':<{50}}: True")
+
+        # Check if the use also wants to complex conjugate the individual maps objects (to be consistent), besides
+        # interpolating the whole volume (created out of all maps)
+        number_maps = len(self.maps)
+        if apply_to_maps:
+            for i in range(number_maps):
+                self.maps[i] = self.maps[i].conjugate()
+            Console.add_lines(f" {f'> Also the {number_maps} individual maps objects:':<{50}}: {apply_to_maps}")
+
+        Console.printf_collected_lines("success", mute=not verbose)
+
+        return self
+
+
+    def get_maps(self):
+         # TODO
+         # To get one (by name) or all maps
+        raise NotImplementedError
 
 
     def size(self, unit="MiB", verbose=True) -> pint.Quantity:
@@ -489,7 +589,7 @@ class ParameterVolume(Interpolation):
             # (Option B) Reorder the metabolite axis of the volume (axis 0)
             if self.volume is not None:
                 if self.volume.shape[0] != len(current_order):
-                    Console.printf("error", f"Volume first dimension is {self.volume.shape[0]} but metabolite length is {len(current_order)}")
+                    Console.printf("error", f"_Volume first dimension is {self.volume.shape[0]} but metabolite length is {len(current_order)}")
                 else:
                     self.volume = self.volume[perm, ...]
                     # Update metabolite order names in list

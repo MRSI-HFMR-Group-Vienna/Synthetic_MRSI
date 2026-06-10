@@ -36,6 +36,7 @@ import html as _html
 import json as _json
 
 from dask.distributed import LocalCluster, Worker
+from prettyconsole import Console
 
 # For JupyterPlotManager
 import numpy as np
@@ -1306,8 +1307,6 @@ class MyLocalCluster:
         self.cluster_type = None
 
     def __start_client(self):
-        from printer import Console # TODO: To solve circular import issue in spectral_spatial_simulation
-
         self.client = Client(self.cluster)
         # self.client = self.cluster.get_client()
         dashboard_url = self.client.dashboard_link
@@ -2129,7 +2128,6 @@ class UnitTools:
         return compared
 
 
-
     @staticmethod
     def remove_unit(array: pint.Quantity | np.ndarray | cp.ndarray) -> np.ndarray | cp.ndarray | int | float:
         """
@@ -2143,6 +2141,34 @@ class UnitTools:
             return array.magnitude
         else:
             return array
+
+
+    @staticmethod
+    def remove_unit_many(*values):
+        """
+        Remove the unit from an arbitrary number of inputs. The order of the input arguments represent the cleaned
+        arrays/values. For example:
+
+                array1, value2, value3 = UnitTools.remove_unit_many(array1, value2, value3)
+
+        Please note: that a single input returns also a single value, thus not an tuple.
+
+                array1 = UnitTools.remove_unit_many(array1)
+
+        :param values: arbitrary number of arrays / pint.Quantity objects
+        :return: the unit-stripped values (single value if only one was given)
+        """
+
+        # Go through each input and strip its unit, collect them in a list
+        stripped = [UnitTools.remove_unit(value) for value in values]
+
+        # Only one input -> give it back directly (not wrapped in a tuple)
+        if len(stripped) == 1:
+            return stripped[0]
+        # Several inputs -> give all back, so they can be unpacked one-to-one
+        else:
+            return tuple(stripped)
+
 
     @staticmethod
     def unwrap_pint(func):
@@ -2580,11 +2606,10 @@ class ArrayTools:
                         => The respective areas where mask[i]==1 will be filled with the value[i]
                            (!) Please note: Masks are not allowed to intersect!
 
-            * Case 4: Provide multiple FRACTIONAL masks (in a list) of same shape with values in [0,1]
-                      that sum to 1 at each voxel, plus a list of the values
+            * Case 4: Provide multiple FRACTIONAL masks (in a list) of same shape with values in [0,1],
+                      plus a list of the values
                         => Linear combination: output = value[0]*mask[0] + value[1]*mask[1] + ... + value[n]*mask[n]
                            Useful for e.g. concentration maps where each voxel is a weighted mix.
-                           (!) Please note: All masks together must sum to 1 at each voxel (partition of unity).
 
         Case 3 and Case 4 are auto-detected from the mask values: if all masks are strictly binary
         (only 0 and 1), Case 3 is used; otherwise Case 4 is used.
@@ -2619,7 +2644,7 @@ class ArrayTools:
 
         ## Use case #3 and #4: A list of masks + a list of values
         #  => Case 3 (binary, exclusive): each mask gets its value, masks must NOT intersect.
-        #  => Case 4 (fractional, partition of unity): linear combination of values weighted by masks.
+        #  => Case 4 (fractional): linear combination of values weighted by masks.
         if isinstance(mask, list):
             mask_list, value_list = mask, value
 
@@ -2673,7 +2698,7 @@ class ArrayTools:
                     output_volume[current_mask == 1] = current_value
                 return output_volume
 
-            ## Use case #4: Fractional masks in [0,1] summing to 1 => linear combination
+            ## Use case #4: Fractional masks in [0,1] => linear combination
             #  => output = value[0]*mask[0] + value[1]*mask[1] + ... + value[n]*mask[n]
             # Each mask must have values within [0,1]
             for mask_index, current_mask in enumerate(mask_list):
@@ -2682,15 +2707,6 @@ class ArrayTools:
                                    f"Fractional mask[{mask_index}] has values outside [0,1] (min={current_mask.min()}, max={current_mask.max()})",
                                    raise_error=ValueError)
                     #return None
-
-            # All masks together must sum to 1 at every voxel (partition of unity)
-            sum_per_voxel = np.sum(np.stack(mask_list, axis=0), axis=0)
-            if not np.allclose(sum_per_voxel, 1.0, atol=1e-6):
-                maximum_deviation_from_one = float(np.max(np.abs(sum_per_voxel - 1.0)))
-                Console.printf('error',
-                               f"Fractional masks must sum to 1 at each voxel; max deviation = {maximum_deviation_from_one}",
-                               raise_error=ValueError)
-                #return None
 
             # Build the volume as a linear combination of all (value_i * mask_i)
             output_dtype = np.result_type(*value_list, *(m.dtype for m in mask_list), 0.0)
@@ -4829,7 +4845,7 @@ class PathTools:
     """
 
     @staticmethod
-    def list_files(path_to_folder: str, extension: str =None, verbose: bool =True) -> list[Path] | None:
+    def list_files(path_to_folder: str, extension: str = None, verbose: bool = True) -> list[Path] | None:
         """
         Purpose in short: To get list of paths (or of those with desired extension) to all files
                           in desired folder
@@ -4855,9 +4871,11 @@ class PathTools:
         number_total_files = len(all_files)
 
         # Filter by extension if given, normalizing so caller can pass "csv" or ".csv"
+        # (!) For combined extensions like ".nii.gz", pathlib's suffix only returns ".gz".
+        #     Therefore, the full file name is checked here.
         if extension is not None:
             ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
-            files = sorted(f for f in all_files if f.suffix.lower() == ext)
+            files = sorted(f for f in all_files if f.name.lower().endswith(ext))
             ext_msg = f" with extension '{extension}'"
         else:
             files = sorted(all_files)
@@ -4882,27 +4900,22 @@ class PathTools:
         Purpose in short: to insert path, and (a) if path to folder the get list of all files (of
                           specific extension if defined) and (b) if path is to one file then get
                           list containing this one path. Useful, for iterating over all paths!
-
-        Description: To handle a path that can point to either a folder or a single file.
-        If a folder is given, all files inside are returned (error if mixed file types
-        and no extension is specified). If a single file is given, returns it wrapped
-        in a list. Optionally filters by extension in both cases.
-
-        :param path: the path to the folder as string
-        :param extension: the extension of the file as string
-        :param verbose: if it should be printed to the console (bool)
-        :return: list of the paths
         """
         p = Path(path)
+
+        # Normalise extension once
+        if extension is not None:
+            ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
+        else:
+            ext = None
 
         # Case 1: path points to a single file
         if p.is_file():
             # If extension given, make sure the file actually matches
-            if extension is not None:
-                ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
-                if p.suffix.lower() != ext:
+            if ext is not None:
+                if not p.name.lower().endswith(ext):
                     Console.printf("error",
-                                   f"File {p} has extension {p.suffix!r}, expected {ext!r}.",
+                                   f"File {p} does not match extension {ext!r}.",
                                    mute=not verbose)
                     return None
             return [p]
@@ -4914,8 +4927,12 @@ class PathTools:
                 return None
 
             # If no extension was given, the folder must be homogeneous
-            if extension is None:
-                found = {f.suffix.lower() for f in files}
+            if ext is None:
+                found = {
+                    ".nii.gz" if f.name.lower().endswith(".nii.gz") else f.suffix.lower()
+                    for f in files
+                }
+
                 if len(found) > 1:
                     Console.printf("error",
                                    f"Folder {p} contains mixed file types: {found}. "
@@ -4928,6 +4945,7 @@ class PathTools:
         # Case 3: path does not exist at all
         Console.printf("error", f"Path does not exist: {p}", mute=not verbose)
         return None
+
 
     @staticmethod
     def exists(path: str | Path, verbose=False) -> bool:
@@ -4958,6 +4976,96 @@ class PathTools:
         parts = path.replace("\\", "/").split("/")
         path_short = "/".join(parts[-(level+1):])
         return path_short
+
+    @staticmethod
+    def get_file_extension(path: str | Path, possible_extensions: list[str] = None) -> str:
+        """
+        Purpose in short: To get the file extension of one file path. A quite robust version ;)
+
+        Description: To get the extension of a file path in a more robust way than pathlib's
+        suffix attribute. This is useful because pathlib only returns the last suffix.
+        For example, for "image.nii.gz", pathlib returns only ".gz", but in many cases
+        ".nii.gz" should be treated as the actual file extension.
+
+        If possible_extensions is given, the full filename is checked against these extensions.
+        The longest matching extension is returned. This means that ".nii.gz" is preferred
+        over ".gz" if both would be possible.
+
+        :param path: the path to the file as string or Path
+        :param possible_extensions: optional list of possible extensions
+        :return: file extension as string
+        """
+
+        path = Path(path)
+
+        # Case 1: possible extensions are given
+        # -> Check the full file name and prefer the longest matching extension
+        if possible_extensions is not None:
+            extensions = []
+
+            for extension in possible_extensions:
+                ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
+                extensions.append(ext)
+
+            extensions = sorted(extensions, key=len, reverse=True)
+
+            for ext in extensions:
+                if path.name.lower().endswith(ext):
+                    return ext
+
+        # Case 2: no possible extensions are given
+        # -> Use suffixes to catch common combined extensions like ".nii.gz", ".tar.gz", ...
+        suffixes = path.suffixes
+
+        if len(suffixes) >= 2:
+            return "".join(suffix.lower() for suffix in suffixes)
+
+        # Case 3: normal extension
+        return path.suffix.lower()
+
+    @staticmethod
+    def get_file_stem(path: str | Path, possible_extensions: list[str] = None) -> str:
+        """
+        Purpose in short: To get the file stem of one file path. For example: NAA.nii.gz --> return just NAA
+
+        Description: To get the file stem in a more robust way than pathlib's stem attribute.
+        This is useful because pathlib only removes the last suffix. For example, for
+        "NAA.nii.gz", pathlib returns "NAA.nii", but in many cases "NAA" should be treated
+        as the actual file stem.
+
+        If possible_extensions is given, the full filename is checked against these extensions.
+        The longest matching extension is removed. This means that ".nii.gz" is removed as one
+        full extension and not only ".gz".
+
+        :param path: the path to the file as string or Path
+        :param possible_extensions: optional list of possible extensions
+        :return: file stem as string
+        """
+
+        path = Path(path)
+        name = path.name
+
+        # Case 1: possible extensions are given
+        # -> Use the already generalised extension detection and remove the full extension
+        if possible_extensions is not None:
+            extension = PathTools.get_file_extension(
+                path=path,
+                possible_extensions=possible_extensions,
+            )
+
+            if extension != "" and name.lower().endswith(extension):
+                return name[:-len(extension)]
+
+        # Case 2: no possible extensions are given
+        # -> Remove all suffixes, e.g. "NAA.nii.gz" -> "NAA"
+        suffixes = path.suffixes
+
+        if len(suffixes) > 0:
+            full_suffix = "".join(suffixes)
+            return name[:-len(full_suffix)]
+
+        # Case 3: file has no extension
+        return path.stem
 
 
 

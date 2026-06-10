@@ -4,7 +4,7 @@ from typing import Generic, TypeVar, Any
 
 class ResourceInterface(ABC):
     """
-    Use in resources.py
+    Use in inputs.py
 
     Interface for defining which methods a class must implement that deals with
     different files that holds paths, metabolite information, bibliograpy details.

@@ -301,7 +301,7 @@ class ParameterVolume(Interpolation):
         parameter_map = ParameterMap(map_type=self.maps_type, metabolite_name=metabolite_name).create_dummy_volume(shape=shape_create_volume, fill_value=fill_value, mask=mask)
 
         # If the shape of the created volume (in the ParameterMap) does not fit the shape of the
-        # shape of the ParameterMaps already collected in this object (of Parameter Volume).
+        # shape of the ParameterMaps already collected in this object (of Parameter _Volume).
         # (!) Please note: Interpolation after creating the ParameterMap.values since it is better
         #                  to interpolate the final results than multiple times multiple masks (if
         #                  provided)

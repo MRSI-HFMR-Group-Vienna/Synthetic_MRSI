@@ -240,12 +240,6 @@
         "GM":  {"value": 43300, "unit": "mM"},
         "WM":  {"value": 35880, "unit": "mM"},
         "CSF": {"value": 55556, "unit": "mM"}
-      },
-      "Gasparovic2006TissueWaterReference": {
-        "basis": {
-          "pure_water": {"value": 55.51, "unit": "mol/kg"},
-          "relative_MR_visible_water_density": {"GM": 0.78, "WM": 0.65, "CSF": 0.97}
-        }
       }
     },
     "T1": {
@@ -260,8 +254,7 @@
     "T2": {
       "7T": {
         "Yacoub2003SpinEcho7T": {
-          "GM": {
-            "visual_cortex": {"mean": 0.0550, "sd": 0.0041, "unit": "s"}},
+          "GM": {"visual_cortex": {"mean": 0.0550, "sd": 0.0041, "unit": "s"}},
           "WM": {"white_matter": {"mean": 0.0459, "sd": 0.0019, "unit": "s"}}
         },
         "Spijkerman2018CSFT2": {
@@ -273,7 +266,7 @@
         }
       }
     },
-    "note": "The concentration values are conventional MRS water-reference values and are not field-strength dependent. T1/T2 values are 7T human brain values. Where sources report mean ± SD, values are stored as mean and sd; CSF T2 range reflects peripheral corrected versus ventricular CSF.",
+    "note": "The concentration values are conventional MRS water-reference values and are not field-strength dependent. T1/T2 values are 7T human brain values. Where sources report mean +/- SD, values are stored as mean and sd; CSF T2 range reflects peripheral corrected versus ventricular CSF.",
     "reference_keys": [{"Okada2021Repeatability7T": "Okada2021Repeatability7T"}, {"Gasparovic2006TissueWaterReference": "Gasparovic2006TissueWaterReference"}, {"Rooney2007WaterT1": "Rooney2007WaterT1"}, {"Yacoub2003SpinEcho7T": "Yacoub2003SpinEcho7T"}, {"Spijkerman2018CSFT2": "Spijkerman2018CSFT2"}, {"Xin2017PracticalGuide": "Xin2017PracticalGuide"}]
   },
   "macromolecules": {}

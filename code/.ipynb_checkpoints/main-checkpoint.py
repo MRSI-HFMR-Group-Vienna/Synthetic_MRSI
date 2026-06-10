@@ -344,7 +344,7 @@ def main_entry():
                                        persist_computational_graph_spectral_spatial_model=False
                                        )
 
-        # Volume (coil, time, X, Y, Z)
+        # _Volume (coil, time, X, Y, Z)
         computational_graph = sampling_model.apply_coil_sensitivity_maps(compute_on_device='cuda',
                                                                          return_on_device='cuda')
 

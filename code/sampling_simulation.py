@@ -1,12 +1,12 @@
-from bokeh.core.property.container import Array
-from numba.np.arrayobj import array_shape
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.spatial import Voronoi, voronoi_plot_2d
 from shapely.geometry import Polygon, Point
 from scipy.interpolate import CubicSpline
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
-from resources import Configurator
+
+from tools import deprecated
+from inputs import Configurator
 from prettyconsole import Console
 import dask.array as da
 from tqdm import tqdm
@@ -17,14 +17,16 @@ import dask
 from file import Trajectory as FileTrajectory
 import sys
 from tools import InterpolationTools, DaskTools, GPUTools, FourierTools, ArrayTools
-from interface import Interpolation
+from interface import InterpolationInterface
 import os
 from pathlib import Path
 import copy
 
+from spatial_simulation import ParameterVolume
 
 
-class CoilSensitivityVolume(Interpolation):
+@deprecated
+class CoilSensitivityVolume(InterpolationInterface):
 
     def __init__(self):
         self.coils: list[str] = None
@@ -49,7 +51,7 @@ class CoilSensitivityVolume(Interpolation):
             #Console.printf("info", f"3D target shape is given. However, preserving coil axis during interpolation, therefore will still get 4D result: {target_size}.")
 
         if target_gpu is None:
-            Console.printf("warning", f"Interpolation Coil Sensitivity Volume on default GPU since no desired GPU was specified!")
+            Console.printf("warning", f"Interpolation Coil Sensitivity _Volume on default GPU since no desired GPU was specified!")
 
         self.volume = InterpolationTools.interpolate(array=self.volume,
                                                      target_size=target_size,
@@ -67,7 +69,7 @@ class CoilSensitivityVolume(Interpolation):
         """
         xp = ArrayTools.get_backend(self.volume)
         self.volume = xp.conjugate(self.volume)
-        Console.printf("success", "Complex Conjugated the Coil Sensitivity Volume.")
+        Console.printf("success", "Complex Conjugated the Coil Sensitivity _Volume.")
 
 
 class Model:
@@ -77,7 +79,7 @@ class Model:
                  target_gpu_smaller_tasks: int = None,
                  path_cache: str = None,
                  data_type: np.dtype = None,
-                 coil_sensitivity_volume: CoilSensitivityVolume = None,
+                 coil_sensitivity_volume: ParameterVolume = None,
                  spectral_spatial_volume: da.Array = None):
 
 
@@ -95,8 +97,8 @@ class Model:
         self.data_type = data_type
 
         # Need the coil sensitivity maps not as dask array for performance reasons
-        if not isinstance(coil_sensitivity_volume, CoilSensitivityVolume):
-            Console.printf("error", f"coil sensitivity volume must be of class sampling.CoilSensitivityVolume, but got: {type(coil_sensitivity_volume.volume)}")
+        if not isinstance(coil_sensitivity_volume, ParameterVolume):
+            Console.printf("error", f"coil sensitivity volume must be of class {type(ParameterVolume)}, but got: {type(coil_sensitivity_volume)}")
             sys.exit()
         # Need the spectral spatial model as dask array. Automatically converts it to dask array if not already one.
         if not isinstance(spectral_spatial_volume, da.Array):
@@ -105,7 +107,10 @@ class Model:
             spectral_spatial_volume = DaskTools.to_dask(self.spectral_spatial_volume, chunksize=chunksize) # chunksize=(time, X, Y, Z)
 
         # Assigning to the two main volume to object variables
-        self.coil_sensitivity_volume: CoilSensitivityVolume = coil_sensitivity_volume
+        # -> Also squeeze the volume of the ParameterMap since the volume (at this time point) has one leading dimension of 1
+        self.coil_sensitivity_volume: ParameterVolume = coil_sensitivity_volume
+        xp = ArrayTools.get_backend(self.coil_sensitivity_volume.volume)
+        self.coil_sensitivity_volume.volume = xp.squeeze(self.coil_sensitivity_volume.volume)
         self.spectral_spatial_volume_dask: da.Array = spectral_spatial_volume # volume/graph from previous Spectral Spatial Model
 
         # This volume is for intermediate steps (e.g., coil combination, FFT, iFFT, cropping, ... and so on and will be dynamically updated!)
@@ -171,6 +176,8 @@ class Model:
         # Broadcasting to be able to multiply at once:
         #    coil sensitivity maps shape   : e.g., (coil, X, Y, Z) --> (coil, 1,    X, Y, Z)
         #    spectral spatial volume shape : e.g., (time, X, Y, Z) --> (coil, time, X, Y, Z)
+        xp = ArrayTools.get_backend(coil_sensitivity_volume)           # just to make sure no (1,X,Y,Z) -> to remove the (1,...)
+        coil_sensitivity_volume = xp.squeeze(coil_sensitivity_volume)  #
         volume = (coil_sensitivity_volume[:, None, ...]  *     # (coils, 1,    X, Y, Z)
         spectral_spatial_volume[None, ...])
         # (1,     time, X, Y, Z)

@@ -49,7 +49,7 @@ class CoilSensitivityVolume(Interpolation):
             #Console.printf("info", f"3D target shape is given. However, preserving coil axis during interpolation, therefore will still get 4D result: {target_size}.")
 
         if target_gpu is None:
-            Console.printf("warning", f"Interpolation Coil Sensitivity Volume on default GPU since no desired GPU was specified!")
+            Console.printf("warning", f"Interpolation Coil Sensitivity _Volume on default GPU since no desired GPU was specified!")
 
         self.volume = InterpolationTools.interpolate(array=self.volume,
                                                      target_size=target_size,
@@ -67,7 +67,7 @@ class CoilSensitivityVolume(Interpolation):
         """
         xp = ArrayTools.get_backend(self.volume)
         self.volume = xp.conjugate(self.volume)
-        Console.printf("success", "Complex Conjugated the Coil Sensitivity Volume.")
+        Console.printf("success", "Complex Conjugated the Coil Sensitivity _Volume.")
 
 
 class Model:

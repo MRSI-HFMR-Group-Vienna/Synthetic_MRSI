@@ -105,7 +105,6 @@ class SimulationParameters(JsonResources):
     """
 
 class CitationManager:
-    raise NotImplementedError
     pass
     # TODO: Not yet implemented ==> at the moment in tools ==> move it from tools.CitationManager to resources.CitationManager
 

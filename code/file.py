@@ -9,8 +9,9 @@ from tools import JsonConverter, UnitTools, JupyterPlotManager, SpaceEstimator, 
 # For loading / processing MRS data:
 from fsl_mrs.utils.mrs_io import jmrui_io, read_basis
 from spec2nii import jmrui
+from collections import Counter
 
-from resources import Configurator
+from inputs import Configurator
 import matplotlib.pyplot as plt
 from scipy.ndimage import zoom
 from tools import deprecated, ArrayTools, PathTools, DictionaryTools
@@ -27,7 +28,7 @@ import sys
 import os
 from typing import TYPE_CHECKING
 
-from interface import WorkingSource, PlotInterface
+from interface import WorkingSourceInterface, PlotInterface
 from spectral_spatial_simulation import FID as SpectralSpatialFID
 
 # Just for type annotations
@@ -40,6 +41,13 @@ if TYPE_CHECKING:
 from units import u
 
 class BasisSet:
+
+    """
+    To load data from basis sits of different file format. If possible use the FID class in this module, since it
+    incorporates this Class and also has a to_working() method to transform to FID class to be able to work with
+    (e.g., interpolation, summation, general manipulation, ...)
+
+    """
 
     def __init__(self, path: str, data_precision: int = 32, extension:str = None, verbose: bool = True):
         """
@@ -284,8 +292,10 @@ class BasisSet:
         #  Just for printing conversation
 
         w = max(len(str(signal_dtype_before)), len(str(time_vector_dtype_before)))
-        Console.add_lines(f"      signal: {str(signal_dtype_before):<{w}} -> {signal.dtype}")
-        Console.add_lines(f"      time:   {str(time_vector_dtype_before):<{w}} -> {time_vector.dtype}")
+        Console.add_lines(f"Changed the data type of the FID signal(s):")
+        Console.add_lines(f"   signal: {str(signal_dtype_before):<{w}} -> {signal.dtype}")
+        Console.add_lines(f"   time:   {str(time_vector_dtype_before):<{w}} -> {time_vector.dtype}")
+        #Console.add_lines("\n")
 #        Console.printf("info", f"Changed the data type of the FID signal(s): \n"
 #                               f"      signal: {str(signal_dtype_before):<{w}} -> {signal.dtype} \n"
 #                               f"      time:   {str(time_vector_dtype_before):<{w}} -> {time_vector.dtype}")
@@ -506,84 +516,1453 @@ class BasisSet:
         }
 
 
-# TODO: DELETE
-###class JMRUI:
-###    """
-###    For reading the data from an m.-File generated from an jMRUI. TODO: Implement for the .mat file. Further, also rename JMRUI instead of JMRUI!
-###    """
-###
-###    def __init__(self, path: str, signal_data_type: np.dtype = np.float64, mute: bool = False):
-###        self.path = path
-###        self.signal_data_type = signal_data_type # TODO: Has no effect!
-###        self.mute = mute
-###
-###    def load_m_file(self) -> dict:
-###        parameters: dict = {}
-###
-###        # Read the content of the .m file
-###        with open(self.path, 'r') as file:
-###            file_content = file.read()
-###            file_content = file_content.replace('{', '[').replace('}', ']')
-###
-###        # Create a dictionary to store variable names and their values
-###        data_found = False  # for entering the mode to append the FID data
-###        amplitude = "["
-###        for line in file_content.splitlines():
-###            parts = line.split('=')
-###            if len(parts) == 2:
-###                var_name = parts[0].strip()
-###                var_value = parts[1].strip().rstrip(';')  # Remove trailing ';' if present
-###                parameters[var_name] = var_value
-###
-###            if data_found:
-###                amplitude += line + ", "
-###                pass
-###            elif parts[0] == "DATA":
-###                data_found = True
-###
-###        # For creating time vector (numpy array) from the parameters given in the file
-###        # Also, adding the other content. This includes the name of the chemical compounds.
-###        dim_values = parameters["DIM_VALUES"].replace("[", "").replace("]", "").replace("'", "").split(",")
-###        parameters["DIM_VALUES"] = []
-###        parameters["DIM_VALUES"].append(dim_values[0])
-###        parameters["DIM_VALUES"].append(dim_values[1])
-###        parameters["DIM_VALUES"].append(dim_values[2:])
-###        time_vector = parameters["DIM_VALUES"][0].split(":")
-###        time_vector_start, time_vector_stepsize, time_vector_end = float(time_vector[0]), float(time_vector[1]), float(time_vector[2])
-###        time = np.arange(time_vector_start, time_vector_end, time_vector_stepsize)
-###        time = time[0:len(time) - 1]
-###
-###        # For transforming the signal values given in the file to a numpy array
-###        parameters['SIZE'] = eval(parameters['SIZE'])  # str to list
-###        amplitude = amplitude.replace('\t', ' ').replace('[', '').replace(']', '').replace(';', '')  # .split(",")
-###        amplitude_list_strings = amplitude.split(",")
-###        amplitude_list_strings = [[float(num) for num in string_element.split()] for string_element in amplitude_list_strings]
-###        amplitude = np.asarray(amplitude_list_strings[0:len(amplitude_list_strings) - 2])
-###
-###        # Short overview of a chosen data type for the FID signal, used space and precision (in digits)
-###        Console.printf("info", f"Loaded FID signal as {self.signal_data_type} \n" +
-###                       f" -> thus using space: {amplitude.nbytes / 1024} KB \n" +
-###                       f" -> thus using digits: {np.finfo(amplitude.dtype).precision}",
-###                       mute=self.mute)
-###
-###        return {"parameters": parameters,
-###                "signal": amplitude,
-###                "time": time}
-###
-###    def show_parameters(self) -> None:
-###        """
-###        Printing the successfully read parameters formatted to the console.
-###
-###        :return: None
-###        """
-###        # np.set_printoptions(20)  # for printing numpy numbers with 20 digits to the console
-###        for key, value in self.parameters.items():
-###            Console.add_lines(f"Key: {key}, Value: {value}")
-###
-###        Console.printf_collected_lines("success")
-###        # np.set_printoptions() resetting numpy printing options
+class _MultiVolumeFile:
+    """
+    (!) Note: This is used in class: _Volume
+
+    Helper class for files which can contain multiple arrays inside one file.
+
+    Supported file types:
+        * .h5 / .hdf5 : multiple datasets in one file
+        * .npz        : multiple arrays in one zipped NumPy archive
+
+    This class only unwraps one physical file into multiple array entries.
+    It does not check the array shape and it does not stack the data.
+
+    The final shape check, stacking, precision conversion and output formatting
+    are handled by _Volume.
+    """
+
+    file_extensions = [".h5", ".hdf5", ".npz"]
+
+    @staticmethod
+    def load(path,
+             suffix: str = None,
+             wanted_raw: set[str] | None = None,
+             verbose: bool = False) -> list[dict]:
+        """
+        To automatically decide based on the file type how the multi-volume file
+        should be unwrapped.
+
+        :param path: path to one .h5/.hdf5/.npz file
+        :param suffix: optional suffix; if None, inferred from path
+        :param wanted_raw: optional set of internal array/dataset names to keep
+        :param verbose: if it should be printed to the console or not
+        :return: list of array entries
+        """
+
+        if suffix is None:
+            suffix = path.suffix.lower()
+
+        if suffix not in _MultiVolumeFile.file_extensions:
+            Console.printf("error",
+                           f"Invalid multi-volume file extension: {suffix}. "
+                           f"Only possible: {_MultiVolumeFile.file_extensions}",
+                           mute=not verbose)
+            return []
+
+        if suffix == ".npz":
+            return _MultiVolumeFile._load_npz(
+                path=path,
+                wanted_raw=wanted_raw,
+                verbose=verbose,
+            )
+
+        elif suffix in [".h5", ".hdf5"]:
+            return _MultiVolumeFile._load_h5(
+                path=path,
+                wanted_raw=wanted_raw,
+                verbose=verbose,
+            )
+
+        else:  # TODO: Maybe will never be reached!
+            Console.printf("error",
+                           f"Invalid multi-volume file extension: {suffix}. "
+                           f"Only possible: {_MultiVolumeFile.file_extensions}",
+                           mute=not verbose)
+            return
+
+    @staticmethod
+    def _load_npz(path,
+                  wanted_raw: set[str] | None = None,
+                  verbose: bool = False) -> list[dict]:
+        """
+        To unwrap one .npz file into multiple array entries.
+
+        Each array inside the archive is treated as one entry.
+        No spatial metadata is available in .npz by default.
+
+        :param path: path to one .npz file
+        :param wanted_raw: optional set of array names to keep
+        :param verbose: if it should be printed to the console or not
+        :return: list of array entries
+        """
+
+        loaded_data = []
+
+        with np.load(str(path)) as archive:
+            for name in archive.files:
+
+                # Early skip: array not in requested subset
+                if wanted_raw is not None and name not in wanted_raw:
+                    continue
+
+                array = archive[name]
+
+                loaded_data.append({
+                    'path': path,
+                    'name': name,
+                    'volume': array * u.dimensionless,
+                    'voxel_size': None,
+                    'affine': None,
+                    'orientation': None,
+                })
+
+        return loaded_data
+
+    @staticmethod
+    def _load_h5(path,
+                 wanted_raw: set[str] | None = None,
+                 verbose: bool = False) -> list[dict]:
+        """
+        To unwrap one .h5/.hdf5 file into multiple array entries.
+
+        Convention used here:
+            * Each top-level Dataset in a file = one entry
+            * The dataset key becomes the entry name
+            * File-level attributes 'voxel_size' and 'affine' are used if present
+
+        This method does not check the dimensionality of the datasets.
+
+        :param path: path to one .h5/.hdf5 file
+        :param wanted_raw: optional set of dataset names to keep
+        :param verbose: if it should be printed to the console or not
+        :return: list of array entries
+        """
+
+        loaded_data = []
+
+        with h5py.File(path, 'r') as file:
+
+            # File-level attributes for spatial info
+            voxel_size = file.attrs.get('voxel_size', None)
+            affine = file.attrs.get('affine', None)
+
+            if voxel_size is not None:
+                voxel_size = np.asarray(voxel_size) * u.mm
+            else:
+                Console.printf("warning",
+                               f"voxel_size not in attributes of {path.name}, set to None",
+                               mute=not verbose)
+
+            if affine is not None:
+                affine = np.asarray(affine)
+                orientation = nib.aff2axcodes(affine)
+            else:
+                Console.printf("warning",
+                               f"affine not in attributes of {path.name}, set to None",
+                               mute=not verbose)
+                orientation = None
+
+            # Collect top-level datasets
+            for name in file.keys():
+
+                # Early skip: dataset not in requested subset
+                if wanted_raw is not None and name not in wanted_raw:
+                    continue
+
+                item = file[name]
+
+                # Ignore groups and other non-dataset objects
+                if not isinstance(item, h5py.Dataset):
+                    continue
+
+                array = np.asarray(item)
+
+                loaded_data.append({
+                    'path': path,
+                    'name': name,
+                    'volume': array * u.dimensionless,
+                    'voxel_size': voxel_size,
+                    'affine': affine,
+                    'orientation': orientation,
+                })
+
+        return loaded_data
 
 
+class _Volume:
+    """
+    (!) Note: This is used in class: ParameterMaps
+
+    To load volume data from various file formats and provide standardised output.
+
+    Supported file types:
+        * .nii / .nii.gz : NIfTI, one volume per file
+        * .npy           : NumPy single array, one volume per file
+        * .h5 / .hdf5    : HDF5, one or multiple volumes per file
+        * .npz           : NumPy zipped archive, one or multiple volumes per file
+
+    The output is uniform across all formats - see load() return signature.
+    """
+
+    def __init__(self,
+                 path: str,
+                 data_precision: int = 32,
+                 extension: str = None,
+                 verbose: bool = True):
+        """
+        The constructor. It checks if path to one folder or direct to one file is given.
+
+        (!) Note: If path is to folder and files with mixed extensions are inside then error message will raise.
+                  Then, the solution is to define the 'extension' here when creating this instance.
+
+        :param path: the path to folder or direct to one file
+        :param data_precision: the precision, e.g. 32 yields float32 and complex64
+        :param extension: Only important if path to one folder is given
+        :param verbose: just if output to the console should be printed
+        """
+
+        # All currently supported file types
+        self.file_extensions = [".nii", ".nii.gz", ".h5", ".hdf5", ".npy", ".npz"]
+
+        # Here the configurator is not used. It is better to stay generic with the path.
+        # Check whether path to one file is directly given or to folder containing multiple files.
+        # Special handling is needed for .nii.gz because pathlib's .suffix only sees ".gz".
+        self.path = PathTools.collect_files(path=path, extension=extension, verbose=False)
+
+        if self.path is None:
+            Console.printf("error",
+                           f"Could not find any files or mixed files are available. "
+                           f"If files with mixed extensions in the folder try to specify 'extension' here.")
+            raise FileNotFoundError(f"Could not collect volume files from path: {path}")
+
+        # The data precision is later handled by tools.ArrayTools.to_precision
+        # -> Only affects the moment the volume array is converted
+        self.data_precision: int = data_precision
+
+        # Just if any output should be printed to the console
+        self.verbose = verbose
+
+    def load(self,
+             subset_names: str | list[str] = None,
+             rename: dict[str, str] = None,
+             subset_inside_file: bool = True) -> dict:
+        """
+        To automatically decide based on the file type which method should be called. The called methods
+        are returning then a standardised output.
+
+        The following example should show what is recommended:
+            => If you want to get just a 'subset' of all files in a folder, pass the following:
+
+                rename={
+                    "MetMap_Glu_con_map_TargetRes_HiRes": "Glu",
+                    "MetMap_Gln_con_map_TargetRes_HiRes": "Gln",
+                    "MetMap_NAA_con_map_TargetRes_HiRes": "NAA",
+                    "MetMap_Cr+PCr_con_map_TargetRes_HiRes": "Cr+PCr"
+                    }
+
+            => If you too just want get a subset of all files, then you now can use the 'renamed' names:
+
+                    subset_names=["Glu", "Gln", "NAA", "Cr+PCr"] ... also possible to use less, but why then renaming first?
+
+            => If you have a file .h5/.hdf5 or .npz, possible multiple maps are in one file, therefore also
+                able to filter inside the file with
+
+                    subset_inside_file=True
+
+
+        :param subset_names: optional list of volume names to keep (post-rename names if 'rename' given)
+        :param rename: optional dict {current_name: new_name} applied after loading
+        :param subset_inside_file: if True, skip unwanted volumes already at read time for h5/npz
+                                   (default True; set False to load everything then subset afterwards)
+        :return: dictionary with parameters, data, name
+        """
+
+        # Get first file type (extension) and check if supported
+        path = self.path
+        suffix = PathTools.get_file_extension(path=path[0], possible_extensions=self.file_extensions)
+
+        if suffix not in self.file_extensions:
+            Console.printf("error", f"Invalid file extension: {suffix}. Only possible: {self.file_extensions}")
+            return
+
+        # Make sure subset_names is always a list internally
+        if isinstance(subset_names, str):
+            subset_names = [subset_names]
+
+        # Build the set of raw pre-rename names to keep, if a subset was requested.
+        # Needed for early file/dataset filtering inside the format loaders.
+        wanted_raw = None
+        if subset_names is not None:
+            wanted_raw = self._resolve_subset_to_raw_names(
+                subset_names=subset_names,
+                rename=rename,
+            )
+
+        # Case 1: NIfTI - one volume per file
+        if suffix in [".nii", ".nii.gz"]:
+            loaded_data = self._load_nifti(
+                verbose=self.verbose,
+                wanted_raw=wanted_raw,
+            )
+
+        # Case 2: NumPy single array - one volume per file
+        elif suffix == ".npy":
+            loaded_data = self._load_npy(
+                verbose=self.verbose,
+                wanted_raw=wanted_raw,
+            )
+
+        # Case 3: HDF5 / NPZ - one or multiple volumes per file
+        elif suffix in [".h5", ".hdf5", ".npz"]:
+            loaded_data = self._load_multi_volume_file(
+                suffix=suffix,
+                verbose=self.verbose,
+                wanted_raw=wanted_raw if subset_inside_file else None,
+            )
+
+        else:  # TODO: Maybe will never be reached!
+            Console.printf("error", f"Invalid file extension: {suffix}. Only possible: {self.file_extensions}")
+            return
+
+        # Build final standard output from the volume entries
+        data = self._build_output(
+            loaded_data=loaded_data,
+            verbose=self.verbose,
+        )
+
+        if data is None:
+            return
+
+        # Apply rename FIRST so that subset_names can refer to the new working names
+        if rename is not None:
+            data = self.rename_volumes(
+                data=data,
+                name_mapping=rename,
+                verbose=self.verbose,
+            )
+
+        # Final subset call. After early filtering this is mostly idempotent,
+        # but it still gives the warning message for requested names that were not found.
+        if subset_names is not None:
+            data = self.get_subset_by_name(
+                data=data,
+                volume_name=subset_names,
+                verbose=self.verbose,
+            )
+
+        if data is None:
+            return
+
+        Console.printf("success",
+                       f"Loaded {len(data['name'])} volume(s)! \n"
+                       f"  names: {data['name']}",
+                       mute=not self.verbose)
+
+        return data
+
+    def write(self):
+        # TODO: Write to NIfTI?
+        raise NotImplementedError
+
+    def get_subset_by_name(self,
+                           data: dict,
+                           volume_name: str | list[str],
+                           verbose: bool = False) -> dict:
+        """
+        To get a subset of the data dictionary based on one or multiple volume names.
+
+        :param data: the dictionary holding the data of all volumes and parameters
+        :param volume_name: one volume name as string or a list of volume names
+        :param verbose: if True then print to console
+        :return: dictionary with only subset
+        """
+
+        # Check if volume name is of type string
+        if isinstance(volume_name, str):
+            volume_name = [volume_name]
+
+        # Give error if no names provided
+        if len(volume_name) == 0:
+            Console.printf("error", "No volume name(s) provided", verbose=verbose)
+            return
+
+        # Give error if any required key is missing in the dictionary
+        required_keys = ['parameters', 'data', 'name']
+        missing_keys = [k for k in required_keys if k not in data]
+        if missing_keys:
+            Console.printf("error", f"Key(s) missing in data: {missing_keys}", verbose=verbose)
+            return
+
+        # Find which of the requested names exist and which do not
+        found = [n for n in volume_name if n in data['name']]
+        missing = [n for n in volume_name if n not in data['name']]
+
+        # Give error if not a single requested name was found
+        if len(found) == 0:
+            Console.printf("error", f"None of the requested name(s) found: {volume_name}", verbose=verbose)
+            return
+
+        # Just a warning if some names are missing but at least one is found
+        if missing:
+            Console.printf("warning", f"Name(s) not found and skipped: {missing}", mute=False)
+
+        # Get all the indices of the found names and then build the subset
+        indices = [data['name'].index(n) for n in found]
+
+        subset = {
+            'parameters': data['parameters'],
+            'data': data['data'][indices, ...],
+            'name': [data['name'][i] for i in indices],
+        }
+
+        return subset
+
+
+    def rename_volumes(self,
+                       data: dict,
+                       name_mapping: dict[str, str],
+                       verbose: bool = False) -> dict:
+        """
+        To apply a renaming map to volume names. Useful when raw filenames are not the desired
+        working names. As example:
+
+        name_mapping = {  "MetMap_Glu_con_map_TargetRes_HiRes": "Glu",
+                          "MetMap_Gln_con_map_TargetRes_HiRes": "Gln",
+                          "MetMap_NAA_con_map_TargetRes_HiRes": "NAA" }
+
+        Names not present in the mapping are left unchanged.
+
+        :param data: the dictionary holding the loaded volumes
+        :param name_mapping: dict {current_name: new_name}
+        :param verbose: if True then print to console
+        :return: data dict with updated 'name' list
+        """
+
+        renamed = []
+        for current_name in data['name']:
+            if current_name in name_mapping:
+                renamed.append(name_mapping[current_name])
+            else:
+                renamed.append(current_name)
+
+        # Just info about which mapping keys did not match any loaded volume
+        unmatched_keys = [k for k in name_mapping.keys() if k not in data['name']]
+        if unmatched_keys:
+            Console.printf("warning",
+                           f"Rename keys did not match any loaded volume: {unmatched_keys}",
+                           mute=not verbose)
+
+        data = dict(data)  # shallow copy so we do not mutate the input
+        data['name'] = renamed
+
+        return data
+
+    def _load_nifti(self,
+                    verbose: bool = False,
+                    wanted_raw: set[str] | None = None) -> list[dict]:
+        """
+        To load NIfTI files. Each file is treated as one 3D volume.
+
+        :param verbose: if it should be printed to the console or not
+        :param wanted_raw: optional set of raw file stems to keep
+        :return: list of volume entries
+        """
+
+        loaded_data = []
+
+        for path in self.path:
+            name = PathTools.get_file_stem(path=path, possible_extensions=self.file_extensions,)
+
+            # Early skip: file not in requested subset
+            if wanted_raw is not None and name not in wanted_raw:
+                continue
+
+            img = nib.load(str(path))
+            volume = np.asarray(img.dataobj)
+
+            # Force to 3D - if 4D with singleton last axis, squeeze; otherwise skip
+            if volume.ndim == 4 and volume.shape[-1] == 1:
+                volume = volume[..., 0]
+
+            if volume.ndim != 3:
+                Console.printf("warning",
+                               f"NIfTI file {path.name} has shape {volume.shape}; "
+                               f"only 3D volumes supported - skipping.",
+                               mute=not verbose)
+                continue
+
+            # Affine and derived spatial parameters
+            affine = np.asarray(img.affine)
+            voxel_size = np.sqrt(np.sum(affine[:3, :3] ** 2, axis=0)) * u.mm
+            orientation = nib.aff2axcodes(affine)
+
+            loaded_data.append({
+                'path': path,
+                'name': name,
+                'volume': volume * u.dimensionless,
+                'voxel_size': voxel_size,
+                'affine': affine,
+                'orientation': orientation,
+            })
+
+        if len(loaded_data) == 0 and wanted_raw is not None:
+            Console.printf("error",
+                           f"No NIfTI files match the requested subset: {sorted(wanted_raw)}",
+                           mute=not verbose)
+
+        return loaded_data
+
+    def _load_npy(self,
+                  verbose: bool = False,
+                  wanted_raw: set[str] | None = None) -> list[dict]:
+        """
+        To load .npy files. Each file is treated as one 3D volume.
+        No spatial metadata is available in .npy by default.
+
+        :param verbose: if it should be printed to the console or not
+        :param wanted_raw: optional set of raw file stems to keep
+        :return: list of volume entries
+        """
+
+        loaded_data = []
+
+        for path in self.path:
+            name = PathTools.get_file_stem(path=path, possible_extensions=self.file_extensions,)
+
+            # Early skip: file not in requested subset
+            if wanted_raw is not None and name not in wanted_raw:
+                continue
+
+            volume = np.load(str(path))
+
+            if volume.ndim != 3:
+                Console.printf("warning",
+                               f".npy file {path.name} has shape {volume.shape}; "
+                               f"only 3D arrays supported - skipping.",
+                               mute=not verbose)
+                continue
+
+            loaded_data.append({
+                'path': path,
+                'name': name,
+                'volume': volume * u.dimensionless,
+                'voxel_size': None,
+                'affine': None,
+                'orientation': None,
+            })
+
+        if len(loaded_data) == 0 and wanted_raw is not None:
+            Console.printf("error",
+                           f"No .npy files match the requested subset: {sorted(wanted_raw)}",
+                           mute=not verbose)
+
+        return loaded_data
+
+    def _load_multi_volume_file(self,
+                                suffix: str,
+                                verbose: bool = False,
+                                wanted_raw: set[str] | None = None) -> list[dict]:
+        """
+        To load files which may contain multiple 3D volumes inside one physical file.
+
+        This method makes .h5/.hdf5/.npz behave like multiple individual volume files:
+        one internal array/dataset becomes one volume entry.
+
+        :param suffix: file suffix
+        :param verbose: if it should be printed to the console or not
+        :param wanted_raw: optional set of internal array/dataset names to keep
+        :return: list of volume entries
+        """
+
+        loaded_data = []
+
+        for path in self.path:
+            loaded_data.extend(
+                _MultiVolumeFile.load(
+                    path=path,
+                    suffix=suffix,
+                    wanted_raw=wanted_raw,
+                    verbose=verbose,
+                )
+            )
+
+        if len(loaded_data) == 0 and wanted_raw is not None:
+            Console.printf("error",
+                           f"No 3D arrays/datasets match the requested subset: {sorted(wanted_raw)}",
+                           mute=not verbose)
+
+        return loaded_data
+
+    def _check_volume_common_parameters(self,
+                                        loaded_data: list[dict],
+                                        verbose: bool = False):
+        """
+        To check if all loaded volumes share the parameters needed for one stacked output:
+        same shape, same voxel size, same affine. Mismatching volumes are skipped.
+
+        :param loaded_data: list with volume entries
+        :param verbose: if it should be printed to the console or not
+        :return: list with filtered data, common voxel_size, affine, orientation
+        """
+
+        reference = loaded_data[0]
+        checked_data = [reference]
+        skipped_files = []
+
+        for data in loaded_data[1:]:
+            skip_reasons = []
+
+            # Same 3D shape is required for stacking
+            if data['volume'].shape != reference['volume'].shape:
+                skip_reasons.append(f"shape {data['volume'].shape} vs {reference['volume'].shape}")
+
+            # Same voxel size, if both are available
+            if data['voxel_size'] is not None and reference['voxel_size'] is not None:
+                if not np.allclose(
+                        data['voxel_size'].to(u.mm).magnitude,
+                        reference['voxel_size'].to(u.mm).magnitude
+                ):
+                    skip_reasons.append("voxel size")
+
+            # Same affine, if both are available
+            if data['affine'] is not None and reference['affine'] is not None:
+                if not np.allclose(data['affine'], reference['affine']):
+                    skip_reasons.append("affine")
+
+            if skip_reasons:
+                skipped_files.append(
+                    f"  - {data['path'].name} / {data['name']}: {', '.join(skip_reasons)}"
+                )
+            else:
+                checked_data.append(data)
+
+        # Print collected skipped files
+        if skipped_files:
+            Console.printf(
+                "warning",
+                f"Skipped volumes because following parameters do not match "
+                f"{reference['path'].name} / {reference['name']}:\n"
+                + "\n".join(skipped_files),
+                mute=not verbose
+            )
+
+        return (checked_data,
+                reference['voxel_size'],
+                reference['affine'],
+                reference['orientation'])
+
+    def _build_output(self,
+                      loaded_data: list[dict],
+                      verbose: bool = False) -> dict:
+        """
+        To build the final standardised output from a list of volume entries.
+
+        :param loaded_data: list of volume entries
+        :param verbose: if it should be printed to the console or not
+        :return: dictionary with parameters, data, name
+        """
+
+        if loaded_data is None or len(loaded_data) == 0:
+            Console.printf("error", "No usable volumes found.", mute=not verbose)
+            return
+
+        # Check if all volumes can be stacked together
+        loaded_data, voxel_size, affine, orientation = self._check_volume_common_parameters(
+            loaded_data=loaded_data,
+            verbose=verbose,
+        )
+
+        # Stack volumes to desired shape: (volumes, x, y, z)
+        volumes = np.stack([data['volume'].magnitude for data in loaded_data], axis=0) * u.dimensionless
+        names = [data['name'] for data in loaded_data]
+
+        # Warn on duplicate names
+        duplicates = [name for name, count in Counter(names).items() if count > 1]
+        if duplicates:
+            Console.printf("warning",
+                           f"Duplicate volume names: {duplicates}. "
+                           f"Subset operations will only pick the first occurrence.",
+                           mute=not verbose)
+
+        # Convert to desired data type
+        volumes_dtype_before = volumes.dtype
+        volumes = ArrayTools.to_precision(
+            array=volumes,
+            precision=self.data_precision,
+            verbose=False,
+        )
+        Console.add_lines(f"      data: {str(volumes_dtype_before)} -> {volumes.dtype}")
+
+        # Uniform formatted output
+        return {
+            'parameters': {
+                'voxel_size': voxel_size,
+                'affine': affine,
+                'orientation': orientation,
+                'unit': u.dimensionless,
+                'nucleus': None,
+            },
+            'data': volumes,
+            'name': names,
+        }
+
+    @staticmethod
+    def _resolve_subset_to_raw_names(subset_names: list[str],
+                                     rename: dict[str, str] | None) -> set[str]:
+        """
+        To translate the user-facing 'subset_names' after rename into the raw names
+        as they appear on disk.
+
+        Mapping rules:
+            * No rename given:
+                subset_names are the raw names directly.
+            * Rename given:
+                for each subset_name 's', take all raw names 'r' with rename[r] == s.
+                Additionally include 's' itself if it is not a rename key.
+
+        :param subset_names: list of user-facing volume names
+        :param rename: optional dict {raw_name: working_name}
+        :return: set of raw names to load
+        """
+
+        if rename is None:
+            return set(subset_names)
+
+        wanted_raw: set[str] = set()
+
+        for sname in subset_names:
+
+            # Raw names that rename to this subset name
+            mapped_from = [raw_name for raw_name, working_name in rename.items()
+                           if working_name == sname]
+
+            if mapped_from:
+                wanted_raw.update(mapped_from)
+
+            # If the subset name itself is not a rename key, it would pass through unchanged
+            if sname not in rename:
+                wanted_raw.add(sname)
+
+        return wanted_raw
+
+
+class ParameterMaps(WorkingSourceInterface[ParameterVolume], PlotInterface):
+    """
+    This class can be used at the moment for various purposes:
+
+    1) To load data:
+        -> from one nii file, yields dictionary of just values
+        -> from one h5 file, yields dictionary with the keys inside the file
+        -> from multiple nii files in a respective dictionary
+
+    2) Transform to 'working map' from spatial metabolic distribution
+        Therefore, create working map object with data from this class:
+            -> map_type_name
+            -> loaded maps
+            -> loaded maps unit
+
+    The actual file loading is delegated to the _Volume class.
+    """
+
+    def __init__(self, configurator: Configurator, map_type_name: str):
+        self.configurator = configurator
+        self.configurator.load()
+
+        self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
+        self.map_key = None
+        self.main_path = None
+
+        self.loaded_maps: dict[str, np.ndarray] = None
+        self.loaded_maps_unit = None
+
+        # Spatial information loaded by _Volume, if available
+        self.affine = None
+        self.voxel_size = None
+        self.orientation = None
+
+        # Needed for robust stem / extension handling, especially ".nii.gz"
+        self.file_extensions = [".nii", ".nii.gz", ".h5", ".hdf5", ".npy", ".npz"]
+
+    def load(self,
+             map_key: str = None,
+             compounds: str | list[str] = None,
+             working_name_and_file_name: dict[str, str] = None,
+             data_precision: int = 32,
+             verbose: bool = True) -> Self:
+        """
+        It is possible to load just one volume of arbitrary shape or a set of volumes at once
+        that have the same shape.
+
+        Note: To load parameter maps using the generic _Volume class. Therefore, the loading is
+        delegated to the file._Volume class.
+
+        :param map_key: key in the configurator. If None, self.map_type_name is used
+        :param compounds: optional working name or list of working names to keep
+        :param working_name_and_file_name: optional dict {working_name: file_name}
+                                           mostly for metabolite map folders
+        :param data_precision: the precision, e.g. 32 yields float32
+        :param verbose: if it should be printed to the console
+        :return: the object of the whole class
+        """
+
+        # If no map_key is given, use the map_type_name also as config key
+        if map_key is None:
+            map_key = self.map_type_name
+
+        self.map_key = map_key
+
+        map_config = self._get_map_config(map_key=self.map_key)
+        if map_config is None:
+            return self
+
+        self.main_path = Path(map_config["path"])
+        self._load_and_assign_pint_unit(map_config=map_config)
+
+        # Check if compounds is of type string
+        if isinstance(compounds, str):
+            compounds = [compounds]
+
+        rename = None
+        extension = None
+        subset_names = compounds
+
+        # Case 1: working names are given directly
+        # working_name_and_file_name = {"Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii", ...}
+        #
+        # _Volume.rename expects the opposite:
+        # {"MetMap_Glu_con_map_TargetRes_HiRes": "Glu", ...}
+        if working_name_and_file_name is not None:
+            rename = {}
+
+            for working_name, file_name in working_name_and_file_name.items():
+                raw_name = PathTools.get_file_stem(
+                    path=file_name,
+                    possible_extensions=self.file_extensions,
+                )
+                rename[raw_name] = working_name
+
+            # If no compounds are explicitly requested, only load the maps given in the dictionary
+            if subset_names is None:
+                subset_names = list(working_name_and_file_name.keys())
+
+            # If the folder contains mixed files, _Volume / PathTools can use this extension filter
+            first_file_name = next(iter(working_name_and_file_name.values()))
+            extension = PathTools.get_file_extension(
+                path=first_file_name,
+                possible_extensions=self.file_extensions,
+            )
+
+        # Load all maps through _Volume
+        volume_data = _Volume(
+            path=str(self.main_path),
+            data_precision=data_precision,
+            extension=extension,
+            verbose=verbose,
+        ).load(
+            subset_names=subset_names,
+            rename=rename,
+        )
+
+        if volume_data is None:
+            Console.printf("error", f"Could not load parameter maps for {self.map_type_name}", mute=not verbose)
+            return self
+
+        # Store spatial information from _Volume
+        self.affine = volume_data["parameters"].get("affine", None)
+        self.voxel_size = volume_data["parameters"].get("voxel_size", None)
+        self.orientation = volume_data["parameters"].get("orientation", None)
+
+        # Convert _Volume output:
+        #   data shape: (n_maps, ...)
+        # to ParameterMaps output:
+        #   self.loaded_maps = {name: map_array}
+        values = volume_data["data"]
+
+        # _Volume returns a pint Quantity, therefore use magnitude for raw numerical arrays
+        if hasattr(values, "magnitude"):
+            values = values.magnitude
+
+        names = volume_data["name"]
+
+        # For one single nii/npy file, use the map_type_name as dictionary key
+        if self.main_path.is_file():
+            file_extension = PathTools.get_file_extension(
+                path=self.main_path,
+                possible_extensions=self.file_extensions,
+            )
+
+            if file_extension in [".nii", ".nii.gz", ".npy"] and len(names) == 1 and rename is None:
+                names = [self.map_type_name]
+
+        self.loaded_maps = {}
+
+        Console.add_lines("Loaded maps: ")
+
+        for i, name in enumerate(names):
+            loaded_map = values[i, ...]
+
+            self.loaded_maps[name] = loaded_map
+
+            Console.add_lines(
+                f"  {i}: working name: {name:.>10} | {'Shape:':<8} {loaded_map.shape} | "
+                f"Values range: [{round(np.nanmin(loaded_map), 3)}, {round(np.nanmax(loaded_map), 3)}] "
+                f"| Unit: {self.loaded_maps_unit} |"
+            )
+
+        if verbose:
+            Console.printf_collected_lines("success")
+
+        return self
+
+    def _get_map_config(self, map_key: str) -> dict:
+        """
+        To get the map configuration entry from the configurator.
+
+        The map_key can either be a direct key in self.configurator.data
+        or a nested key separated by dots.
+
+        :param map_key: key to the map entry in the configurator
+        :return: dictionary holding the map config
+        """
+
+        maps_config = self.configurator.data
+
+        # Case 1: direct key, also works if the key itself contains dots
+        if map_key in maps_config:
+            return maps_config[map_key]
+
+        # Case 2: nested key, separated by dots
+        config = maps_config
+        for key in map_key.split("."):
+            if key not in config:
+                Console.printf("error", f"Could not find map_key '{map_key}' in configurator.")
+                return None
+
+            config = config[key]
+
+        return config
+
+    def combine_to_complex(self, real_key: str = "real", imag_key: str = "imag", output_key: str = None, verbose: bool = True):
+        """
+        If complex data is loaded e.g., from a h5 file than it yields the following:
+
+            self.loaded_maps["key_real"]  = real data (e.g., as float 32)
+            self.loaded_maps["key_imag"]  = imag data (e.g., as float 32)
+
+        This method created instead: self.loaded_maps["my_key"] = complex_data (e.g., as complex 64)
+
+        (!) Note: Therefore the initial precision is automatically maintained.
+        (!) Note: Not necessary to call if no complex data is loaded!
+
+        :param real_key: The real key in the e.g., h5 file
+        :param imag_key: The imag key in the e.g., h5 file
+        :param output_key: The new key where the complex data should be stored
+        :param verbose: If True then prints the conversation results to the console
+        :return: The object itself
+        """
+
+        # 1) Check if already loaded some maps
+        if self.loaded_maps is None:
+            Console.printf("error", "No maps loaded yet. Call load() before combine_to_complex()")
+            return self
+
+        # 2) Then check if real and imag keys are available
+        if real_key not in self.loaded_maps:
+            Console.printf("error", f"Could not find real key '{real_key}' in loaded maps.")
+            return self
+
+        if imag_key not in self.loaded_maps:
+            Console.printf("error", f"Could not find imag key '{imag_key}' in loaded maps.")
+            return self
+
+        # 3) If available, get the real and imag data (stored separately)
+        real = self.loaded_maps[real_key]
+        imag = self.loaded_maps[imag_key]
+
+        # 4) Then check if the shapes of real and imag match!
+        if real.shape != imag.shape:
+            Console.printf("error", f"Cannot combine real and imaginary parts because shape differ:"
+                                    f"{real_key:.<10}: {real.shape}\n"
+                                    f"{imag_key:.<10}: {imag.shape}")
+            return self
+
+        # 5) Just check if numeric, but maybe don't need?
+        if not np.issubdtype(real.dtype, np.number):
+            Console.printf("error", f"real key '{real_key}' is not numeric: dtype={real.dtype}")
+            return self
+
+        if not np.issubdtype(imag.dtype, np.number):
+            Console.printf("error", f"imag key '{imag_key}' is not numeric: dtype={imag.dtype}")
+            return self
+
+        # 6) Just take the name of the map type as key
+        if output_key is None:
+            output_key = self.map_type_name
+
+        # 7) Check if desired new key not already exists
+        if output_key in self.loaded_maps and output_key not in {real_key, imag_key}:
+            Console.printf(
+                "error",
+                f"output key '{output_key}' already exists in loaded maps."
+            )
+            return self
+
+        # 8) Transform the imag and real array to complex data type and remove old imag and real keys
+        complex_data = real + 1j * imag
+        del self.loaded_maps[real_key]
+        del self.loaded_maps[imag_key]
+        self.loaded_maps[output_key] = complex_data
+
+        # 9) Print information about results to the console if desired
+        if verbose:
+            Console.printf(
+                "success",
+                f"Combined '{real_key}' and '{imag_key}' into complex map '{output_key}': \n"
+                f" > New shape: {complex_data.shape} \n"
+                f" > Data type: {complex_data.dtype} "
+            )
+
+        return self
+
+
+
+    def _load_and_assign_pint_unit(self, map_config: dict):
+        """
+        For loading the unit string, which should be compliant with the library.
+        If it fails, fallback to "dimensionless" via pint.
+
+        :param map_config: dictionary holding the map config
+        :return:
+        """
+
+        unit_string = map_config.get("unit", "dimensionless")
+
+        # Try to convert provided string in the config file to pint unit, and assign "dimensionless" if it fails
+        try:
+            self.loaded_maps_unit = u.Unit(unit_string)
+        except:
+            Console.printf("error",
+                           f"Could not convert loaded unit '{unit_string}' to pint unit. "
+                           f"Therefore, assigned 'dimensionless'!")
+            self.loaded_maps_unit = u.dimensionless
+
+    def to_base_units(self, verbose=False):
+        """
+        To convert all loaded arrays to the base units.
+
+        :param verbose: it true then it prints conversation results to the console.
+        :return: Nothing
+        """
+
+        loaded_maps_unit_before = self.loaded_maps_unit
+        loaded_maps_unit_after = None
+
+        try:
+            for name, array in self.loaded_maps.items():
+                self.loaded_maps[name], loaded_maps_unit_after = UnitTools.to_base(
+                    values=array,
+                    units=self.loaded_maps_unit,
+                    return_separate=True,
+                    verbose=verbose,
+                )
+
+            self.loaded_maps_unit = loaded_maps_unit_after
+
+            Console.printf("success", f"Converted to base units: {loaded_maps_unit_before} -> {self.loaded_maps_unit}")
+
+        except:
+            Console.printf("error", "Could not convert to base units.")
+
+    def plot(self,
+             cmap: str = "viridis",
+             slice_index: int = None,
+             complex_mode: str = "magnitude"):
+        """
+        To plot the loaded maps.
+
+        If a loaded map is 3D, it is plotted directly at the given slice.
+        If a loaded map is 4D, the first axis is interpreted as map/channel axis,
+        and every channel is plotted separately.
+
+        Complex-valued maps are converted before plotting.
+
+        :param cmap: the matplotlib colormap
+        :param slice_index: the slice index in z direction. If None, the central slice is used
+        :param complex_mode: how complex-valued maps should be plotted.
+                             Possible: "magnitude", "phase", "real", "imag"
+        :return: matplotlib figure and axes
+        """
+
+        if self.loaded_maps is None:
+            Console.printf("error", "No maps loaded yet, thus no plotting possible.")
+            return
+
+        plot_maps = {}
+
+        # Prepare all maps before plotting
+        for key, value in self.loaded_maps.items():
+
+            # If complex, select what should be shown
+            if np.iscomplexobj(value):
+
+                if complex_mode == "magnitude":
+                    value = np.abs(value)
+
+                elif complex_mode == "phase":
+                    value = np.angle(value)
+
+                elif complex_mode == "real":
+                    value = value.real
+
+                elif complex_mode == "imag":
+                    value = value.imag
+
+                else:
+                    Console.printf(
+                        "error",
+                        f"Unknown complex_mode '{complex_mode}'. "
+                        f"Possible are: magnitude, phase, real, imag"
+                    )
+                    return
+
+            # Case 1: one 3D map
+            if value.ndim == 3:
+                plot_maps[key] = value
+
+            # Case 2: multiple 3D maps in one 4D array
+            elif value.ndim == 4:
+                for i in range(value.shape[0]):
+                    plot_maps[f"{key}_{i}"] = value[i, ...]
+
+            else:
+                Console.printf(
+                    "error",
+                    f"Could not plot map '{key}' with shape {value.shape}. "
+                    f"Only 3D maps (X, Y, Z) or 4D maps (C, X, Y, Z) are supported."
+                )
+                return
+
+        number_maps = len(plot_maps.items())
+
+        if number_maps == 0:
+            Console.printf("error", "No maps available for plotting.")
+            return
+
+        fig, axs = plt.subplots(
+            figsize=(3 * number_maps, 3),
+            ncols=number_maps,
+            nrows=1,
+        )
+
+        # Makes list if just one map, else already list
+        axs = [axs] if number_maps == 1 else axs
+
+        image = None
+
+        for i, (key, value) in enumerate(plot_maps.items()):
+
+            # Use central slice if no slice index is given
+            z_index = value.shape[2] // 2 if slice_index is None else slice_index
+
+            # Check if slice index is inside the volume
+            if z_index < 0 or z_index >= value.shape[2]:
+                Console.printf(
+                    "error",
+                    f"slice_index {z_index} is outside map '{key}' with z shape {value.shape[2]}."
+                )
+                return
+
+            image = axs[i].imshow(value[:, :, z_index], cmap=cmap)
+            axs[i].set_title(key)
+            axs[i].set_axis_off()
+
+        fig.colorbar(image, ax=axs, location="right")
+
+        return fig, axs
+
+
+###    def plot(self, cmap="viridis"):
+###        number_maps = len(self.loaded_maps.items())
+###        fig, axs = plt.subplots(figsize=(15, 2), ncols=number_maps, nrows=1)
+###
+###        # makes list if just one map, else already list:
+###        axs = [axs] if number_maps == 1 else axs
+###
+###        for i, (key, value) in enumerate(self.loaded_maps.items()):
+###            image = axs[i].imshow(value[:, :, 40], cmap=cmap)
+###            axs[i].set_title(key)
+###            axs[i].set_axis_off()
+###
+###        fig.colorbar(image, ax=axs, location="right")
+
+    def plot_jupyter(self, cmap="gray"):
+        """
+        To plot the loaded volume in an interactive form for the jupyter notebook/lab.
+        (!) Note: %matplotlib ipympl need be called once in the respective jupyter notebook.
+
+        :return: Nothing
+        """
+        if self.loaded_maps is not None:
+            JupyterPlotManager.volume_grid_viewer(
+                vols=self.loaded_maps.values(),
+                rows=1,
+                cols=len(self.loaded_maps.keys()),
+                titles=self.loaded_maps.keys(),
+                cmap=cmap,
+            )
+        else:
+            Console.printf("error", "No maps loaded yet, thus no plotting possible.")
+
+    def to_working(self, data_type: str = None, verbose: bool = True) -> ParameterVolume:
+        """
+        This transforms the loaded maps directly to a 4D array of (metabolites, X, Y, Z)
+
+        :return: a ParameterVolume (see module spatial_simulation)
+        """
+
+        # Create the Parameter _Volume
+        volume = ParameterVolume(maps_type=self.map_type_name)
+
+        # Create for each metabolite a Parameter Map and add it to the Parameter _Volume
+        for metabolite, data in self.loaded_maps.items():
+            parameter_map = ParameterMap(
+                map_type=self.map_type_name,
+                metabolite_name=metabolite,
+                values=data,
+                unit=self.loaded_maps_unit,
+                affine=self.affine,
+            )
+            volume.add_map(map_object=parameter_map, verbose=False)
+
+        # To create from all the 3D volumes inside the ParameterVolume actually one 4D volume
+        volume.to_volume(verbose=verbose)
+
+        # Change data type if given by the user
+        if data_type is not None:
+            volume.to_data_type(data_type)
+
+        return volume
+
+
+class FID(WorkingSourceInterface[SpectralSpatialFID]):
+    """
+    This class is for creating an FID containing several attributes. The FID signal and parameters can be
+    either added from e.g., a simulation or loaded from a MATLAB file (.m). Moreover, it is able to convert
+    the Real and Imaginary part in the file given as (Re, Im) -> Re + j*Im.
+    """
+
+    def __init__(self, configurator: Configurator):
+        self.configurator = configurator
+        self.parameters: dict = {}
+        self.signal: np.ndarray = None
+        self.time: np.ndarray = None
+        self.names: list = []
+        self.fid: spectral_spatial_simulation.FID = None
+
+    def load(self, fid_key: str, compounds: list | str = None, data_precision: int = 32, verbose: bool = True):
+        """
+        For loading and splitting the FID according to the respective chemical compound (metabolites, lipids).
+        Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.
+        Additional: since the complex signal is represented in two columns (one for real and one for imaginary),
+        it has to be transformed to a complex signal.
+
+        :param compounds: if desired enter a list of the names (or one string name) of the chemical compounds that should be loaded. Otherwise, all will be loaded!
+        :param data_precision: the precision of the FID signal and time. If e.g., 32 then float32 for time and complex64 for signal
+        :param verbose: if True then prints to the console
+        :param fid_key: Name of the FID (e.g., 'metabolites', 'lipids'). For nested: 'abcd.txt.metabolites'
+        :return: Nothing. Access the list loaded_fid of the object for the signals!
+        """
+
+        # (1) Load the data from the config file and get the required path
+        self.configurator.load()
+        path = self.configurator.get_data(key=["fid", fid_key, "path"])
+
+        # (2) Load the basis set data
+        basis_set = BasisSet(path=path, data_precision=data_precision, verbose=verbose)
+        data = basis_set.load(subset_names=compounds)
+
+        # (3) Extract the relevant data from the basis set data
+        self.parameters, self.signal, self.time = data["parameters"], data["signal"], data["time"]
+
+        # (4) Create for each signal an FID object and then merge it to one FID object
+        Console.add_lines("\nAdded FID signal(s):")
+        self.names = data["name"]
+
+        # (5) Check for loaded signal and time if NaNs are present!a
+        if ArrayTools.check_nan(self.signal, verbose=False):
+            Console.printf("warning", "Loaded signal of FID contains NaNs.")
+        if ArrayTools.check_nan(self.time, verbose=False):
+            Console.printf("warning", "loaded time vector of FID contains NaNs.")
+
+        return self
+
+
+    def to_working(self, verbose: bool = True) -> SpectralSpatialFID:
+        """
+        To transform the loaded data to an FID object in another module, since this class
+        here is just for handling loading FID data from the files.
+        The other FID object has various methods to manipulate the FID signal, e.g.,
+        including interpolation, merging, renaming and so on.
+
+        :param verbose: if True then print to the console.
+        :return: The spectral spatial FID object.
+        """
+
+        # (1) To create an empty FID object
+        fid = spectral_spatial_simulation.FID()
+
+        # (2) Create and FID object for each signal and then add it together.
+        #     The new FID class also checks for having the same time vector
+        #     and unit.
+        for column_number, name in enumerate(self.names):
+            fid += spectral_spatial_simulation.FID(signal=self.signal[column_number], time=self.time, name=[name])
+            if verbose:
+                Console.add_lines(f"{column_number}. {name + ' ':-<30}-> shape: {self.signal[column_number].shape}")
+
+        if verbose:
+            Console.printf_collected_lines("success")
+
+        return fid
+
+    def show_parameters(self) -> None:
+        """
+        Printing the successfully read parameters formatted to the console.
+
+        :return: None
+        """
+        # np.set_printoptions(20)  # for printing numpy numbers with 20 digits to the console
+        for key, value in self.parameters.items():
+            Console.add_lines(f"Key: {key}, Value: {value}")
+
+        Console.printf_collected_lines("success")
+
+
+class Trajectory:
+    """
+    To read the parameters and gradient values from JSON trajectories files.
+
+    This requires files:
+        * JSON Structure file
+        * JSON Gradient file
+    """
+
+    # Class variable (thus not bound to an object)
+    #u = pint.UnitRegistry()  # for using units with the same Registry
+
+    def __init__(self, configurator: Configurator):
+        """
+        Initialise the object with the configurator which manages the paths, thus also contains the
+        paths to the respective trajectory file.
+
+        :param configurator: Configurator object that manages the paths.
+        """
+        self.configurator = configurator.load()
+        self.path_trajectories = configurator.data["path"]["trajectories"]
+        self.path_simulation_parameters = configurator.data["path"]["simulation_parameters"]
+
+    @staticmethod
+    def get_pint_unit_registry() -> pint.UnitRegistry:
+        """
+        For using the same registry as used to load the trajectory parameters and data.
+        Usefully for methods and functions that implement the file.Trajectory class.
+
+        :return: pint.UnitRegistry(), often used just as "u." (e.g., u.mm for millimeter).
+        """
+
+        return Trajectory.u
+
+    def load_cartesian(self, console_output : bool = False) -> dict:
+        """
+        To load the simulation parameters of the respective JSON file for being able to construct the cartesian trajectory.
+        Also, renaming of the keys - if desired - can be done here.
+
+        :return: Dictionary with simulation parameters to construct the cartesian trajectory
+        """
+
+        # Need specific parameters from the simulation parameters file
+        with open(self.path_simulation_parameters, "r") as file_simulation_parameters:
+            json_parameters_content = json.load(file_simulation_parameters)
+
+        # For extracting only the desired parameters via keys from the loaded dict
+        desired_parameters = [
+            "MatrixSizeImageSpace",
+            "AcquisitionVoxelSize",
+            "MagneticFieldStrength",
+            "SpectrometerFrequency"
+        ]
+
+        # Selecting only the desired parameters based on the defined keys before
+        selected_parameters = {key: json_parameters_content[key] for key in desired_parameters if key in json_parameters_content}
+
+        # Rename key that does not match BIDS (MatrixSizeImageSpace -> MatrixSize)
+        selected_parameters["MatrixSize"] = selected_parameters.pop("MatrixSizeImageSpace")
+
+        # To add units to the parameters
+        u = self.get_pint_unit_registry() # get class variable u
+        selected_parameters["AcquisitionVoxelSize"] = selected_parameters["AcquisitionVoxelSize"] * u.mm
+        selected_parameters["MagneticFieldStrength"] = selected_parameters["MagneticFieldStrength"] * u.T
+        selected_parameters["SpectrometerFrequency"] = selected_parameters["SpectrometerFrequency"] * u.MHz
+
+        # Output to the console if True
+        if console_output:
+            Console.add_lines(f"Loaded cartesian parameters from file '{Path(self.path_simulation_parameters).name}':")
+            for key, value in selected_parameters.items():
+                Console.add_lines(f" -> {key:.<25}: {value}")
+
+            Console.printf_collected_lines("success")
+
+        # -> TODO: partition encoding * nuber slices (where to find?)
+        # -> TODO: vector size? Where do I get from?
+        # -> NumberReceiveCoilActiveElements (total channels measured previously)
+
+        return selected_parameters
+
+    def load_concentric_rings(self) -> dict:
+        """
+        To load the content of the respective JSON files to get the trajectory data itself and the according information.
+
+        :return: Dictionary with the keys of the json files with the respective data. The file information is removed.
+        """
+
+        # Load all data from structure and gradient file
+        with open(self.path_simulation_parameters, "r") as file_simulation_parameters, open(self.path_trajectories["crt"], "r") as file_gradients:
+            json_parameters_content = json.load(file_simulation_parameters)
+            json_gradients_content = json.load(file_gradients)
+
+        # Merge whole content of both files
+        json_merged_content = json_parameters_content | json_gradients_content
+        json_merged_content.pop("FileInfo")
+
+        # Transform the gradient values, represented as string list for each trajectory, to a list
+        # of complex numpy arrays.
+        trajectories_gradients_values: list = []
+        for trajectory_gradient_values in json_merged_content["GradientValues"]:
+            trajectories_gradients_values.append(JsonConverter.complex_string_list_to_numpy(trajectory_gradient_values))
+
+        json_merged_content["GradientValues"] = trajectories_gradients_values
+
+        # Just for printing loaded data (which is not too long) to the console.
+        Console.add_lines(f"\nUsed files for concentric rings trajectory:")
+        Console.add_lines(f" a) {Path(self.path_simulation_parameters)}")
+        Console.add_lines(f" b) {self.path_trajectories['crt']}")
+        Console.add_lines(f"\nLoaded parameters and data:")
+        for key, value in json_merged_content.items():
+            if len(str(value)) < 50: # convert each value to string and count length to omit too long data
+                Console.add_lines(f" -> {key:.<40}: {value}")
+            else:
+                Console.add_lines(f" -> {key:.<40}: (!) Too long. Not displayed.")
+
+        Console.printf_collected_lines("success")
+
+        return json_merged_content
+
+
+
+###################################### FROM HERE DEPRECATED CLASSES ##################################################
+
+@deprecated(reason="Seems not to serve a purpose any more!")
 class NeuroImage:
     """
     For loading neuro images of the format "Neuroimaging Informatics Technology Initiative" (NIfTI).
@@ -632,6 +2011,7 @@ class NeuroImage:
 
 
 # TODO: Use ParameterMaps instead!!! & REMOVE THIS IN FUTURE!
+@deprecated(reason="Use ParameterMaps instead")
 class Mask(PlotInterface):
     """
     For loading a mask from a file (e.g., metabolic mask, lipid mask, B0 inhomogeneities, ...). It requires a
@@ -718,7 +2098,7 @@ class Mask(PlotInterface):
 
         plt.show()
 
-
+@deprecated(reason="Maybe not necessary at the moment; more general class could handle this")
 class MetabolicAtlas:
     # TODO
 
@@ -731,359 +2111,8 @@ class MetabolicAtlas:
         pass
 
 
-class ParameterMaps(WorkingSource[ParameterVolume], PlotInterface):
-    """
-    This class can be used at the moment for various purposes:
-
-    1) To load data:
-        -> from one nii file, yields dictionary of just values
-        -> from one h5 file, yields dictionary (e.g., with keys 'imag', 'real')
-        -> from multiple nii files in a respective dictionary (for metabolites)
-
-    2) Transform to 'working map' from spatial metabolic distribution
-        Therefore, create working map object with data from this class:
-            -> map_type_name
-            -> loaded maps
-            -> loaded maps unit
-
-    The class automatically figures out the filetype, at the moment based on '.nii', '.nii.gz', '.h5', '.hdf5'.
-    """
-    # TODO: Maybe program more flexible
-
-    #u = pint.UnitRegistry() # class variable, same for all instances
-
-    def __init__(self, configurator: Configurator, map_type_name: str):
-        self.configurator = configurator
-        self.configurator.load()
-
-
-        # TODO: CHANGE HERE TO MAKE MORE FLEXIBLE ==> from map_type_name ==> map_key? OR REMOVE HERE?!
-        self.map_type_name = map_type_name  # e.g. B0, B1, metabolites
-        self.loaded_maps: dict[str, np.memmap | h5py._hl.dataset.Dataset] | np.memmap | np.ndarray = None
-        self.loaded_maps_unit = None
-        self.file_type_allowed = ['.nii', '.nii.gz', '.h5', '.hdf5']
-
-        # TODO: MODIFICATION!
-        # TODO: ==> like BasisSet, use maps.txt.lala and so on... instead of => self.configurator.data["maps"][self.map_type_name]["path"]
-        self.main_path = Path(self.configurator.data["maps"][self.map_type_name]["path"])
-        if self.main_path.is_file():
-            # Case 1: the main_path points to just one file
-            Console.printf("info", "Maps object: The provided path points to a file")
-            name = self.main_path.name.lower()
-            self.file_type = ".nii.gz" if name.endswith(".nii.gz") else self.main_path.suffix.lower()
-
-        elif self.main_path.is_dir():
-            # Case 2: the main_path points to a folder containing multiple files
-            Console.printf("info", "Maps object: The provided path points to a folder")
-            #  Check if multiple extensions available. If just same, and since "set" used, entries cannot be twice.
-            files_extensions = {file.suffix.lower() for file in self.main_path.iterdir() if file.is_file()}
-            if len(files_extensions) == 1:
-                self.file_type = files_extensions.pop() # get from set the extension (only one is available here (e.g., {".nii})
-            else:
-                raise ValueError(f"Multiple file types found: {files_extensions}, folder operation not possible!")
-
-        else:
-            Console.printf("error", f"Maps object: The provided path does not exist or is neither a file nor a folder: {self.main_path} Exiting system.")
-            sys.exit()
-
-        if self.file_type not in self.file_type_allowed:
-            Console.printf("error", f"Only possible to load formats: {self.file_type_allowed}. But it was given: {self.file_type}")
-            sys.exit()
-
-
-    # TODO: LET PROGRAM DECIDE IF PROVIDED PATH IS FOLDER OR FILE LIKE IN CLASS: BasisSet
-    def load_file(self) -> Self:
-        """
-        Load a single map from file.
-        Supports both H5 and NIfTI (nii) formats.
-        """
-        self.loaded_maps = {}             # key is abbreviation like "Glu" for better matching
-        self._load_and_assign_pint_unit() # load the associated unit defined in the json file
-
-        if self.file_type == '.h5' or self.file_type == '.hdf5':
-            """
-            Case 1: To handle h5 files: Results in dictionary ->  self.loaded_maps[key] = values
-            """
-            Console.printf("info", f"Loading h5 file for map type {self.map_type_name}")
-            with h5py.File(self.main_path, "r") as file:
-                for key in file.keys():
-                    item = file[key]
-
-                    if isinstance(item, h5py.Dataset):
-                        Console.add_lines(f" => Key: {key:<5} | Type: {'Dataset':<10} | Shape: {item.shape} | Data Type: {item.dtype}")
-                    elif isinstance(item, h5py.Group):
-                        Console.add_lines(f" => Key: {key:<5} | Type: {'Group':<10}")
-
-                    Console.add_lines("     Attributes: ")
-                    if len(item.attrs.items()) == 0:
-                        Console.add_lines("      Not available")
-                    else:
-                        for attr_key, attr_val in item.attrs.items():
-                            Console.add_lines(f"        Attribute key: {attr_key:<10} | value: {attr_val:<20}")
-
-                    self.loaded_maps[key] = item
-
-            Console.printf_collected_lines("success")
-
-        elif self.file_type == '.nii' or self.file_type == '.nii.gz':
-            """
-            Case 2: To handle nii files: Results in dictionary -> self.loaded_maps[map_type_name] = values
-            """
-            Console.printf("info", f"Loading nii file for map type {self.map_type_name}")
-            loaded_map = NeuroImage(path=self.main_path).load_nii(mute=True, report_nan=True).data
-
-            # store as dict for consistent downstream API
-            self.loaded_maps[self.map_type_name] = loaded_map
-            Console.add_lines(
-                f"Loaded nii map: {os.path.basename(self.main_path)} | Shape: {loaded_map.shape} | "
-                f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] | "
-                f"Unit: {self.loaded_maps_unit} | "
-                f"Unique values: {len(np.unique(loaded_map))}"
-            )
-            Console.printf_collected_lines("success")
-        else:
-            Console.printf("error", f"Unsupported file type: {self.file_type}")
-            sys.exit()
-
-        return self
-
-    # TODO: LET PROGRAM DECIDE IF PROVIDED PATH IS FOLDER OR FILE LIKE IN CLASS: BasisSet
-    # TODO: ==> BUT HERE A BIT MORE COMPLICATED?!!!
-    def load_files_from_folder(self, working_name_and_file_name: dict[str, str]) -> Self:
-        """
-        (!) At the moment mainly for loading metabolites. As example use the dictionary to load:
-
-        working_name_and_file_name = {  "Glu": "MetMap_Glu_con_map_TargetRes_HiRes.nii",
-                                        "Gln": "MetMap_Gln_con_map_TargetRes_HiRes.nii",
-                                        "m-Ins": "MetMap_Ins_con_map_TargetRes_HiRes.nii",
-                                        "NAA": "MetMap_NAA_con_map_TargetRes_HiRes.nii",
-                                        "Cr+PCr": "MetMap_Cr+PCr_con_map_TargetRes_HiRes.nii",
-                                        "GPC+PCh": "MetMap_GPC+PCh_con_map_TargetRes_HiRes.nii" }
-
-        :param working_name_and_file_name: a dictionary containing as key the desired 'working name, like Glu' and the corresponding real filename as value
-        :return: the object of the whole class
-        """
-        Console.printf("warning", "Maps.load_files_from_folder ==> by standard nii is loaded. No h5 support yet!")
-        Console.printf("warning", "The same unit is assumed for all the files in the given folder!")
-        self.configurator.load()
-        main_path = self.configurator.data["maps"][self.map_type_name]["path"]
-
-        self._load_and_assign_pint_unit()
-        self.loaded_maps: dict = {} # dict required for the operations afterward
-
-        Console.add_lines("Loaded maps: ")
-        for i, (working_name, file_name) in enumerate(working_name_and_file_name.items()):
-            path_to_map = os.path.join(main_path, file_name)
-            loaded_map = NeuroImage(path=path_to_map).load_nii(mute=True, report_nan=True).data
-            self.loaded_maps[working_name] = loaded_map
-
-            Console.add_lines(
-                f"  {i}: working name: {working_name:.>10} | {'Shape:':<8} {loaded_map.shape} | "
-                f"Values range: [{round(np.min(loaded_map), 3)}, {round(np.max(loaded_map), 3)}] "
-                f"| Unit: {self.loaded_maps_unit} |"
-            )
-        Console.printf_collected_lines("success")
-
-
-        return self
-
-    def _load_and_assign_pint_unit(self):
-        """
-        For loading the unit string, which should be compliant with the library. If it fails, fallback to "dimensionless" via pint.
-
-        :return:
-        """
-        unit_string = self.configurator.data["maps"][self.map_type_name]["unit"]
-
-        # Try to convert provided string in the config file to pint unit, and assign "dimensionless" if it fails
-        try:
-            self.loaded_maps_unit = u.Unit(unit_string) #ParameterMaps.u.Unit(unit_string)
-        except:
-            Console.printf("error", f"Could not convert loaded unit '{unit_string}' to pint unit. Therefore, assigned 'dimensionless'!")
-
-
-    # TODO: USE TOOLS.UNITTOOLS INSTEAD!
-    def to_base_units(self, verbose=False):
-        """
-        To convert all loaded arrays to the base units.
-
-        :param verbose: it true then it prints conversation results to the console.
-        :return: Nothing
-        """
-
-        loaded_maps_unit_before = self.loaded_maps_unit
-        loaded_maps_unit_after = None
-        try:
-            # CASE A: multiple arrays
-            if isinstance(self.loaded_maps, dict):
-                for i, (name, array) in enumerate(self.loaded_maps.items()):
-                    self.loaded_maps[name], loaded_maps_unit_after = UnitTools.to_base(
-                        values=array,
-                        units=self.loaded_maps_unit,
-                        return_separate=True,
-                        verbose=verbose)
-
-                self.loaded_maps_unit = loaded_maps_unit_after
-
-            # CASE B: assuming single array (e.g. numpy array, numpy memmap, and so on)
-            else:
-                self.loaded_maps, self.loaded_maps_unit = UnitTools.to_base(
-                    values=self.loaded_maps,
-                    units=self.loaded_maps_unit,
-                    return_separate=True,
-                    verbose=verbose)
-
-            Console.printf("success", f"Converted to base units: {loaded_maps_unit_before} -> {self.loaded_maps_unit}")
-        except:
-            Console.printf("error", "Could not convert to base units.")
-
-    def plot(self, cmap="viridis"):
-        number_maps = len(self.loaded_maps.items())
-        fig, axs = plt.subplots(figsize=(15, 2), ncols=number_maps, nrows=1)
-
-        # makes list if just one map, else already list:
-        axs = [axs] if number_maps == 1 else axs
-
-        for i, (key, value) in enumerate(self.loaded_maps.items()):
-            image = axs[i].imshow(value[:, :, 40], cmap=cmap)
-            axs[i].set_title(key)
-            axs[i].set_axis_off()
-
-        fig.colorbar(image, ax=axs, location="right")
-
-    def plot_jupyter(self, cmap="gray"):
-        """
-        To plot the loaded volume in an interactive form for the jupyter notebook/lab.
-        (!) Note: %matplotlib ipympl need be called once in the respective jupyter notebook.
-
-        :return: Nothing
-        """
-        if self.loaded_maps is not None:
-            JupyterPlotManager.volume_grid_viewer(vols=self.loaded_maps.values(), rows=1, cols=len(self.loaded_maps.keys()), titles=self.loaded_maps.keys(), cmap=cmap)
-        else:
-            Console.printf("error", "No maps loaded yet, thus no plotting possible.")
-
-
-    def to_working(self, data_type: str = None, verbose: bool = True) -> ParameterVolume:
-        """
-        This transforms the loaded maps directly to a 4D array of (metabolites, X, Y, Z)
-
-        :return: a ParameterVolume (see module spatial_simulation)
-        """
-
-        # Create the Parameter Volume
-        volume = ParameterVolume(maps_type=self.map_type_name)
-
-        # Create for each metabolite a Parameter Map and add it to the Parameter Volume
-        for metabolite, data in self.loaded_maps.items():
-            parameter_map = ParameterMap(map_type=self.map_type_name, metabolite_name=metabolite, values=data, unit=self.loaded_maps_unit, affine=None)
-            volume.add_map(map_object=parameter_map, verbose=False)
-
-        # To create from all the 3D volumes inside the ParameterVolume actually one 4D volume
-        volume.to_volume(verbose=verbose)
-
-        # Change data type if given by the user
-        if data_type is not None:
-            volume.to_data_type(data_type)
-
-        return volume
-
-
-
-class FID(WorkingSource[SpectralSpatialFID]):
-    """
-    This class is for creating an FID containing several attributes. The FID signal and parameters can be
-    either added from e.g., a simulation or loaded from a MATLAB file (.m). Moreover, it is able to convert
-    the Real and Imaginary part in the file given as (Re, Im) -> Re + j*Im.
-    """
-
-    def __init__(self, configurator: Configurator):
-        self.configurator = configurator
-        self.parameters: dict = {}
-        self.signal: np.ndarray = None
-        self.time: np.ndarray = None
-        self.names: list = []
-        self.fid: spectral_spatial_simulation.FID = None
-
-    def load(self, fid_key: str, compounds: list | str = None, data_precision: int = 32, verbose: bool = True):
-        """
-        For loading and splitting the FID according to the respective chemical compound (metabolites, lipids).
-        Then, create on :class: `spectral_spatial_simulation.FID` for each chemical compound and store it into a list.
-        Additional: since the complex signal is represented in two columns (one for real and one for imaginary),
-        it has to be transformed to a complex signal.
-
-        :param compounds: if desired enter a list of the names (or one string name) of the chemical compounds that should be loaded. Otherwise, all will be loaded!
-        :param data_precision: the precision of the FID signal and time. If e.g., 32 then float32 for time and complex64 for signal
-        :param verbose: if True then prints to the console
-        :param fid_key: Name of the FID (e.g., 'metabolites', 'lipids'). For nested: 'abcd.txt.metabolites'
-        :return: Nothing. Access the list loaded_fid of the object for the signals!
-        """
-
-        # (1) Load the data from the config file and get the required path
-        self.configurator.load()
-        path = self.configurator.get_data(key=["fid", fid_key, "path"])
-
-        # (2) Load the basis set data
-        basis_set = BasisSet(path=path, data_precision=data_precision, verbose=verbose)
-        data = basis_set.load(subset_names=compounds)
-
-        # (3) Extract the relevant data from the basis set data
-        self.parameters, self.signal, self.time = data["parameters"], data["signal"], data["time"]
-
-        # (4) Create for each signal an FID object and then merge it to one FID object
-        Console.add_lines("Assigned FID parts:")
-        self.names = data["name"]
-
-        # (5) Check for loaded signal and time if NaNs are present!a
-        if ArrayTools.check_nan(self.signal, verbose=False):
-            Console.printf("warning", "Loaded signal of FID contains NaNs.")
-        if ArrayTools.check_nan(self.time, verbose=False):
-            Console.printf("warning", "loaded time vector of FID contains NaNs.")
-
-        return self
-
-
-    def to_working(self, verbose: bool = True) -> SpectralSpatialFID:
-        """
-        To transform the loaded data to an FID object in another module, since this class
-        here is just for handling loading FID data from the files.
-        The other FID object has various methods to manipulate the FID signal, e.g.,
-        including interpolation, merging, renaming and so on.
-
-        :param verbose: if True then print to the console.
-        :return: The spectral spatial FID object.
-        """
-
-        # (1) To create an empty FID object
-        fid = spectral_spatial_simulation.FID()
-
-        # (2) Create and FID object for each signal and then add it together.
-        #     The new FID class also checks for having the same time vector
-        #     and unit.
-        for column_number, name in enumerate(self.names):
-            fid += spectral_spatial_simulation.FID(signal=self.signal[column_number], time=self.time, name=[name])
-            if verbose:
-                Console.add_lines(f"{column_number}. {name + ' ':-<30}-> shape: {self.signal[column_number].shape}")
-
-        if verbose:
-            Console.printf_collected_lines("success")
-
-        return fid
-
-    def show_parameters(self) -> None:
-        """
-        Printing the successfully read parameters formatted to the console.
-
-        :return: None
-        """
-        # np.set_printoptions(20)  # for printing numpy numbers with 20 digits to the console
-        for key, value in self.parameters.items():
-            Console.add_lines(f"Key: {key}, Value: {value}")
-
-        Console.printf_collected_lines("success")
-
-
-class CoilSensitivityMaps(WorkingSource["SamplingCoilSensitivityVolume"], PlotInterface):
+@deprecated(reason="Use ParameterMaps instead")
+class CoilSensitivityMaps(WorkingSourceInterface["SamplingCoilSensitivityVolume"], PlotInterface):
     """
     For loading and interpolating the coil sensitivity maps. At the moment, only HDF5 files are supported.
     The maps can be interpolated on 'cpu' and desired 'gpu'. It is strongly recommended to use the 'gpu'
@@ -1221,129 +2250,6 @@ class CoilSensitivityMaps(WorkingSource["SamplingCoilSensitivityVolume"], PlotIn
             ax.axis("off")
 
         plt.show()
-
-
-class Trajectory:
-    """
-    To read the parameters and gradient values from JSON trajectories files.
-
-    This requires files:
-        * JSON Structure file
-        * JSON Gradient file
-    """
-
-    # Class variable (thus not bound to an object)
-    #u = pint.UnitRegistry()  # for using units with the same Registry
-
-    def __init__(self, configurator: Configurator):
-        """
-        Initialise the object with the configurator which manages the paths, thus also contains the
-        paths to the respective trajectory file.
-
-        :param configurator: Configurator object that manages the paths.
-        """
-        self.configurator = configurator.load()
-        self.path_trajectories = configurator.data["path"]["trajectories"]
-        self.path_simulation_parameters = configurator.data["path"]["simulation_parameters"]
-
-    @staticmethod
-    def get_pint_unit_registry() -> pint.UnitRegistry:
-        """
-        For using the same registry as used to load the trajectory parameters and data.
-        Usefully for methods and functions that implement the file.Trajectory class.
-
-        :return: pint.UnitRegistry(), often used just as "u." (e.g., u.mm for millimeter).
-        """
-
-        return Trajectory.u
-
-    def load_cartesian(self, console_output : bool = False) -> dict:
-        """
-        To load the simulation parameters of the respective JSON file for being able to construct the cartesian trajectory.
-        Also, renaming of the keys - if desired - can be done here.
-
-        :return: Dictionary with simulation parameters to construct the cartesian trajectory
-        """
-
-        # Need specific parameters from the simulation parameters file
-        with open(self.path_simulation_parameters, "r") as file_simulation_parameters:
-            json_parameters_content = json.load(file_simulation_parameters)
-
-        # For extracting only the desired parameters via keys from the loaded dict
-        desired_parameters = [
-            "MatrixSizeImageSpace",
-            "AcquisitionVoxelSize",
-            "MagneticFieldStrength",
-            "SpectrometerFrequency"
-        ]
-
-        # Selecting only the desired parameters based on the defined keys before
-        selected_parameters = {key: json_parameters_content[key] for key in desired_parameters if key in json_parameters_content}
-
-        # Rename key that does not match BIDS (MatrixSizeImageSpace -> MatrixSize)
-        selected_parameters["MatrixSize"] = selected_parameters.pop("MatrixSizeImageSpace")
-
-        # To add units to the parameters
-        u = self.get_pint_unit_registry() # get class variable u
-        selected_parameters["AcquisitionVoxelSize"] = selected_parameters["AcquisitionVoxelSize"] * u.mm
-        selected_parameters["MagneticFieldStrength"] = selected_parameters["MagneticFieldStrength"] * u.T
-        selected_parameters["SpectrometerFrequency"] = selected_parameters["SpectrometerFrequency"] * u.MHz
-
-        # Output to the console if True
-        if console_output:
-            Console.add_lines(f"Loaded cartesian parameters from file '{Path(self.path_simulation_parameters).name}':")
-            for key, value in selected_parameters.items():
-                Console.add_lines(f" -> {key:.<25}: {value}")
-
-            Console.printf_collected_lines("success")
-
-        # -> TODO: partition encoding * nuber slices (where to find?)
-        # -> TODO: vector size? Where do I get from?
-        # -> NumberReceiveCoilActiveElements (total channels measured previously)
-
-        return selected_parameters
-
-    def load_concentric_rings(self) -> dict:
-        """
-        To load the content of the respective JSON files to get the trajectory data itself and the according information.
-
-        :return: Dictionary with the keys of the json files with the respective data. The file information is removed.
-        """
-
-        # Load all data from structure and gradient file
-        with open(self.path_simulation_parameters, "r") as file_simulation_parameters, open(self.path_trajectories["crt"], "r") as file_gradients:
-            json_parameters_content = json.load(file_simulation_parameters)
-            json_gradients_content = json.load(file_gradients)
-
-        # Merge whole content of both files
-        json_merged_content = json_parameters_content | json_gradients_content
-        json_merged_content.pop("FileInfo")
-
-        # Transform the gradient values, represented as string list for each trajectory, to a list
-        # of complex numpy arrays.
-        trajectories_gradients_values: list = []
-        for trajectory_gradient_values in json_merged_content["GradientValues"]:
-            trajectories_gradients_values.append(JsonConverter.complex_string_list_to_numpy(trajectory_gradient_values))
-
-        json_merged_content["GradientValues"] = trajectories_gradients_values
-
-        # Just for printing loaded data (which is not too long) to the console.
-        Console.add_lines(f"\nUsed files for concentric rings trajectory:")
-        Console.add_lines(f" a) {Path(self.path_simulation_parameters)}")
-        Console.add_lines(f" b) {self.path_trajectories['crt']}")
-        Console.add_lines(f"\nLoaded parameters and data:")
-        for key, value in json_merged_content.items():
-            if len(str(value)) < 50: # convert each value to string and count length to omit too long data
-                Console.add_lines(f" -> {key:.<40}: {value}")
-            else:
-                Console.add_lines(f" -> {key:.<40}: (!) Too long. Not displayed.")
-
-        Console.printf_collected_lines("success")
-
-        return json_merged_content
-
-
-
 
 @deprecated(reason="This class only supports .mat files. The simulation uses .json files, thus use the class Trajectory.")
 class CRTTrajectoriesMAT:

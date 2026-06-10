@@ -1,6 +1,8 @@
 from __future__ import annotations      #TODO: due to circular import. Maybe solve different!
 from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
 
+from tools import deprecated
+
 if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
     from spatial_simulation import ParameterVolume  #TODO: due to circular import. Maybe solve different!
 
@@ -13,7 +15,9 @@ from functools import partial
 from tools import CustomArray
 from prettyconsole import Console
 from tools import GPUTools, DaskTools, UnitTools, SpaceEstimator, ArrayTools
-from scipy.signal import resample
+#from scipy.signal import resample
+from math import gcd
+from scipy.signal import resample_poly, resample
 from pathlib import Path
 import dask.array as da
 import seaborn as sns
@@ -105,6 +109,61 @@ class FID:
             self._iter_index += 1
 
         return fid
+
+    def cut(self,
+            length: int = None,
+            interval: tuple = None,
+            length_time: float = None,
+            interval_time: tuple = None):
+        """
+        Cut the signal (and the matching time axis) along the sample axis.
+
+        Exactly one of the four arguments must be given:
+
+        :param length:        Keep samples [0, length) by sample count.
+        :param interval:      Keep samples [start, end) by sample index, e.g. (100, 5000).
+        :param length_time:   Keep a span of this duration starting at time[0]
+                              (in the same unit as self.time).
+        :param interval_time: Keep samples between two absolute time values (t_start, t_end),
+                              (in the same unit as self.time).
+        :return: self (for method chaining).
+        """
+
+        # Exactly one argument may be set -- not zero, not several.
+        provided_arguments = [length, interval, length_time, interval_time]
+        provided_arguments_number = sum(arg is not None for arg in provided_arguments)
+
+        if provided_arguments_number != 1:
+            Console.printf("error",
+                           "Either specify the length or the interval (time or plain)! Multiple are not possible!")
+            return self
+
+        # Reduce every case to a pair of sample indices [start:end), then slice once.
+        if length is not None:
+            start, end = 0, length
+        elif interval is not None:
+            start, end = interval
+        else:
+            # self.time may carry physical units (pint Quantity); compare on raw magnitudes.
+            time_values = self.time.magnitude if hasattr(self.time, "magnitude") else np.asarray(self.time)
+            if length_time is not None:
+                start = 0
+                end = int(np.searchsorted(time_values, time_values[0] + length_time, side="right"))
+            else:  # interval_time is not None
+                start = int(np.searchsorted(time_values, interval_time[0], side="left"))
+                end = int(np.searchsorted(time_values, interval_time[1], side="right"))
+
+        signal_length_before = self.signal.shape
+        time_length_before = self.time.shape
+
+        self.signal = self.signal[:, start:end]
+        self.time = self.time[start:end]
+
+        Console.printf("success", f"Cut the array:\n"
+                                  f"  signal: {str(signal_length_before) + ' ':=<15}=> {self.signal.shape}\n"
+                                  f"  time:   {str(time_length_before) + ' ':=<15}=> {self.time.shape}")
+
+        return self
 
     def merge_signals(self, names: list[str], new_name: str, divisor: int):
         """
@@ -313,7 +372,7 @@ class FID:
         When ppm is computed:
 
         .. math::
-            \text{ppm} = \text{ppm}_{\text{center}} - \frac{f}{f_{ref}}\times 10^{6} ~~~~
+            \text{ppm} = \text{ppm}_{\text{center}} + \frac{f}{f_{ref}}\times 10^{6} ~~~~
         .. math:: ~
         .. math::
             \text{with:}~f=\text{frequency [Hz]}, f_{ref}=\text{reference frequency [Hz]}, \text{and}~10^{6}~\text{to get [MHz]}
@@ -348,7 +407,7 @@ class FID:
 
         # B) Convert the frequency vector a ppm scale (spectroscopic):
         if x_type == "ppm":
-            #ppm = ppm_center - (frequency / reference_frequency) * 1e6
+            #ppm = ppm_center + (frequency / reference_frequency) * 1e6
             ppm = (frequency_hz / reference_frequency) * 1e6 + ppm_center
             x = ppm
 
@@ -595,7 +654,8 @@ class FID:
 
         # 2e) (MOVED) Load metabolite reference data *before* creating axes, so the layout decision below
         #     can be based on the actual data and we never reserve an empty top track.
-        path = Path.cwd().parent / "docs" / "chemical_compounds_OLD.json"
+        Console.printf("warning", "(!!!) Path to the chemical_compounds.json is hard coded! Change it (!!!)")
+        path = Path.cwd().parent / "resources" / "chemical_compounds.json"
         with path.open("r", encoding="utf-8") as f:
             compounds = json.load(f)
 
@@ -862,7 +922,71 @@ class FID:
 
             return fid
 
+#### TODO: Maybe delete it!!!
+###    def resample_bandlimited(self, timepoints: int):
+###        """
+###        It resamples the FID to a new number of time points while keeping approximately the
+###        same total acquisition duration. Therefore, the dwell time changes, and because spectral
+###        bandwidth is defined as 1 / dwell_time, the spectral bandwidth changes too.
+###
+###        :param timepoints: the number of desired time points
+###        :return: Nothing
+###        """
+###
+###        # Guard: timepoints must be a positive number, otherwise gcd/resample_poly would crash.
+###        if timepoints <= 0:
+###            Console.printf("error", f"timepoints must be > 0, but got {timepoints}. Nothing done.")
+###            return
+###
+###        # Extract the raw array if pint Quantity
+###        signal = self.signal.magnitude if isinstance(self.signal, pint.Quantity) else self.signal
+###        time = self.time.magnitude if isinstance(self.time, pint.Quantity) else self.time
+###
+###        signal_shape_before = signal.shape
+###        time_shape_before = time.shape
+###
+###        N = signal.shape[-1]
+###
+###        # old dwell time / bandwidth
+###        old_dwell = time[1] - time[0]
+###        old_bandwidth = 1 / old_dwell
+###
+###        if timepoints == N:
+###            Console.printf("info", "Requested timepoints equal current length. Nothing to do...")
+###            return
+###
+###        # Resample the signal along the last axis with a rational ratio timepoints/N.
+###        # gcd reduces up/down to the smallest integers -> exact output length, fast filter.
+###        g = gcd(timepoints, N)  # Find the greatest common divisor of the two integers
+###        up = timepoints // g    # For Step 1: need for upsampling to fine grid
+###        down = N // g           # For Step 2: need then for downsampling to coarser grid
+###        signal = resample_poly(signal, up, down, axis=-1)
+###
+###        # Rebuild the time axis analytically over the SAME total duration (uniform spacing).
+###        time = np.linspace(time[0], time[-1], timepoints)
+###
+###        # new dwell time / bandwidth
+###        new_dwell = time[1] - time[0]
+###        new_bandwidth = 1 / new_dwell
+###
+###        Console.printf("success",
+###                       f"Resampled FID: \n"
+###                       f" => time shape:       {str(time_shape_before):<15} --> {time.shape} \n"
+###                       f" => signal shape:     {str(signal_shape_before):<15} --> {signal.shape} \n"
+###                       f" => dwell time:       {old_dwell:.6e} s --> {new_dwell:.6e} s \n"
+###                       f" => bandwidth:        {old_bandwidth:.3f} Hz --> {new_bandwidth:.3f} Hz")
+###
+###        if ArrayTools.check_nan(signal, verbose=False):
+###            Console.printf("warning", "Interpolated signal of FID contains NaNs.")
+###        if ArrayTools.check_nan(time, verbose=False):
+###            Console.printf("warning", "Interpolated time vector of FID contains NaNs.")
+###
+###        # Re-attach units (recreate pint Quantity) if the original arrays carried units
+###        self.signal = signal * self.signal.units if isinstance(self.signal, pint.Quantity) else signal
+###        self.time = time * self.time.units if isinstance(self.time, pint.Quantity) else time
 
+
+    @deprecated(reason="Might creates artifacts at the beginning and end", replacement="not yet")
     def interpolate(self, timepoints: int):
         """
         Interpolate the signal and time to a desired length (time points). Therefore, the fourier-based resampling interpolation
@@ -2792,7 +2916,7 @@ class LookupTableWET_OLD:
 if __name__ == '__main__':
 
     # ========================= TO LOAD THE MAPS ANS INTERPOLATE IT ====================================================
-    from resources import Configurator
+    from inputs import Configurator
     from file import ParameterMaps as FileParameterMaps
     configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
                                      file_name="paths_14032025.json")
