@@ -2445,22 +2445,21 @@ class ArrayTools:
             else:
                 eps = xp.finfo(array.dtype).eps
 
-
         convert_cases_str = ""
         # Case: convert negative and zeros
         if convert_negative and convert_zeros:
             convert_cases_str = "negative and zero"
-            xp.maximum(array, eps, out=array, where=(array <= 0))
+            array[array <= 0] = eps
         # Case: only convert negative
         elif convert_negative:
             convert_cases_str = "negative"
-            xp.maximum(array, eps, out=array, where=(array < 0))
+            array[array < 0] = eps
         # Case: only convert zeros
         elif convert_zeros:
             convert_cases_str = "zero"
-            xp.maximum(array, eps, out=array, where=(array == 0))
+            array[array == 0] = eps
         else:
-            pass # do nothing at this place. Maybe future implementations take place here.
+            pass  # do nothing at this place. Maybe future implementations take place here.
 
         Console.printf("success", f"Converted {convert_cases_str} values to eps: {eps}", mute=not verbose)
 

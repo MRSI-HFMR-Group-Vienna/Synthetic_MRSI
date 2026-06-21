@@ -1706,52 +1706,107 @@ class LookupTableWET: # Note: was before LookupTableWET2
                        f"Created WET lookup table with {total_entries} entries."
                        f"Values Range: [{float(np.nanmin(remaining_signal))}, {float(np.nanmax(remaining_signal))}]")
 
-
-    def get(self, b1_scales, t1_over_tr, interpolation:str ="linear", extrapolation:bool = True):
+    def get(self, b1_scales, t1_over_tr, interpolation: str = "linear",
+            extrapolation: bool = True, device: str | None = None):
         """
-        Fetch the remaining signal data from the created lookup table for the desired arrays of B1 and T1/TR values.
+        Fetch the remaining signal data from the lookup table for the desired B1 and T1/TR arrays.
 
-        :param b1_scales: the B1+ values array
-        :param t1_over_tr: the T1/TR values array
-        :return: values from the table
+        Accepts NumPy AND CuPy inputs. The xarray '.interp' (scipy backend) needs NumPy, so cupy
+        inputs are moved to host for the interpolation and the result is moved back to the input's
+        device -- both via the project's GPUTools. No manual interpolation/chunking.
+
+        :param b1_scales: B1+ scale array (numpy or cupy)
+        :param t1_over_tr: T1/TR array (numpy or cupy), same shape as b1_scales
+        :param interpolation: interpolation method passed to xarray (default 'linear')
+        :param extrapolation: True -> nearest-value extrapolation; False -> NaNs outside the table
+        :param device: optional 'cpu' or 'gpu'/'cuda' for the RETURNED array. If None, the result
+                       is returned on the same device as the input.
+        :return: values from the table, same shape as inputs
         """
 
-        # (0) Check if extrapolation is desired, otherwise make warning that it might yield NaNs
+        # (0) Extrapolation handling (unchanged)
         if extrapolation:
             extrapolation_arg = {"fill_value": None}
-            Console.printf("info", "Extrapolation is activated (nearest-value extrapolation). Double check retrieved values outside the WET lookup table!")
+            Console.printf("info",
+                           "Extrapolation is activated (nearest-value extrapolation). Double check retrieved values outside the WET lookup table!")
         else:
             extrapolation_arg = {}
-            Console.printf("warning", "Extrapolation is deactivated. This yields NaNs for values outside the WET lookup table!")
+            Console.printf("warning",
+                           "Extrapolation is deactivated. This yields NaNs for values outside the WET lookup table!")
 
-        # (1) Make sure that the arrays are numpy arrays
-        b1_scales = np.asarray(b1_scales)
-        t1_over_tr = np.asarray(t1_over_tr)
+        # (1) Remember the input backend, then move inputs to NumPy for the scipy/xarray interp.
+        #     (This replaces the old hard-coded np.asarray and is the ONLY necessary change.)
+        input_backend = ArrayTools.get_backend(b1_scales)  # numpy or cupy module
+        return_device = device if device is not None else ("gpu" if input_backend is cp else "cpu")
 
-        # (2) Check if the shapes of both arrays are matching
-        # (2a) Not matching shape
+        b1_scales = GPUTools.to_numpy(b1_scales)
+        t1_over_tr = GPUTools.to_numpy(t1_over_tr)
+
+        # (2) Shape check (unchanged)
         if b1_scales.shape != t1_over_tr.shape:
             Console.printf("error", f"The B1 scales and the T1/TR arrays need the same shape, but: \n"
                                     f"B1 scales: {b1_scales.shape} \n"
                                     f"T1/TR: {t1_over_tr.shape}")
             return None
 
-        else:
-            # (2b) Matching shape
-            original_shape = b1_scales.shape
+        # (2b) Matching shape -> interpolate (xarray/scipy does the work, no manual chunking)
+        original_shape = b1_scales.shape
+        retrieved_values = self.simulated_data.interp(
+            B1_scale_effective=xr.DataArray(b1_scales.ravel(), dims="points"),
+            T1_over_TR=xr.DataArray(t1_over_tr.ravel(), dims="points"),
+            method=interpolation,
+            kwargs=extrapolation_arg
+        ).values.reshape(original_shape)
 
-            # (3) Interpolate values from dictionary
-            # First flatten the b1_scales and t1_over_tr to fit the xarray interpolation function (scipy must be in background)
-            # and then reshape it to the original shape (based on the b1_scales, but could also be the t1_over_tr).
-            retrieved_values = self.simulated_data.interp(
-                B1_scale_effective=xr.DataArray(b1_scales.ravel(), dims="points"),
-                T1_over_TR=xr.DataArray(t1_over_tr.ravel(), dims="points"),
-                method=interpolation,
-                kwargs=extrapolation_arg
-            ).values.reshape(original_shape)
+        # (3) Move the result to the requested/original device via the project tools
+        retrieved_values = GPUTools.to_device(retrieved_values, device=return_device)
+        return retrieved_values
 
-            ArrayTools.check_nan(retrieved_values)
-            return retrieved_values
+###    def get(self, b1_scales, t1_over_tr, interpolation:str ="linear", extrapolation:bool = True):
+###        """
+###        Fetch the remaining signal data from the created lookup table for the desired arrays of B1 and T1/TR values.
+###
+###        :param b1_scales: the B1+ values array
+###        :param t1_over_tr: the T1/TR values array
+###        :return: values from the table
+###        """
+###
+###        # (0) Check if extrapolation is desired, otherwise make warning that it might yield NaNs
+###        if extrapolation:
+###            extrapolation_arg = {"fill_value": None}
+###            Console.printf("info", "Extrapolation is activated (nearest-value extrapolation). Double check retrieved values outside the WET lookup table!")
+###        else:
+###            extrapolation_arg = {}
+###            Console.printf("warning", "Extrapolation is deactivated. This yields NaNs for values outside the WET lookup table!")
+###
+###        # (1) Make sure that the arrays are numpy arrays
+###        b1_scales = np.asarray(b1_scales)
+###        t1_over_tr = np.asarray(t1_over_tr)
+###
+###        # (2) Check if the shapes of both arrays are matching
+###        # (2a) Not matching shape
+###        if b1_scales.shape != t1_over_tr.shape:
+###            Console.printf("error", f"The B1 scales and the T1/TR arrays need the same shape, but: \n"
+###                                    f"B1 scales: {b1_scales.shape} \n"
+###                                    f"T1/TR: {t1_over_tr.shape}")
+###            return None
+###
+###        else:
+###            # (2b) Matching shape
+###            original_shape = b1_scales.shape
+###
+###            # (3) Interpolate values from dictionary
+###            # First flatten the b1_scales and t1_over_tr to fit the xarray interpolation function (scipy must be in background)
+###            # and then reshape it to the original shape (based on the b1_scales, but could also be the t1_over_tr).
+###            retrieved_values = self.simulated_data.interp(
+###                B1_scale_effective=xr.DataArray(b1_scales.ravel(), dims="points"),
+###                T1_over_TR=xr.DataArray(t1_over_tr.ravel(), dims="points"),
+###                method=interpolation,
+###                kwargs=extrapolation_arg
+###            ).values.reshape(original_shape)
+###
+###            ArrayTools.check_nan(retrieved_values)
+###            return retrieved_values
 
     def plot(
             self,
@@ -2160,7 +2215,6 @@ class LookupTableWET: # Note: was before LookupTableWET2
 
 
             return magnetization_fid_last, residual_long_mag
-
 
 
 
