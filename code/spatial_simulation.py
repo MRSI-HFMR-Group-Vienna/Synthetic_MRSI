@@ -1,7 +1,7 @@
 import time
 
 from tools import JupyterPlotManager
-from tools import CustomArray, GPUTools, SortingTools, DaskTools, InterpolationTools
+from tools import GPUTools, SortingTools, DaskTools, InterpolationTools
 from cupyx.scipy.ndimage import zoom as zoom_gpu
 from scipy.ndimage import zoom as zoom_cpu
 from dataclasses import dataclass
@@ -488,6 +488,41 @@ class ParameterVolume(InterpolationInterface):
                                f" {'Data type: ':.<17} {self.volume.dtype} \n"
                                f" {'Space: ':.<17} {SpaceEstimator.for_array(self.volume, unit='MiB', verbose=False):.5g}",
                                mute=not verbose)
+
+        return self
+
+
+    def to_unit(self, target_unit: str, verbose: bool = True):
+        """
+        To change the unit of the whole ParameterVolume (e.g., mmol -> mol).
+
+        The conversion is applied to every individual ParameterMap (reusing ParameterMap.change_unit) and the 4D volume
+        is rebuilt afterwards, so the maps and the stacked volume always stay consistent.
+
+        Note: There is intentionally no flag to convert only the maps or only the volume - everything is changed
+        together to keep the object in a valid state.
+
+        :param target_unit: the desired unit as string
+        :param verbose: if True then prints to the console.
+        :return: the object itself
+        """
+        # When no Parameter Map is in the list
+        if not self.maps:
+            Console.printf("error", "First add at least one Parameter Map to the ParameterVolume before changing the unit.")
+            return self
+
+        unit_before = self.unit
+
+        # Convert each individual map (ParameterMap.change_unit already exists and returns self)
+        for i, m in enumerate(self.maps):
+            self.maps[i] = m.change_unit(target_unit=target_unit, verbose=False)
+
+        # Rebuild the 4D volume so volume and maps are consistent (this also updates self.unit)
+        self.to_volume(verbose=verbose)
+
+        Console.printf("success",
+                       f"Changed the unit of the whole ParameterVolume from {unit_before} to {self.unit}.",
+                       mute=not verbose)
 
         return self
 

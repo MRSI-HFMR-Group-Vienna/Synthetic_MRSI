@@ -12,7 +12,7 @@ from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 from datetime import datetime
 from functools import partial
-from tools import CustomArray
+#from tools import CustomArray
 from prettyconsole import Console
 from tools import GPUTools, DaskTools, UnitTools, SpaceEstimator, ArrayTools
 #from scipy.signal import resample
@@ -298,7 +298,7 @@ class FID:
         """
         To get one signal from the whole FID by name.
 
-        :param compound_name: Depending on the available names. An example coule be "NAcetylAspartate (NAA)".
+        :param compound_name: Depending on the available names. An example could be "NAcetylAspartate (NAA)".
         :return: A FID object containing only the desired signal.
         """
         try:
@@ -344,6 +344,22 @@ class FID:
             Console.printf("info", f"Get signal of {self.name} with precision of {np.finfo(signal.dtype).precision} decimal places")
 
         return signal
+
+
+    def scale_signal_by_name(self, compound_name: str, scaling_factor: float):
+        """
+        To scale the signal of a desired chemical compound.
+
+        :param scaling_factor: a float number to scale the signal
+        :param compound_name: the name of the desired chemical compound
+        :return: the object itself, containing also the modified/scaled signal
+        """
+        index = self.name.index(compound_name)
+        self.signal[index, :] = self.signal[index, :] * scaling_factor
+
+        Console.printf("success", f"Scaled the compound '{compound_name}' by the factor '{scaling_factor}'.")
+
+        return self
 
 
     def show_signal_shape(self) -> None:
@@ -2218,6 +2234,7 @@ class LookupTableWET: # Note: was before LookupTableWET2
 
 
 
+@deprecated(reason="Was just an experiment")
 class LookupTableWET_OLD:
     """
     This class is for creating a lookup table for water suppression. The technique is WET.
