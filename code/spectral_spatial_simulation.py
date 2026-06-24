@@ -379,6 +379,7 @@ class FID:
         self.name = [" + ".join(self.name)]  # To put all compound names in one string (in a list)
         return self
 
+
     # TODO: need to handle pint untits here?
     def get_spectrum(self, x_type="ppm", *, reference_frequency=297_223_042, ppm_center=4.65) -> dict[str, np.ndarray]: # 2.65
         r"""
@@ -428,6 +429,95 @@ class FID:
             x = ppm
 
         return {'x': x, 'y': spectrum}
+
+    def crop_signal(self, domain="ppm", x_range: list[float | int] = None, reference_frequency=297_223_042,
+                    ppm_center=4.65):
+        """
+        To simply crop the signal. Either in frequency domain or in time domain.
+
+        :param domain: possible is "ppm" or "frequency" or "time"
+        :param x_range: [start, end] of ppm, frequency, or time
+        :param reference_frequency: the reference frequency (larmor frequency)
+        :param ppm_center: the center of the ppm, usually water with 4.65
+        :return: The FID object itself
+        """
+
+        domain_possible = ["ppm", "frequency", "time"]
+
+        if domain not in domain_possible:
+            Console.printf("error", f"Domain '{domain}' is not possible. Only possible: {domain_possible}")
+            return self
+
+        # Handle pint quantities and pure arrays
+        time_unit = getattr(self.time, "units", None)
+        signal_unit = getattr(self.signal, "units", None)
+
+        time_array = getattr(self.time, "magnitude", self.time)
+        signal_array = getattr(self.signal, "magnitude", self.signal)
+
+        x_range_array = [
+            getattr(x_range[0], "magnitude", x_range[0]),
+            getattr(x_range[1], "magnitude", x_range[1]),
+        ]
+
+        if domain == "time":
+            x_start = np.abs(time_array - x_range_array[0]).argmin()
+            x_end = np.abs(time_array - x_range_array[1]).argmin()
+
+            self.signal = signal_array[:, x_start:x_end]
+            self.time = time_array[x_start:x_end]
+
+            if signal_unit is not None:
+                self.signal = self.signal * signal_unit
+            if time_unit is not None:
+                self.time = self.time * time_unit
+
+            Console.printf("success",
+                           f"Cropped FID signal(s) in time domain from {x_range[0]} -> {x_range[1]}. New shape: {self.signal.shape}")
+            return self
+
+        else:
+            data = self.get_spectrum(x_type=domain, reference_frequency=reference_frequency, ppm_center=ppm_center)
+            spectrum = data["y"]  # shape: (metabolites, signals)
+
+            x_start = np.abs(data["x"] - x_range_array[0]).argmin()
+            x_end = np.abs(data["x"] - x_range_array[1]).argmin()
+
+            spectrum = spectrum[:, x_start:x_end]
+            x = data["x"][x_start:x_end]
+
+            if domain == "ppm":
+                frequency_hz = (x - ppm_center) * reference_frequency / 1e6
+                Console.printf("success",
+                               f"Cropped FID signal(s) in ppm domain from {x_range[0]} -> {x_range[1]}. New spectrum shape: {spectrum.shape}")
+
+            elif domain == "frequency":
+                frequency_hz = x
+                Console.printf("success",
+                               f"Cropped FID signal(s) in frequency domain from {x_range[0]} -> {x_range[1]} Hz. New spectrum shape: {spectrum.shape}")
+
+            signal_time_domain = np.fft.ifft(
+                np.fft.ifftshift(spectrum, axes=1),
+                axis=1
+            )
+
+            N = frequency_hz.size
+            df = abs(frequency_hz[1] - frequency_hz[0])
+            dwell_time = 1 / (N * df)
+            time = np.arange(N) * dwell_time
+
+            self.time = time
+            self.signal = signal_time_domain
+
+            if signal_unit is not None:
+                self.signal = self.signal * signal_unit
+            if time_unit is not None:
+                self.time = self.time * time_unit
+
+            return self
+
+
+
 
 
     def apply_units(self):

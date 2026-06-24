@@ -1,10 +1,10 @@
 from __future__ import annotations      #TODO: due to circular import. Maybe solve different!
 from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
 
-from dask.dataframe.partitionquantiles import dtype_info
+from tools import deprecated
 
 if TYPE_CHECKING:                       #TODO: due to circular import. Maybe solve different!
-    from spatial_metabolic_distribution import MetabolicPropertyMap  #TODO: due to circular import. Maybe solve different!
+    from spatial_simulation import ParameterVolume  #TODO: due to circular import. Maybe solve different!
 
 from cupyx.scipy.interpolate import interpn as interpn_gpu
 from scipy.interpolate import interpn as interpn_cpu
@@ -12,9 +12,12 @@ from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 from datetime import datetime
 from functools import partial
-from tools import CustomArray
-from printer import Console
-from tools import GPUTools
+#from tools import CustomArray
+from prettyconsole import Console
+from tools import GPUTools, DaskTools, UnitTools, SpaceEstimator, ArrayTools
+#from scipy.signal import resample
+from math import gcd
+from scipy.signal import resample_poly, resample
 from pathlib import Path
 import dask.array as da
 import seaborn as sns
@@ -23,10 +26,16 @@ import numpy as np
 import cupy as cp
 # import numba
 # from numba import cuda
+import json
 import tools
 import dask
+import pint
 import sys
 import os
+
+import difflib
+
+import xarray as xr
 
 
 class FID:
@@ -38,12 +47,12 @@ class FID:
     necessary, decrease the memory load.
     """
     def __init__(self,
-                 signal: np.ndarray = None,
-                 time: np.ndarray = None,
+                 signal: np.ndarray | pint.Quantity = None,
+                 time: np.ndarray | pint.Quantity = None,
                  name: list[str] = None,
-                 signal_data_type: np.dtype = None,
-                 sampling_period: float = None,
-                 sampling_period_unit = None):
+                 signal_data_type: np.dtype = None):
+                 #sampling_period: float = None,
+                 #unit_time: pint.Unit = None):
         """
         A checks if the shape of the time vector equals the signal vector is performed. If false then the program quits.
         Further, it is also possible to instantiate a class containing just "None".
@@ -68,7 +77,9 @@ class FID:
         self.name: list = name  # name, e.g., of the respective metabolite
         self.concentration: float = None
         self.t2_value: np.ndarray = None  # TODO
-        self.sampling_period = sampling_period  # it is just 1/(sampling frequency)
+        #self.sampling_period = sampling_period  # it is just 1/(sampling frequency)
+
+        #self.unit_time = unit_time
 
         self._iter_index = 0
 
@@ -99,28 +110,98 @@ class FID:
 
         return fid
 
+    def cut(self,
+            length: int = None,
+            interval: tuple = None,
+            length_time: float = None,
+            interval_time: tuple = None):
+        """
+        Cut the signal (and the matching time axis) along the sample axis.
+
+        Exactly one of the four arguments must be given:
+
+        :param length:        Keep samples [0, length) by sample count.
+        :param interval:      Keep samples [start, end) by sample index, e.g. (100, 5000).
+        :param length_time:   Keep a span of this duration starting at time[0]
+                              (in the same unit as self.time).
+        :param interval_time: Keep samples between two absolute time values (t_start, t_end),
+                              (in the same unit as self.time).
+        :return: self (for method chaining).
+        """
+
+        # Exactly one argument may be set -- not zero, not several.
+        provided_arguments = [length, interval, length_time, interval_time]
+        provided_arguments_number = sum(arg is not None for arg in provided_arguments)
+
+        if provided_arguments_number != 1:
+            Console.printf("error",
+                           "Either specify the length or the interval (time or plain)! Multiple are not possible!")
+            return self
+
+        # Reduce every case to a pair of sample indices [start:end), then slice once.
+        if length is not None:
+            start, end = 0, length
+        elif interval is not None:
+            start, end = interval
+        else:
+            # self.time may carry physical units (pint Quantity); compare on raw magnitudes.
+            time_values = self.time.magnitude if hasattr(self.time, "magnitude") else np.asarray(self.time)
+            if length_time is not None:
+                start = 0
+                end = int(np.searchsorted(time_values, time_values[0] + length_time, side="right"))
+            else:  # interval_time is not None
+                start = int(np.searchsorted(time_values, interval_time[0], side="left"))
+                end = int(np.searchsorted(time_values, interval_time[1], side="right"))
+
+        signal_length_before = self.signal.shape
+        time_length_before = self.time.shape
+
+        self.signal = self.signal[:, start:end]
+        self.time = self.time[start:end]
+
+        Console.printf("success", f"Cut the array:\n"
+                                  f"  signal: {str(signal_length_before) + ' ':=<15}=> {self.signal.shape}\n"
+                                  f"  time:   {str(time_length_before) + ' ':=<15}=> {self.time.shape}")
+
+        return self
+
     def merge_signals(self, names: list[str], new_name: str, divisor: int):
         """
-        TODO Describe!
+        Merge selected FID signal into one. Also, therefore a divisor can be specified. E.g., (signal 1 + signal 2)/divisor.
+        It also removes the old entries and insert the new generated entry.
 
-        :param new_name:
-        :param names:
-        :param divisor:
-        :return:
+        An example usage, why the divisor is important:
+
+            fid.merge_signals(names=["Choline_moi(GPC)", "Glycerol_moi(GPC)", "PhosphorylCholine_new1 (PC)"],
+                      new_name="GPC+PCh",
+                      divisor=2)
+
+        :param new_name: the new name of the merged sigal
+        :param names: list of names of the signals which should be merged
+        :param divisor: integer number, factor to divide the sum of the desired signals
+        :return: Nothing
         """
         indices = []
 
-        signal = np.zeros(self.signal.shape[1], dtype=self.signal.dtype) # empty array of fid length
+        signal = np.zeros(self.signal.shape[1], dtype=self.signal.dtype)  # empty array of fid length
         for name in names:
-            signal += self.get_signal_by_name(name).signal
+            # To get the signal by name. If the name is unknown, get_signal_by_name() returns None
+            # and prints a detailed error via Console.printf_collected_lines.
+            # => Catch the resulting AttributeError here and abort, since merging is invalid then.
+            try:
+                signal += self.get_signal_by_name(name).signal
+            except AttributeError:
+                Console.printf("error", f"Aborting merging the signals: unknown compound name '{name}'. No changes applied.")
+                return
+
             index = self.name.index(name)
             indices.append(index)
 
-        signal *= 1/divisor
+        signal *= 1 / divisor
 
         # delete OLD entries
         self.signal = np.delete(self.signal, indices, axis=0)
-        self.name = [name for name in self.name if name not in names] # delete the OLD names by getting subset
+        self.name = [name for name in self.name if name not in names]  # delete the OLD names by getting subset
 
         # insert new entries
         self.signal = np.vstack((self.signal, signal))
@@ -181,11 +262,43 @@ class FID:
 
         return name_abbreviation
 
+    def drop_signal_by_name(self, compound_name: str | list[str]):
+        """
+        To drop one or multiple components of the
+
+        :param compound_name:
+        :return:
+        """
+
+        # Check if compound name is of type string
+        if isinstance(compound_name, str):
+            compound_name = [compound_name]
+
+        # Give error if remaining signals would be less than 1
+        if len(self.name) - len(compound_name) < 1:
+            Console.printf("error", f"Cannot drop {compound_name}: would leave fewer than one signal")
+            return
+
+        # Check if all provided compound names exist in the list
+        missing = [n for n in compound_name if n not in self.name]
+        if missing:
+            Console.printf("warning", f"Compounds named the following not found: {missing}. Cannot delete them!")
+
+        # Get all the indices of the names and then delete:
+        #  -> the desired signal at the respective position in the array,
+        #  -> and the desired compound names in the list and
+        indices = [self.name.index(n) for n in compound_name]
+        self.signal = np.delete(self.signal, indices, axis=0)
+        for k in sorted(indices, reverse=True):
+            del self.name[k]
+
+        return self
+
     def get_signal_by_name(self, compound_name: str):
         """
         To get one signal from the whole FID by name.
 
-        :param compound_name: Depending on the available names. An example coule be "NAcetylAspartate (NAA)".
+        :param compound_name: Depending on the available names. An example could be "NAcetylAspartate (NAA)".
         :return: A FID object containing only the desired signal.
         """
         try:
@@ -193,8 +306,30 @@ class FID:
             signal = self.signal[index, :]
             return FID(signal=signal, name=[compound_name], time=self.time)
         except ValueError:
-            Console.printf("error", f"Chemical compound not available: {compound_name}. Please check your spelling and possible whitespaces!")
-            return
+            # 1) To get the available names and find the closest match (if any) to catch typos / whitespaces
+            available = list(self.name) if self.name is not None else []
+            suggestion = difflib.get_close_matches(compound_name, available, n=1, cutoff=0.6)
+            suggestion_str = f" Did you mean: '{suggestion[0]}'?" if suggestion else ""
+
+            # 2) To collect the main error message including the suggestion
+            Console.add_lines(
+                f"Chemical compound not available: '{compound_name}'. "
+                f"Please check your spelling and possible whitespaces!{suggestion_str}"
+            )
+
+            # 3) To collect the list of available names (quotes => whitespaces visible)
+            if available:
+                Console.add_lines(f"Available names ({len(available)}):")
+                for n in available:
+                    Console.add_lines(f"  - '{n}'")
+            else:
+                Console.add_lines("Available names: (none — self.name is empty)")
+
+            # 4) To print the whole collected error block at once
+            Console.printf_collected_lines("error")
+
+            return None
+
 
     def get_signal(self, signal_data_type: np.dtype=np.complex64, mute=True):
         """
@@ -210,6 +345,23 @@ class FID:
 
         return signal
 
+
+    def scale_signal_by_name(self, compound_name: str, scaling_factor: float):
+        """
+        To scale the signal of a desired chemical compound.
+
+        :param scaling_factor: a float number to scale the signal
+        :param compound_name: the name of the desired chemical compound
+        :return: the object itself, containing also the modified/scaled signal
+        """
+        index = self.name.index(compound_name)
+        self.signal[index, :] = self.signal[index, :] * scaling_factor
+
+        Console.printf("success", f"Scaled the compound '{compound_name}' by the factor '{scaling_factor}'.")
+
+        return self
+
+
     def show_signal_shape(self) -> None:
         """
         Print the shape of the FID signal to the console.
@@ -217,6 +369,7 @@ class FID:
         :return: None
         """
         Console.printf("info", f"FID Signal shape: {self.signal.shape}")
+
 
     def sum_all_signals(self):
         """
@@ -226,6 +379,8 @@ class FID:
         self.name = [" + ".join(self.name)]  # To put all compound names in one string (in a list)
         return self
 
+
+    # TODO: need to handle pint untits here?
     def get_spectrum(self, x_type="ppm", *, reference_frequency=297_223_042, ppm_center=4.65) -> dict[str, np.ndarray]: # 2.65
         r"""
         To get the spectrum of all signals contained in the FID (e.g. of NAA, Glutamate, and so on). Also, a single signal
@@ -234,7 +389,7 @@ class FID:
         When ppm is computed:
 
         .. math::
-            \text{ppm} = \text{ppm}_{\text{center}} - \frac{f}{f_{ref}}\times 10^{6} ~~~~
+            \text{ppm} = \text{ppm}_{\text{center}} + \frac{f}{f_{ref}}\times 10^{6} ~~~~
         .. math:: ~
         .. math::
             \text{with:}~f=\text{frequency [Hz]}, f_{ref}=\text{reference frequency [Hz]}, \text{and}~10^{6}~\text{to get [MHz]}
@@ -250,8 +405,8 @@ class FID:
             sys.exit()
 
         # A) Compute the frequency vector
-        N = self.time.size
-        dwell_time = self.time[1] - self.time[0]
+        N = tools.UnitTools.remove_unit(self.time.size)
+        dwell_time = tools.UnitTools.remove_unit(self.time[1] - self.time[0])
         frequency_hz = np.fft.fftfreq(N, d=dwell_time)
         frequency_hz = np.fft.fftshift(frequency_hz)
         x = frequency_hz
@@ -261,19 +416,232 @@ class FID:
             signal = self.signal[np.newaxis, :]
         else:
             signal = self.signal
+
+        signal = tools.UnitTools.remove_unit(signal)
+
         spectrum = np.fft.fft(signal, axis=1)
         spectrum = np.fft.fftshift(spectrum, axes=1)
 
         # B) Convert the frequency vector a ppm scale (spectroscopic):
         if x_type == "ppm":
-            #ppm = ppm_center - (frequency / reference_frequency) * 1e6
+            #ppm = ppm_center + (frequency / reference_frequency) * 1e6
             ppm = (frequency_hz / reference_frequency) * 1e6 + ppm_center
             x = ppm
 
         return {'x': x, 'y': spectrum}
 
 
-    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=1_500, show=True, save_path: str=None, *, reference_frequency=297_223_042, ppm_center=4.65, additional_description:str="", legend_position='upper left', figsize=(15,8)) -> None:
+    def crop_signal(self, domain="ppm", x_range: list[float | int] = None, reference_frequency=297_223_042, ppm_center=4.65):
+        """
+        To simply crop the signal. Either in frequency domain or in time domain.
+
+        :param domain: possible is "ppm" or "frequency" or "time"
+        :param x_range: [start, end] of ppm, frequency, or time
+        :param reference_frequency: the reference frequency (larmor frequency)
+        :param ppm_center: the center of the ppm, usually water with 4.65
+        :return: The FID object itself
+        """
+
+        domain_possible = ["ppm", "frequency", "time"]
+
+        if domain not in domain_possible:
+            Console.printf("error", f"Domain '{domain}' is not possible. Only possible: {domain_possible}")
+            return self
+
+        if domain == "time":
+            x_start = np.abs(self.time - x_range[0]).argmin()
+            x_end = np.abs(self.time - x_range[1]).argmin()
+
+            self.signal = self.signal[:, x_start:x_end]
+            self.time = self.time[x_start:x_end]
+            return self
+
+        else:
+            data = self.get_spectrum(x_type=domain, reference_frequency=reference_frequency, ppm_center=ppm_center)
+            spectrum = data["y"]  # shape: (metabolites, signals)
+
+            x_start = np.abs(data["x"] - x_range[0]).argmin()
+            x_end = np.abs(data["x"] - x_range[1]).argmin()
+
+            spectrum = spectrum[:, x_start:x_end]
+            x = data["x"][x_start:x_end]
+
+            if domain == "ppm":
+                frequency_hz = (x - ppm_center) * reference_frequency / 1e6
+
+            elif domain == "frequency":
+                frequency_hz = x
+
+            signal_time_domain = np.fft.ifft(
+                np.fft.ifftshift(spectrum, axes=1),
+                axis=1
+            )
+
+            N = frequency_hz.size
+            df = abs(frequency_hz[1] - frequency_hz[0])
+            dwell_time = 1 / (N * df)
+            time = np.arange(N) * dwell_time
+
+            self.time = time
+            self.signal = signal_time_domain
+
+            return self
+
+
+
+
+
+    def apply_units(self):
+        """
+        To apply given units to the FID. Note: This is only possible for the time vector at the moment.
+
+        :return: Nothing
+        """
+        if (self.unit_time is not None) and (self.time is not None):
+            self.time = self.unit_time * self.time
+            Console.printf("success", f"Assigned '{self.unit_time}' to the time vector.")
+        else:
+            Console.printf("error", f"Cannot assign unit '{self.unit_time}' to the time vector.")
+
+
+###    def plot(self, x_type="ppm", y_type="magnitude", plot_offset=1_500, show=True, save_path: str=None, *, reference_frequency=None, ppm_center=None, additional_description:str="", legend_position='upper left', figsize=(15,8)) -> None:
+###        """
+###        To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
+###
+###        The plot supports to plot:
+###            - The signals in the time domain (x_type='time')
+###            - The signals in the frequency domain in Hz (x_type='frequency')
+###            - The signals in the frequency domain in ppm (x_type='ppm')
+###
+###        Further, it is possible to save this plot and/or show it.
+###
+###        If ppm is chosen for x_type then spectroscopic axis form [X to 0], thus values are descending.
+###
+###        **(!) Please note:** If the magnitude is of the individual signals is low and the **plot_offset** relatively high, then the individual signals appear flat in the plot.
+###        **(!) The default plot_offset is 2000**!
+###
+###        :param x_type: Defines the domain. Can be "time", "frequency", "ppm".
+###        :param plot_offset: Offset in vertical axis (y-axis) for preventing signal overlapping.
+###        :param show: If plot is shown directly after creating it.
+###        :param save_path: Path including filename to save plot.
+###        :param reference_frequency: Important when using ppm, can be e.g., those of tetramethylsilane (TMS), or water, etc...
+###        :param ppm_center: Defines which chemical shift value corresponds to a frequency offset of 0 Hz
+###        :param additional_description: Additional string. Please make "\\n" for new lines!
+###        :param legend_position: See matplotlib.
+###        :return: Nothing
+###        """
+###
+###        if reference_frequency is None:
+###            reference_frequency = 297_223_042
+###            Console.printf("warning", f"No reference frequency is specified. Choosing: {reference_frequency} Hz.")
+###
+###        if ppm_center is None:
+###            ppm_center = 4.7
+###            Console.printf("warning", f"No ppm center is specified. Choosing: {ppm_center} ppm.")
+###
+###        # 0) Define possible quantities for x and y axis
+###        x_type_possible = ["time", "frequency", "ppm"]
+###        y_type_possible = {
+###            "magnitude": np.abs,
+###            "real": np.real,
+###            "imag": np.imag,
+###            "phase_rad": partial(np.angle, deg=False),
+###            "phase_deg": partial(np.angle, deg=True),
+###        }
+###
+###        # 1) Check if chosen type for x-axis is valid
+###        if not x_type in x_type_possible:
+###            Console.printf("error", f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
+###            sys.exit()
+###
+###        # 2) Then, cases possible: plotting either in time domain or the frequency domain (frequency=>Hz or ppm)
+###        if x_type == "time":
+###            scales = self.time
+###            signal = self.signal[np.newaxis, :] if self.signal.ndim == 1 else self.signal # to ensure signal has dim (1, X)
+###        else:
+###            spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency, ppm_center=ppm_center)
+###            scales = spectrum_dict["x"]
+###            signal = spectrum_dict["y"]
+###
+###        # 3a) Left subplot: To create the figure and plot all signals
+###        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=figsize,
+###                                                  nrows=1,
+###                                                  ncols=2,
+###                                                  gridspec_kw={'width_ratios': [5, 1]})
+###
+###        #  -> Convert complex signal to possible quantity and print error if quantity not supported
+###        if not y_type in y_type_possible:
+###            Console.printf("error",f"Only possible to choose '{y_type_possible}' for y-axis, but you have chosen '{y_type}'. Terminate program!")
+###            sys.exit()
+###        else:
+###            transform = y_type_possible[y_type]
+###
+###        #  -> PlotInterface all signals
+###        for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
+###            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.8)
+###        ax_main.set_title('Absolute Values of the FID')
+###        ax_main.set_xlabel(f"{x_type}")
+###
+###        # 3b) Right subplot: To create the description
+###        ax_sidebar.axis('off')
+###        ax_sidebar.set_title('Description')  # keep the box/frame
+###        text_description = (f"{'PlotInterface offset':.<17}: {plot_offset}\n"
+###                            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
+###                            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}")
+###
+###        # 3c) If ppm then add additional information
+###        if x_type == "ppm":
+###            ppm_string = (f"{'Ref. frequency':.<17}: {reference_frequency}\n"
+###                          f"{'ppm center':.<17}: {ppm_center if x_type == 'ppm' else None}\n")
+###            text_description = ppm_string + text_description
+###
+###        # 3d) Just to ensure this is first in text string
+###        text_description = f"{'Show y-values':.<17}: {y_type}\n" + text_description
+###
+###        # 4) Add text to the right (description) text subplot
+###        ax_sidebar.text(
+###            0.01, 0.99, text_description,
+###            transform=ax_sidebar.transAxes,
+###            va='top',
+###            ha='left',
+###            family='monospace'
+###        )
+###
+###        # 5a) Just required in case ppm occurs, thus x-axis is mirrored (spectroscopic view)
+###        handles, labels = ax_main.get_legend_handles_labels()
+###        handles = handles[::-1]
+###        labels = labels[::-1]
+###
+###        # 5b) Apply mirroring of axis in case ppm is chosen
+###        if x_type == "ppm":
+###            ax_main.invert_xaxis()
+###
+###        # 5c) Create the whole figure
+###        ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False, ncol=1)
+###        plt.tight_layout()
+###
+###
+###        # 6) Save to desired path and/or show
+###        if save_path is not None:
+###            fig.savefig(save_path)
+###        if show:
+###            plt.show()
+
+    def plot(
+            self,
+            x_type="ppm",
+            y_type="magnitude",
+            plot_offset=1_500,
+            show=True,
+            save_path: str = None,
+            *,
+            reference_frequency=None,
+            ppm_center=None,
+            additional_description: str = "",
+            legend_position="upper left",
+            figsize=(15, 8),
+            show_metabolites_ideal_position: bool = False,  # NEW
+    ) -> None:
         """
         To plot all signals contained in the current FID object. It also supports of the FID object only hold currently one signal.
 
@@ -297,8 +665,21 @@ class FID:
         :param ppm_center: Defines which chemical shift value corresponds to a frequency offset of 0 Hz
         :param additional_description: Additional string. Please make "\\n" for new lines!
         :param legend_position: See matplotlib.
+        :param show_metabolites_ideal_position: If True and x_type == "ppm", overlays metabolite real ppm positions using
+                                               self.metabolites_ideal_ppm = {metab_name: [ppm, ...], ...}
         :return: Nothing
         """
+
+        time = tools.UnitTools.remove_unit(self.time)
+        signal = tools.UnitTools.remove_unit(self.signal)
+
+        if reference_frequency is None:
+            reference_frequency = 297_223_042
+            Console.printf("warning", f"No reference frequency is specified. Choosing: {reference_frequency} Hz.")
+
+        if ppm_center is None:
+            ppm_center = 4.7
+            Console.printf("warning", f"No ppm center is specified. Choosing: {ppm_center} ppm.")
 
         # 0) Define possible quantities for x and y axis
         x_type_possible = ["time", "frequency", "ppm"]
@@ -312,60 +693,200 @@ class FID:
 
         # 1) Check if chosen type for x-axis is valid
         if not x_type in x_type_possible:
-            Console.printf("error", f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!")
+            Console.printf(
+                "error",
+                f"Only possible to choose '{x_type_possible}' for x-axis, but you have chosen '{x_type}'. Terminate program!",
+            )
             sys.exit()
 
         # 2) Then, cases possible: plotting either in time domain or the frequency domain (frequency=>Hz or ppm)
         if x_type == "time":
-            scales = self.time
-            signal = self.signal[np.newaxis, :] if self.signal.ndim == 1 else self.signal # to ensure signal has dim (1, X)
+            scales = time
+            signal = signal[
+                np.newaxis, :] if self.signal.ndim == 1 else self.signal  # to ensure signal has dim (1, X)
         else:
-            spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency, ppm_center=ppm_center)
+            spectrum_dict = self.get_spectrum(x_type=x_type, reference_frequency=reference_frequency,
+                                              ppm_center=ppm_center)
             scales = spectrum_dict["x"]
             signal = spectrum_dict["y"]
 
-        # 3a) Left subplot: To create the figure and plot all signals
-        fig, (ax_main, ax_sidebar) = plt.subplots(figsize=figsize,
-                                                  nrows=1,
-                                                  ncols=2,
-                                                  gridspec_kw={'width_ratios': [5, 1]})
+        # 2b) (NEW) Force the signal to be 2D in every code path. Otherwise zip(self.name, scales, signal)
+        #     can iterate over scalar samples and produce a near-empty plot in JupyterLab.
+        if np.asarray(signal).ndim == 1:
+            signal = np.asarray(signal)[np.newaxis, :]
 
-        #  -> Convert complex signal to possible quantity and print error if quantity not supported
+        # 2c) (NEW) Normalise self.name to a list, so iterating doesn't accidentally walk over the
+        #     characters of a single string when only one signal is present.
+        names = self.name if isinstance(self.name, (list, tuple)) else [self.name]
+
+        # 2d) (NEW) Convert complex signal to chosen quantity (moved up so we can validate before layout)
         if not y_type in y_type_possible:
-            Console.printf("error",f"Only possible to choose '{y_type_possible}' for y-axis, but you have chosen '{y_type}'. Terminate program!")
+            Console.printf(
+                "error",
+                f"Only possible to choose '{y_type_possible}' for y-axis, but you have chosen '{y_type}'. Terminate program!",
+            )
             sys.exit()
         else:
             transform = y_type_possible[y_type]
 
-        #  -> PlotInterface all signals
-        for i, (name, scale, signal)  in enumerate(zip(self.name, scales, signal)):
-            ax_main.plot(scales, transform(signal)+(i*plot_offset), label=name, linewidth=0.8)
-        ax_main.set_title('Absolute Values of the FID')
+        # 2e) (MOVED) Load metabolite reference data *before* creating axes, so the layout decision below
+        #     can be based on the actual data and we never reserve an empty top track.
+        Console.printf("warning", "(!!!) Path to the chemical_compounds.json is hard coded! Change it (!!!)")
+        path = Path.cwd().parent / "resources" / "chemical_compounds.json"
+        with path.open("r", encoding="utf-8") as f:
+            compounds = json.load(f)
+
+        self.metabolites_ideal_ppm = {}
+        for key in compounds["metabolites"].keys():
+            self.metabolites_ideal_ppm[key] = compounds["metabolites"][key]["ppm"]
+
+        # 2f) (NEW) Decide once whether the top metabolite track is actually needed.
+        #     This drives the gridspec below; no axis is created unless it will be filled.
+        metab_dict = self.metabolites_ideal_ppm
+        needs_top = bool(
+            show_metabolites_ideal_position
+            and x_type == "ppm"
+            and isinstance(metab_dict, dict)
+            and len(metab_dict) > 0
+        )
+        if show_metabolites_ideal_position and x_type == "ppm" and not needs_top:
+            Console.printf(
+                "warning",
+                "show_metabolites_ideal_position=True, but self.metabolites_ideal_ppm is missing/empty. No overlay plotted.",
+            )
+
+        # 3a) (CHANGED) Build the whole layout with a single gridspec instead of plt.subplots +
+        #     make_axes_locatable. Reason: make_axes_locatable interacts badly with tight_layout()
+        #     and plt.subplots_adjust(), which is what caused JupyterLab to sometimes render only
+        #     reserved empty space. Doing the layout in one shot is robust and reproducible.
+        fig = plt.figure(figsize=figsize, constrained_layout=False)
+
+        # -> Outer split: main column (5) vs. sidebar (1)
+        outer_gs = fig.add_gridspec(
+            nrows=1, ncols=2, width_ratios=[5, 1],
+            left=0.06, right=0.98, top=0.92, bottom=0.10, wspace=0.10,
+        )
+
+        if needs_top:
+            # -> Inside the main column, split into top track (1) and main plot (4)
+            inner_gs = outer_gs[0, 0].subgridspec(nrows=2, ncols=1, height_ratios=[1, 4], hspace=0.05)
+            ax_top = fig.add_subplot(inner_gs[0, 0])
+            ax_main = fig.add_subplot(inner_gs[1, 0], sharex=ax_top)
+        else:
+            ax_top = None
+            ax_main = fig.add_subplot(outer_gs[0, 0])
+
+        ax_sidebar = fig.add_subplot(outer_gs[0, 1])
+
+        # -> PlotInterface all signals (loop var renamed from 'signal' to 'sig' to avoid shadowing the outer array;
+        #    'names' instead of 'self.name' to be safe against single-string self.name)
+        for i, (name, sig) in enumerate(zip(names, signal)):
+            ax_main.plot(scales, transform(sig) + (i * plot_offset), label=name, linewidth=0.8)
+        ax_main.set_title("Absolute Values of the FID")
         ax_main.set_xlabel(f"{x_type}")
 
-        # 3b) Right subplot: To create the description
-        ax_sidebar.axis('off')
-        ax_sidebar.set_title('Description')  # keep the box/frame
-        text_description = (f"{'PlotInterface offset':.<17}: {plot_offset}\n"
-                            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
-                            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}")
+        # 3b) Top subplot: Show the available metabolites as list and a dot where a peak occurs.
+        #                  Further, plot horizontal lines at the 'peak position'/'center of peaks'
+        #     NOTE (CHANGED): ax_top is now created above via gridspec, no longer via make_axes_locatable.
+        if needs_top:
+            from matplotlib.transforms import blended_transform_factory
 
-        # 3c) If ppm then add additional information
+            metabs = list(metab_dict.keys())
+            cmap = plt.get_cmap("Dark2")
+            color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
+
+            # a) vlines across full main-plot height
+            y0, y1 = ax_main.get_ylim()
+            ymin, ymax = (y0, y1) if y0 < y1 else (y1, y0)
+
+            for m in metabs:
+                ppms = np.asarray(metab_dict[m], dtype=float)
+                ax_main.vlines(
+                    ppms,
+                    ymin=ymin,
+                    ymax=ymax,
+                    colors=color_map[m],
+                    lw=0.8,
+                    alpha=0.25,
+                    zorder=0,
+                    label="_nolegend_",
+                )
+
+            # b) configure the top track axis (already created via gridspec above)
+            n = len(metabs)
+            ax_top.set_ylim(-0.5, n - 0.5)
+            ax_top.set_yticks([])  # no y ticks here
+            ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False, top=False, labeltop=False)
+            for s in ["left", "right", "bottom"]:
+                ax_top.spines[s].set_visible(False)
+
+            # x in axes fraction (0..1), y in row index units
+            trans = blended_transform_factory(ax_top.transAxes, ax_top.transData)
+
+            for i, m in enumerate(metabs):
+                col = color_map[m]
+                ppms = np.asarray(metab_dict[m], dtype=float)
+
+                # dots in row i
+                ax_top.scatter(ppms, np.full_like(ppms, i, dtype=float), s=18, color=col, alpha=0.9, linewidths=0)
+
+                # top-left metabolite list (colored)
+                ax_top.text(
+                    0.01,
+                    i,
+                    m,
+                    transform=trans,
+                    ha="left",
+                    va="center",
+                    color=col,
+                    alpha=0.9,
+                    fontsize=9,
+                    clip_on=True,
+                )
+
+            # optional subtle row guides
+            ax_top.hlines(
+                np.arange(n),
+                xmin=ax_main.get_xlim()[0],
+                xmax=ax_main.get_xlim()[1],
+                colors="k",
+                alpha=0.06,
+                lw=0.8,
+            )
+
+        # 3c) Right subplot: To create the description
+        ax_sidebar.axis("off")
+        ax_sidebar.set_title("Description")  # keep the box/frame
+        text_description = (
+            f"{'PlotInterface offset':.<17}: {plot_offset}\n"
+            f"{'Datetime':.<17}: {datetime.now().replace(microsecond=0)}\n\n"
+            f"{'Additional info':.<17}: {'Nothing' if additional_description == '' else additional_description}"
+        )
+
+        # 3d) If ppm then add additional information
         if x_type == "ppm":
-            ppm_string = (f"{'Ref. frequency':.<17}: {reference_frequency}\n"
-                          f"{'ppm center':.<17}: {ppm_center if x_type == 'ppm' else None}\n")
+            ppm_string = (
+                f"{'Ref. frequency':.<17}: {reference_frequency}\n"
+                f"{'ppm center':.<17}: {ppm_center if x_type == 'ppm' else None}\n"
+            )
             text_description = ppm_string + text_description
 
-        # 3d) Just to ensure this is first in text string
+        # 3e) Just to ensure this is first in text string
         text_description = f"{'Show y-values':.<17}: {y_type}\n" + text_description
+
+        ### Also: add info about metabolite overlay into description (right side)
+        ##if x_type == "ppm":
+        ##    text_description = f"{'Metab. overlay':.<17}: {show_metabolites_ideal_position}\n" + text_description
 
         # 4) Add text to the right (description) text subplot
         ax_sidebar.text(
-            0.01, 0.99, text_description,
+            0.01,
+            0.99,
+            text_description,
             transform=ax_sidebar.transAxes,
-            va='top',
-            ha='left',
-            family='monospace'
+            va="top",
+            ha="left",
+            family="monospace",
         )
 
         # 5a) Just required in case ppm occurs, thus x-axis is mirrored (spectroscopic view)
@@ -376,27 +897,69 @@ class FID:
         # 5b) Apply mirroring of axis in case ppm is chosen
         if x_type == "ppm":
             ax_main.invert_xaxis()
+            # sharex => ax_top (if created) mirrors automatically, no extra code needed
 
         # 5c) Create the whole figure
         ax_main.legend(handles, labels, loc=legend_position, fontsize=9, frameon=True, markerfirst=False, ncol=1)
-        plt.tight_layout()
 
+        # 5d) (CHANGED) Do NOT call plt.tight_layout() / plt.subplots_adjust() here. The layout is
+        #     already fully specified by the gridspec above. Mixing tight_layout with manual adjusts
+        #     was the root cause of the 'empty reserved space' rendering bug in JupyterLab.
 
         # 6) Save to desired path and/or show
         if save_path is not None:
-            fig.savefig(save_path)
+            fig.savefig(save_path, bbox_inches="tight")  # bbox_inches="tight" so saved file isn't clipped
+
+        # 6b) (CHANGED) In JupyterLab, force a draw on *this* figure before showing. plt.show() alone
+        #     can occasionally display a stale/empty canvas if the layout was reflowed late.
         if show:
+            fig.canvas.draw_idle()
             plt.show()
+        else:
+            # If we are not showing, close to prevent JupyterLab from auto-displaying the figure
+            # at the end of the cell (which would otherwise also look like 'empty space').
+            plt.close(fig)
 
 
-    def change_signal_data_type(self, signal_data_type: np.dtype) -> None:
+    def change_signal_data_type(self, signal_data_type: np.dtype, verbose=True) -> None:
         """
-        For changing the data type of the FID. Possible usecase: convert FID signals to lower bit signal, thus reduce required space.
+        For changing the data type of the FID signal. Possible use case: convert FID signals to lower bit signal, thus reduce required space.
 
+        :param verbose: if True print conversion to console
         :param signal_data_type: Numpy data type
         :return: Nothing
         """
+        signal_before = self.signal
+        data_type_before = signal_before.dtype
+        data_type_after = signal_data_type
+
         self.signal = self.signal.astype(signal_data_type)
+        Console.printf("success", f"Changed FID signal from {data_type_before} "
+                                  f"({SpaceEstimator.for_array(signal_before, unit='KiB')}) "
+                                  f"=> "
+                                  f"{data_type_after} "
+                                  f"({SpaceEstimator.for_array(self.signal, unit='KiB')})", mute=not verbose)
+
+
+    def change_time_data_type(self, time_data_type: np.dtype, verbose=True) -> None:
+        """
+        For changing the data type of the FID time. Possible use case: convert FID time vector to lower bit signal, thus reduce required space.
+
+        :param verbose: if True print conversion to console
+        :param time_data_type: Numpy data type
+        :return: Nothing
+        """
+        time_before = self.time
+        data_type_before = time_before.dtype
+        data_type_after = time_data_type
+
+        self.time = self.time.astype(time_data_type)
+        Console.printf("success", f"Changed FID time from {data_type_before} "
+                                  f"({SpaceEstimator.for_array(time_before, unit='KiB')}) "
+                                  f"=> "
+                                  f"{data_type_after} "
+                                  f"({SpaceEstimator.for_array(self.time, unit='KiB')})", mute=not verbose)
+
 
     def __add__(self, other):
         """
@@ -418,11 +981,16 @@ class FID:
             return self
 
         # Case 2: The self and other object both do not have None attributes and need to be summed
-        if not np.array_equal(self.time, other.time):
-            Console.printf("error", f"Not possible to sum the two FID since the time vectors are different! Vector 1: {self.time.shape}, Vector 2; {other.times.shape}")
+        if not UnitTools.equal(self.time, other.time, tolerant=True):
+            Console.printf("error",
+                           f"Not possible to sum the two FID since the time vectors differ in shape or content! "
+                           f"Vector 1 shape: {self.time.shape}, Vector 2 shape: {other.time.shape}"
+                           )
             return
         if not self.signal.shape[-1] == other.signal.shape[-1]:
-            Console.printf("error", "Not possible to sum the two FID since the length does not match!")
+            Console.printf("error",
+                           "Not possible to sum the two FID since the length does not match!"
+                           )
             return
         else:
             fid = FID(signal=self.signal, time=self.time, name=self.name)  # new fid object containing the information of this object
@@ -430,6 +998,106 @@ class FID:
             fid.name = self.name.copy() + other.name.copy()  # since lists not immutable, copy() is required!
 
             return fid
+
+#### TODO: Maybe delete it!!!
+###    def resample_bandlimited(self, timepoints: int):
+###        """
+###        It resamples the FID to a new number of time points while keeping approximately the
+###        same total acquisition duration. Therefore, the dwell time changes, and because spectral
+###        bandwidth is defined as 1 / dwell_time, the spectral bandwidth changes too.
+###
+###        :param timepoints: the number of desired time points
+###        :return: Nothing
+###        """
+###
+###        # Guard: timepoints must be a positive number, otherwise gcd/resample_poly would crash.
+###        if timepoints <= 0:
+###            Console.printf("error", f"timepoints must be > 0, but got {timepoints}. Nothing done.")
+###            return
+###
+###        # Extract the raw array if pint Quantity
+###        signal = self.signal.magnitude if isinstance(self.signal, pint.Quantity) else self.signal
+###        time = self.time.magnitude if isinstance(self.time, pint.Quantity) else self.time
+###
+###        signal_shape_before = signal.shape
+###        time_shape_before = time.shape
+###
+###        N = signal.shape[-1]
+###
+###        # old dwell time / bandwidth
+###        old_dwell = time[1] - time[0]
+###        old_bandwidth = 1 / old_dwell
+###
+###        if timepoints == N:
+###            Console.printf("info", "Requested timepoints equal current length. Nothing to do...")
+###            return
+###
+###        # Resample the signal along the last axis with a rational ratio timepoints/N.
+###        # gcd reduces up/down to the smallest integers -> exact output length, fast filter.
+###        g = gcd(timepoints, N)  # Find the greatest common divisor of the two integers
+###        up = timepoints // g    # For Step 1: need for upsampling to fine grid
+###        down = N // g           # For Step 2: need then for downsampling to coarser grid
+###        signal = resample_poly(signal, up, down, axis=-1)
+###
+###        # Rebuild the time axis analytically over the SAME total duration (uniform spacing).
+###        time = np.linspace(time[0], time[-1], timepoints)
+###
+###        # new dwell time / bandwidth
+###        new_dwell = time[1] - time[0]
+###        new_bandwidth = 1 / new_dwell
+###
+###        Console.printf("success",
+###                       f"Resampled FID: \n"
+###                       f" => time shape:       {str(time_shape_before):<15} --> {time.shape} \n"
+###                       f" => signal shape:     {str(signal_shape_before):<15} --> {signal.shape} \n"
+###                       f" => dwell time:       {old_dwell:.6e} s --> {new_dwell:.6e} s \n"
+###                       f" => bandwidth:        {old_bandwidth:.3f} Hz --> {new_bandwidth:.3f} Hz")
+###
+###        if ArrayTools.check_nan(signal, verbose=False):
+###            Console.printf("warning", "Interpolated signal of FID contains NaNs.")
+###        if ArrayTools.check_nan(time, verbose=False):
+###            Console.printf("warning", "Interpolated time vector of FID contains NaNs.")
+###
+###        # Re-attach units (recreate pint Quantity) if the original arrays carried units
+###        self.signal = signal * self.signal.units if isinstance(self.signal, pint.Quantity) else signal
+###        self.time = time * self.time.units if isinstance(self.time, pint.Quantity) else time
+
+
+    @deprecated(reason="Might creates artifacts at the beginning and end", replacement="not yet")
+    def interpolate(self, timepoints: int):
+        """
+        Interpolate the signal and time to a desired length (time points). Therefore, the fourier-based resampling interpolation
+        is used from scipy.
+
+        :param timepoints: the number of desired timepoints
+        :return: Nothing
+        """
+
+        # Extract the array if pint Quantity
+        signal = self.signal.magnitude if isinstance(self.signal, pint.Quantity) else self.signal
+        time = self.time.magnitude if isinstance(self.time, pint.Quantity) else self.time
+
+        signal_shape_before = signal.shape
+        time_shape_before = time.shape
+
+        signal = resample(signal, timepoints, axis=-1) # interpolation along last axis
+        time = resample(time, timepoints)
+
+        Console.printf("success",
+                       f"Interpolated FID: \n"
+                       f" => time shape:   {str(time_shape_before):<15} --> {time.shape} \n"
+                       f" => signal shape: {str(signal_shape_before):<15} --> {signal.shape}")
+
+        if ArrayTools.check_nan(signal, verbose=False):
+            Console.printf("warning", "Interpolated signal of FID contains NaNs.")
+        if ArrayTools.check_nan(time, verbose=False):
+            Console.printf("warning", "Interpolated time vector of FID contains NaNs.")
+
+        # Add again the units and thus create pint Quantity if original array is also pint Quantity
+        self.signal = signal * self.signal.units if isinstance(self.signal, pint.Quantity) else signal
+        self.time = time * self.time.units if isinstance(self.time, pint.Quantity) else time
+
+
 
     def __str__(self):
         """
@@ -444,322 +1112,6 @@ class FID:
         Console.printf_collected_lines("info")
         return "\n"
 
-
-###class Model:
-###    """
-###    For creating a model that combines the spectral and spatial information. It combines the FIDs, metabolic property maps and mask.
-###    """
-###
-###    def __init__(self,
-###                 block_size: tuple,
-###                 TE: float,
-###                 TR: float,
-###                 alpha: float,
-###                 path_cache: str = None,
-###                 data_type: str = "complex64",
-###                 compute_on_device: str = "cpu",
-###                 return_on_device: str = "cpu"):
-###        # Define a caching path for dask. Required if RAM is running out of memory.
-###        if path_cache is not None:
-###            if os.path.exists(path_cache):
-###                self.path_cache = path_cache
-###            else:
-###                Console.printf("error", f"Terminating the program. Path does not exist: {path_cache}")
-###                sys.exit()
-###            dask.config.set(temporary_directory=path_cache)
-###
-###        # The block size used for dask to compute
-###        self.block_size = block_size
-###
-###        # Parameters defined by the user
-###        self.TE = TE
-###        self.TR = TR
-###        self.alpha = alpha
-###
-###        self.fid = FID()  # instantiate an empty FID to be able to sum it ;)
-###        self.metabolic_property_maps: dict[str, MetabolicPropertyMap] = {}
-###        self.mask = None
-###
-###        # Define the device for computation and the target device (cuda, cpu)
-###        self.compute_on_device = compute_on_device
-###        self.return_on_device = return_on_device
-###
-###        # Define the data type which should be used
-###        self.data_type = data_type
-###
-###    def model_summary(self):
-###        """
-###        Simpy summary of the whole model.
-###
-###        :return: Nothing
-###        """
-###        # TODO: add units
-###        Console.add_lines("Spectral-Spatial-Model Summary:")
-###        Console.add_lines(f" TE          ... {self.TE}")
-###        Console.add_lines(f" TR          ... {self.TR}")
-###        Console.add_lines(f" alpha       ... {self.alpha}")
-###        Console.add_lines(f" FID length  ... {len(self.fid.signal[0])}")
-###        Console.add_lines(f" Metabolites ... {len(self.metabolic_property_maps)}")
-###        Console.add_lines(f" Model shape ... {self.mask.shape}")
-###        Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
-###        Console.add_lines(f" Compute on  ... {self.compute_on_device}")
-###        Console.add_lines(f" Return on   ... {self.return_on_device}")
-###        Console.add_lines(f" Cache path  ... {Path(*Path(self.path_cache).parts[-2:])} (shortened)")
-###        Console.printf_collected_lines("info")
-###
-###
-###    def add_fid(self, fid: FID) -> None:
-###        """
-###        Add a FID from the class `~FID`, which can contain multiple signals, to the Model. All further added FID will perform the
-###        implemented __add__ in the `~FID` class. Thus, the loaded_fid will be merged. Resulting in just one fid object containing all
-###        signals.
-###
-###        Example usage 1:
-###         => Add FID of metabolites
-###         => Add FID of lipids
-###         => Add FID of water simulation
-###         => Add FID of macromolecules simulation
-###        Example usage 2:
-###         => Add FID metabolite 1
-###         => Add FID metabolite 2
-###
-###        :param fid: fid from the class `~FID`
-###        :return: Nothing
-###        """
-###        try:
-###            self.fid = self.fid + fid  # sum fid according to the __add__ implementation in the FID class
-###            Console.add_lines(f"Added the following FID signals to the spectral spatial model:")
-###            for i, name in enumerate(fid.name):
-###                Console.add_lines(f"{i}: {name}")
-###            Console.printf_collected_lines("success")
-###        except Exception as e:
-###            Console.printf("error", f"Error in adding compound '{fid.name} to the spectral spatial model. Exception: {e}")
-###
-###    def add_mask(self, mask: np.ndarray) -> None:
-###        """
-###        For adding one mask to the model. It is just a numpy array with no further information so far.
-###
-###        :param mask: Numerical values of the mask as numpy array
-###        :return: Nothing
-###        """
-###        self.mask = mask
-###
-###    def add_metabolic_property_map(self, metabolic_property_map: MetabolicPropertyMap):
-###        """
-###        Map for scaling the FID at the respective position in the volume. One map is per metabolite.
-###
-###        :param metabolic_property_map: Values to scale the FID at the respective position in the volume
-###        :return: Nothing
-###        """
-###
-###        Console.printf("info", f"Added the following metabolic a property map to the spectral spatial model: {metabolic_property_map.chemical_compound_name}")
-###        self.metabolic_property_maps[metabolic_property_map.chemical_compound_name] = metabolic_property_map
-###
-###    def add_metabolic_property_maps(self, metabolic_property_maps: dict[str, MetabolicPropertyMap]):
-###        """
-###        Multiple Maps for scaling the FID at the respective position in the volume. Each map is for one metabolite.
-###
-###        :param metabolic_property_maps: A dictionary containing the name as str and the respective metabolic property map
-###        :return: Nothing
-###        """
-###        self.metabolic_property_maps.update(metabolic_property_maps)
-###
-###        Console.add_lines("Adding the following metabolic property maps to the model:")
-###        for i, (names, _) in enumerate(metabolic_property_maps.items()):
-###            Console.add_lines(f"{i}: {names}")
-###
-###        Console.printf_collected_lines("success")
-###
-###
-###    @staticmethod
-###    def _transform_T1(volume: da.Array, alpha, TR, T1):
-###        r"""
-###        Applying a T1 map (ideally masked) to a volume of fid signals. Thus, transforming via the formular below the
-###        input volume V_{in} --> V_{out}:
-###        .. math::
-###
-###            V_{out} = V_{in} \, \sin(\alpha) \, \frac{1 - e^{-TR/T_1}}{1 - \cos(\alpha) \, e^{-TR/T_1}}
-###
-###
-###        For the transformation a flip angle, TR and T1 is used.
-###           * alpha ... scalar value (either numpy or cupy)
-###           * TR    ... scalar value (either numpy or cupy)
-###           * T1    ... matrix       (either numpy or cupy)
-###           * xp    ... either numpy or cupy -> using the whole imported library (np or cp is xp)
-###
-###        (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
-###        """
-###        xp: np|cp = cp.get_array_module(volume) # returns cupy or numpy module itself, based on volume data type
-###
-###        decay = xp.sin(xp.radians(alpha)) * (1 - xp.exp(-TR / T1)) / (1 - (xp.cos(xp.radians(alpha)) * xp.exp(-TR / T1)))
-###        volume = xp.where(volume != 0, volume * decay, volume) # only compute where volume is not zero!
-###        return volume
-###
-###    @staticmethod
-###    def _transform_T2(volume, time_vector, TE, T2):
-###        r"""
-###        Applying a T2 to the volume of fid signals. Thus, transforming the input volume V_{in} --> V_{out}:
-###        .. math::
-###
-###            V_{out} = V_{in} \, e^{-\frac{TE + t}{T_2}}
-###
-###
-###        For the transformation a time vector, TE and T2 is used.
-###           * time vector ... vector (either numpy or cupy)
-###           * TE          ... scalar value (either numpy or cupy)
-###           * T2          ... matrix       (either numpy or cupy)
-###           * xp          ... either numpy or cupy -> using the whole imported library (np or cp is xp)
-###
-###        (!) It needs to be a static function, otherwise it seems dask cannot handle it properly with map_blocks.
-###        """
-###        xp: np|cp = cp.get_array_module(volume)  # returns cupy or numpy module itself, based on volume data type
-###
-###        decay = xp.where(T2 != 0, xp.exp(-(TE + time_vector) / T2), 1)
-###        volume = xp.where(volume != 0, volume * decay, volume)
-###        return volume
-###
-###
-###    def assemble_graph(self, all_steps_output=False) -> CustomArray | tuple[CustomArray,CustomArray,CustomArray,CustomArray]:
-###        """
-###        Create a computational dask graph. It can be used to compute it or to add further operations.
-###        Note: all_steps_output=True, it outputs graphs that includes only certain steps:
-###                    -> volume after applying the mask
-###                    -> volume after applying the T1
-###                    -> volume after applying the T2
-###                    -> volume after applying the concentration scaling
-###
-###                    (!) Each of these steps builds on the previous one and is therefore not independent
-###                        of the preceding ones!
-###
-###        :return: CustomArray with numpy or cupy, based on the selected device when created the model. Note: in case of
-###                 all_steps_output=True, a tuple of computational graphs of the respective applied steps is returned.
-###        """
-###
-###        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}:")
-###
-###        volume_after_concentration = None
-###        volume_after_mask = None
-###        volume_after_T1   = None
-###        volume_after_T2   = None
-###
-###
-###        for fid in tqdm(self.fid, total=len(self.fid.signal)):
-###            # (1) Prepare the data & reshape it ########################################################################
-###            #   1a) Get the name of the metabolite (unpack from the list)
-###            map_name = fid.name[0]
-###
-###            #   1b) Reshape FID for multiplication, put to a respective device and create dask array with chuck size defined by the user
-###            fid_signal = fid.signal.reshape(fid.signal.size, 1, 1, 1)
-###            fid_signal = da.from_array(fid_signal, chunks=self.block_size[0])
-###            #   1c) Reshape time vector, create dask array with block size defined by the user
-###            time_vector = fid.time[:, None, None, None]
-###            time_vector = da.from_array(time_vector, chunks=(self.block_size[0], 1, 1, 1))
-###            #   1d) Same as for FID and time vector above
-###            mask = self.mask.reshape(1, self.mask.shape[0], self.mask.shape[1], self.mask.shape[2])
-###            mask = da.from_array(mask, chunks=(1, self.block_size[1], self.block_size[2], self.block_size[3]))
-###            #   1f) Get T1 and T2 of respective metabolite with the metabolite name
-###            metabolic_map_t2 = self.metabolic_property_maps[map_name].t2
-###            metabolic_map_t1 = self.metabolic_property_maps[map_name].t1
-###
-###            # (2) Convert arrays in graph to cupy or numpy (depending on computation on cpu or gpu)
-###            fid_signal  = GPUTools.dask_map_blocks(fid_signal,            device=self.compute_on_device)
-###            mask        = GPUTools.dask_map_blocks(mask,                  device=self.compute_on_device)
-###            time_vector = GPUTools.dask_map_blocks(time_vector,           device=self.compute_on_device)
-###            metabolic_map_t1 = GPUTools.dask_map_blocks(metabolic_map_t1, device=self.compute_on_device)
-###            metabolic_map_t2 = GPUTools.dask_map_blocks(metabolic_map_t2, device=self.compute_on_device)
-###
-###
-###            # (3) Combine 3D mask with FID signal to create 4D volume ##################################################
-###            volume_with_mask = fid_signal * mask
-###
-###            if all_steps_output:
-###                if volume_after_mask is None:
-###                    volume_after_mask = volume_with_mask
-###                else:
-###                    volume_after_mask += volume_with_mask
-###
-###
-###            # (4) Apply T1 and T2 ######################################################################################
-###            #   4a) Set datatype in numpy or cupy for dask map blocks afterwards
-###            if self.compute_on_device == "cuda" or self.compute_on_device == "gpu":
-###                dtype = np.dtype(self.data_type)
-###            elif self.compute_on_device == "cpu":
-###                dtype = np.dtype(self.data_type)
-###
-###            #   4b) Include t1 effects
-###            volume_metabolite = da.map_blocks(Model._transform_T1,
-###                                              volume_with_mask,
-###                                              self.alpha,
-###                                              self.TR,
-###                                              metabolic_map_t1,
-###                                              dtype=dtype)
-###
-###            if all_steps_output:
-###                if volume_after_T1 is None:
-###                    volume_after_T1 = volume_metabolite
-###                else:
-###                    volume_after_T1 += volume_metabolite
-###
-###
-###            #   4c) Include T2 effects
-###            volume_metabolite = da.map_blocks(Model._transform_T2,
-###                                              volume_metabolite,
-###                                              time_vector,
-###                                              self.TE,
-###                                              metabolic_map_t2,
-###                                              dtype=dtype)
-###
-###            if all_steps_output:
-###                if volume_after_T2 is None:
-###                    volume_after_T2 = volume_metabolite
-###                else:
-###                    volume_after_T2 += volume_metabolite
-###
-###
-###            # (5) Include 4D volume with spatial concentration, thus FID gets scaled locally ###########################
-###            concentration = self.metabolic_property_maps[map_name].concentration # get respective metabolite map
-###            concentration = GPUTools.dask_map_blocks(concentration, device=self.compute_on_device)
-###            volume_metabolite *= concentration # scale it
-###
-###
-###            # (8) Sum all metabolites & Create CustomArray from dask Array
-###            #volume_sum_all_metabolites += volume_metabolite if volume_sum_all_metabolites is None else (volume_sum_all_metabolites + volume_metabolite)
-###            if volume_after_concentration is None:
-###                volume_after_concentration = volume_metabolite
-###            else:
-###                volume_after_concentration += volume_metabolite
-###
-###        #volume_sum_all_metabolites = CustomArray(volume_sum_all_metabolites) TODO TODO need custom array? TODO TODO TODO
-###
-###
-###        # (9) If the computation device and target device does not match then adjust it
-###        if self.compute_on_device == "cuda" and self.return_on_device == "cpu":
-###            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cpu")
-###
-###            if all_steps_output:
-###                volume_after_mask = GPUTools.dask_map_blocks(volume_after_mask, "cpu")
-###                volume_after_T1 = GPUTools.dask_map_blocks(volume_after_T1,"cpu")
-###                volume_after_T2 = GPUTools.dask_map_blocks(volume_after_T2,"cpu")
-###
-###
-###        elif self.compute_on_device == "cpu" and self.return_on_device == "cuda":
-###            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cuda")
-###
-###            if all_steps_output:
-###                volume_after_mask =  GPUTools.dask_map_blocks(volume_after_mask, "cuda")
-###                volume_after_T1   = GPUTools.dask_map_blocks(volume_after_T1, "cuda")
-###                volume_after_T2   = GPUTools.dask_map_blocks(volume_after_T2, "cuda")
-###
-###        # (10) Return either one computational graph (includes all steps) or a computational graph for each step
-###        if not all_steps_output:
-###            computational_graph: CustomArray = volume_after_concentration
-###            return computational_graph
-###        else:
-###            computational_graph__after_mask: CustomArray = volume_after_mask
-###            computational_graph__after_T1: CustomArray = volume_after_T1
-###            computational_graph__after_T2: CustomArray = volume_after_T2
-###            computational_graph__after_concentration_scaling: CustomArray = volume_after_concentration
-###            return (computational_graph__after_mask, computational_graph__after_T1, computational_graph__after_T2, computational_graph__after_concentration_scaling)
 
 class Model:
     """
@@ -776,7 +1128,7 @@ class Model:
                  data_type: str = "complex64",
                  compute_on_device: str = "cpu",
                  return_on_device: str = "cpu"):
-        # Define a caching path for dask. Required if RAM is running out of memory.
+
         self.path_cache = None
         if path_cache is not None:
             if os.path.exists(path_cache):
@@ -786,35 +1138,33 @@ class Model:
                 sys.exit()
             dask.config.set(temporary_directory=path_cache)
 
-        # The block size used for dask to compute
         self.block_size = block_size  # [t, x, y, z]
 
-        # Parameters defined by the user
         self.TE = TE
         self.TR = TR
         self.alpha = alpha
 
-        self.fid = FID()  # instantiate an empty FID to be able to sum it ;)
-        self.metabolic_property_maps: dict[str, MetabolicPropertyMap] = {}
+        self.fid = FID()
+        self.parameter_volumes: dict[str, ParameterVolume] = {} # previously metabolic property map
         self.mask = None
 
-        # Define the device for computation and the target device (cuda, cpu)
         self.compute_on_device = compute_on_device
         self.return_on_device = return_on_device
 
-        # Define the data type which should be used
         self.data_type = data_type
 
+        self.mapped_steps: list[str] = [] # To map which steps are already mapped (e.g. T1, T2, mask ...)
+
+        self.volume_types_allowed = ["T1", "T2", "concentration"] # the volumes types allowed so far for this model
+        self.working_volume: da.Array = None
+
     def model_summary(self):
-        """
-        Simpy summary of the whole model.
-        """
         Console.add_lines("Spectral-Spatial-Model Summary:")
         Console.add_lines(f" TE          ... {self.TE}")
         Console.add_lines(f" TR          ... {self.TR}")
         Console.add_lines(f" alpha       ... {self.alpha}")
         Console.add_lines(f" FID length  ... {len(self.fid.signal[0])}")
-        Console.add_lines(f" Metabolites ... {len(self.metabolic_property_maps)}")
+        Console.add_lines(f" Metabolites ... {len(self.parameter_volumes)}")
         Console.add_lines(f" Model shape ... {self.mask.shape}")
         Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
         Console.add_lines(f" Compute on  ... {self.compute_on_device}")
@@ -824,9 +1174,6 @@ class Model:
         Console.printf_collected_lines("info")
 
     def add_fid(self, fid: "FID") -> None:
-        """
-        Add a FID from class `FID`. All further added FID will perform the implemented __add__ in `FID`.
-        """
         try:
             self.fid = self.fid + fid
             Console.add_lines("Added the following FID signals to the spectral spatial model:")
@@ -837,209 +1184,432 @@ class Model:
             Console.printf("error", f"Error in adding compound '{fid.name} to the spectral spatial model. Exception: {e}")
 
     def add_mask(self, mask: np.ndarray) -> None:
-        """
-        Add one mask to the model.
-        """
+        Console.printf("success", "Added mask to the spectral spatial model.")
         self.mask = mask
 
-    def add_metabolic_property_map(self, metabolic_property_map: "MetabolicPropertyMap"):
+
+    def add_parameter_volume(self, volume_type: str, parameter_volume: ParameterVolume):
         """
-        One map per metabolite.
+        To add one single volume of the types T1, or T2, or concentration with shape (metabolite, X, Y, Z). Note
+        that no direct volume can be added, it needs to be of the type ParameterVolume.
+
+        :param volume_type: name of the volume (e.g., T1, T2, concentration)
+        :param parameter_volume: a ParameterVolume object associated with either T1, T2, concentration
+        :return: Nothing
         """
-        Console.printf(
-            "info",
-            "Added the following metabolic a property map to the spectral spatial model: "
-            f"{metabolic_property_map.chemical_compound_name}"
+
+        # Check if type of volume is not allowed to add
+        if volume_type not in self.volume_types_allowed:
+            Console.printf("error", f"Cannot add volume type '{volume_type}'. Only allowed: {self.volume_types_allowed}")
+        # If allowed:
+        else:
+            # Case that are NaNs present:
+            if ArrayTools.check_nan(parameter_volume.volume):
+                Console.printf("error", f"Cannot add {volume_type} volume to the spectral spatial model since NaNs are present!")
+            # Case that no NaNs are present:
+            else:
+                zero_or_negative = np.min(parameter_volume.volume)
+
+                if (zero_or_negative < 0) and volume_type == "concentration":
+                    Console.printf("warning", f"The {volume_type} volume exhibits negative values: {zero_or_negative}")
+                    parameter_volume.volume = ArrayTools.enforce_min_eps(parameter_volume.volume, convert_zeros=False, convert_negative=True)
+                elif (zero_or_negative <= 0) and volume_type in ("T1", "T2"):
+                    Console.printf("warning", f"The {volume_type} volume exhibits zero and/or negative values: {zero_or_negative}")
+                    parameter_volume.volume = ArrayTools.enforce_min_eps(parameter_volume.volume, convert_zeros=True, convert_negative=True)
+                else:
+                    pass
+
+                self.parameter_volumes[volume_type] = parameter_volume
+                Console.printf("success", f"Added {volume_type} to the Spectral Spatial Model.")
+
+
+    @staticmethod
+    def _steady_state_longitudinal(alpha, TR, t1_da):
+        """
+        General:
+            For applying the steady-state state of the longitudinal magnetisation. This is done for each voxel.
+            Also note that sin(α) at the beginning of the equation yields the transversal (measurable signal)
+            of this steady-state. The cos(α) would yield the longitudinal magnetisation, which cannot be measured.
+
+            In general: The steady-state is reached after repeated RF-pulses. When TR < T1, then there is not enough
+            time for the longitudinal magnetisation to fully relax and therefore Mz ≠ M0, thus Mz cannot fully relax
+            to gain M0.
+
+            Note: It also assumes that the transversal magnetisation is already gone TR >> T2.
+
+            For literature see in references.bib:
+                * elster_spoiled_gre_parameters (Spoiled-GRE)
+                *
+
+
+            alpha ... flip angle
+            TR    ... repetition time
+            t1_da ... T1 map (T1 is how fast it relaxes back to Mz)
+
+        Programmatically:
+            Function for elementwise operation. Creating a 5D array.
+
+            decay_t1(m,x,y,z) = sin(α) · (1 - exp(-TR / T1(m,x,y,z))) / (1 - cos(α) · exp(-TR / T1(m,x,y,z)))
+
+            Output shape: (M, 1, X, Y, Z) for broadcasting over time in a (M, T, X, Y, Z) volume.
+        """
+        #cm = (tools.CitationManager("../docs/references.bib"))      # TODO: Uncomment
+        #cm.cite("elster_spoiled_gre_parameters")                    # TODO: Uncomment
+        #cm.cite("miller2014steady_state_sequences_spoiled_balanced")# TODO: Uncomment
+        #cm.cite("miller2011steady_state_mri_methods_neuroimaging")  # TODO: Uncomment
+
+        a = da.radians(alpha)
+        e = da.exp(-TR / t1_da)
+
+        decay_t1 = da.sin(a) * (1 - e) / (1 - da.cos(a) * e)
+        return decay_t1[:, None, :, :, :]
+
+    @staticmethod
+    # t2_da[:,None,...] is (M,1,X,Y,Z), broadcasts with time vector
+    def _t2_echo_decay(TE, time_da, t2_da):
+        """
+        General:
+            This method incorporate the T2 decay. The echo time (TE) represents the time between the exciting RF-Pulse
+            and the readout, therefore the TE incorporates the measurement delay.
+            Together with the method '_steady_state_longitudinal' it forms the Spoiled GRE [1]. Please note that the T2
+            instead of the T2* is used, since also later the B0 inhomogeneity should be used.
+
+            [1] elster_spoiled_gre_parameters (see references.bib)
+
+        Note:
+            exp(-TE/T2) * exp(-t/T2)     ======>     exp(-(TE+t)/T2)
+                (1)          (2)                           (3)
+
+            (1) Remaining signal due to the decay at the center of the echo
+            (2) The decay during the readout/echo
+            (3) Remaining signal at echo center + time course afterward (further decay)
+
+        Programmatically:
+            Function for elementwise operation. Creating a 5D array.
+
+            Then, to be used as
+
+            decay_t2(m,t,x,y,z) = exp(-(TE + Δt(t)) / T₂(m,x,y,z))    if T₂(m,x,y,z) ≠ 0
+                                = 1                                   if T₂(m,x,y,z) = 0
+
+            ... with m=t2 map metabolites, t=time vector, (x,y,z)=spatial dimensions.
+
+            Note: The m should include a 4D array containing all metabolites of shape (M, X, Y, Z).
+            Note: TE + Δt(t) is the time passed since RF excitation
+        """
+        #cm = (tools.CitationManager("../docs/references.bib")) # TODO: Uncomment
+        #cm.cite("elster_spoiled_gre_parameters")               # TODO: Uncomment
+
+        # Broadcast
+        time_da = time_da[None, :, None, None, None]
+        t2_da = t2_da[:, None, :, :, :]
+
+        # Create the 5D array (with the t2 of alle metabolites)
+        decay_t2 = da.where(t2_da != 0, da.exp(-(TE + time_da) / t2_da), 1, )
+        return decay_t2
+
+
+    def apply_mask(self):
+        """
+        TODO: Comment and add equation
+
+        :return:
+        """
+        if "mask" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply mask!")
+        else:
+            check_steps = ["t1", "t2", "concentration"]
+            if any(step in check_steps for step in self.mapped_steps):
+                Console.printf("error", f"Cannot apply mask after already one of this steps is applied: {check_steps}")
+            else:
+                self.mapped_steps.append("mask")
+
+                # TODO: Now start here the process!
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(self.fid.signal, verbose=False):
+                    Console.printf("warning", "FID signal array contains NaNs!")
+                if ArrayTools.check_nan(self.fid.time, verbose=False):
+                    Console.printf("warning", "FID time vector contains NaNs!")
+                if ArrayTools.check_nan(self.mask, verbose=False):
+                    Console.printf("warning", "Mask contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                metabolites_chunksize = len(self.fid.name)  # (!) Critical for reducing worker <-> worker transfers on sum over metabolites:
+                                                            #     -> keep metabolite axis as ONE chunk (or at least as few as possible).
+                fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))  # (M,T)
+                mask_dask = DaskTools.to_dask(self.mask, chunksize=(x_chunksize, y_chunksize, z_chunksize))       # (X,Y,Z)
+
+                #   c) Map to desired device before computational actions
+                fid_dask, mask_dask = GPUTools.dask_map_blocks_many(fid_dask, mask_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                fid_5d = fid_dask[:, :, None, None, None]  # (M,T,1,1,1)
+                mask_5d = mask_dask[None, None, :, :, :]   # (1,1,X,Y,Z)
+
+                #   b) Apply pointwise transformation
+                volume = fid_5d * mask_5d
+
+                # 3) Return on desired device
+                volume = GPUTools.dask_map_blocks(volume, device=self.return_on_device)
+                self.working_volume = volume
+
+                return volume
+
+
+
+    def apply_t1(self) -> da.Array:
+        """
+        Incorporating the T1 map in a way to simulate the steady state. The steady state is the state to which
+        the spins are relaxing via T1 decay and e.g., repeated measurements. Therefore, Mz ≠ M0 is possible.
+
+        For more information see comments in the method "_steady_state_longitudinal".
+
+        :return: dask array
+        """
+        if "t1" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply t1!")
+        else:
+            if "mask" not in self.mapped_steps:
+                Console.printf("error", "The mask must be applied beforehand!")
+            else:
+                self.mapped_steps.append("t1")
+
+                # 0) Get the data
+                t1 = self.parameter_volumes["T1"].volume
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(t1, verbose=False):
+                    Console.printf("warning", "T1 array contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                m_chunksize = len(self.fid.name)
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                t1_dask = DaskTools.to_dask(t1, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+                #   c) Map to desired device before computational actions
+                t1_dask = GPUTools.dask_map_blocks(t1_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                       # this already happens inside '_t1_recovery(..)'
+                #   b) Apply pointwise transformation
+                alpha = UnitTools.remove_unit(self.alpha)  # to remove possible units
+                TR = UnitTools.remove_unit(self.TR)        # to remove possible units
+                t1_recovery = Model._steady_state_longitudinal(alpha, TR, t1_dask)  # (M,1,X,Y,Z)
+                self.working_volume = self.working_volume * t1_recovery
+
+                # 3) Return on desired device
+                self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+                return self.working_volume
+
+
+    def apply_t2(self) -> da.Array:
+        """
+        This incorporate the signal after T2 decay. For more information see comments in the method "_t2_echo_decay".
+
+        :return: Dask Array
+        """
+        if "t2" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply t2!")
+        else:
+            if "mask" not in self.mapped_steps:
+                Console.printf("error", "The mask must be applied beforehand!")
+            else:
+                self.mapped_steps.append("t2")
+
+                # 0) Get the data
+                t2 = self.parameter_volumes["T2"].volume
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(t2, verbose=False):
+                    Console.printf("warning", "T2 array contains NaNs!")
+                if ArrayTools.check_nan(self.fid.time, verbose=False):
+                    Console.printf("warning", "FID time vector contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                m_chunksize = len(self.fid.name)
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                t2_dask = DaskTools.to_dask(t2, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+                time_dask = DaskTools.to_dask(self.fid.time, chunksize=(time_chunksize,))
+                #   c) Map to desired device before computational actions
+                time_dask, t2_dask = GPUTools.dask_map_blocks_many(time_dask, t2_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                # this already happens inside '_t2_decay(..)'
+                #   b) Apply pointwise transformation
+                TE = UnitTools.remove_unit(self.TE)  # to remove possible units
+                t2_decay    = Model._t2_echo_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
+                self.working_volume = self.working_volume * t2_decay
+
+                # 3) Return on desired device
+                self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+                return self.working_volume
+
+
+    def apply_concentration(self) -> da.Array:
+        """
+        To perform a scaling based on spatial distribution of the concentrations of the respective metabolites.
+
+        :return: Dask Array
+        """
+        if "concentration" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply concentration!")
+        else:
+            if "mask" not in self.mapped_steps:
+                Console.printf("error", "The mask must be applied beforehand!")
+            else:
+                self.mapped_steps.append("concentration")
+
+                # TODO: Now start here the process!
+
+                # 0) Get the data
+                concentration = self.parameter_volumes["concentration"].volume
+
+                # 1) Prepare the data
+                #   a) Quick check if there are NaNs present!
+                if ArrayTools.check_nan(concentration, verbose=False):
+                    Console.printf("warning", "Concentration array contains NaNs!")
+
+                #   b) Transform to dask array and define the chunksize
+                m_chunksize = len(self.fid.name)
+                time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+                concentration_dask = DaskTools.to_dask(concentration, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+                #   c) Map to desired device before computational actions
+                concentration_dask = GPUTools.dask_map_blocks(concentration_dask, device=self.compute_on_device)
+
+                # 2) Compute the data
+                #   a) Broadcast the data
+                concentration = concentration_dask[:, None, :, :, :]  # (M,1,X,Y,Z)
+                # this already happens inside '_t2_decay(..)'
+                #   b) Apply pointwise transformation
+                self.working_volume = self.working_volume * concentration
+
+                # 3) Return on desired device
+                self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+                return self.working_volume
+
+    def sum_metabolites(self) -> da.Array:
+        """
+        To sum all metabolites from (metabolite, time, X, Y, Z) ==> (time, X, Y, Z). At the moment it only performs
+        a simple summation of the metabolites signals.
+
+        :return: Dask Array
+        """
+
+        if "mask" not in self.mapped_steps:
+            Console.printf("error", "Cannot apply sum over all metabolites since at least the 'mask' step needs to be applied.")
+        elif "sum_metabolites" in self.mapped_steps:
+            Console.printf("error", f"The step is already applied: apply t1!")
+        else:
+            self.working_volume = self.working_volume.sum(axis=0)
+            self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+            self.mapped_steps.append("sum_metabolites")
+
+        return self.working_volume
+
+
+    # apply_T1
+    #   if "mask" in mapped_steps
+    #   if "T1" in mapped_steps
+    # apply_T2
+    #   if "mask" in mapped_steps
+    #   if "T2" in mapped_steps
+    # apply_concentration
+    #   if "mask" in mapped_steps
+    #   if "concentration" in mapped steps
+    # apply_mask
+    #   mapped_steps = []
+    #   mapped_steps.append("mask")
+
+    def assemble_graph(self): # TODO all_steps_output has no effect at the moment
+        """
+
+
+        :return:
+        """
+        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}")
+
+        # 1) Prepare the data
+
+        #   a) Define the chunk size (aka block size)
+        time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+        metabolites_chunksize = len(self.fid.name) # (!) Critical for reducing worker <-> worker transfers on sum over metabolites:
+                                                   #     -> keep metabolite axis as ONE chunk (or at least as few as possible).
+
+        #   b) Wrap around the dask array and define the chunk size
+        fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))   # (M,T)
+        time_dask = DaskTools.to_dask(self.fid.time, chunksize=(time_chunksize,))                          # (T,)
+        mask_dask = DaskTools.to_dask(self.mask, chunksize=(x_chunksize, y_chunksize, z_chunksize))        # (X,Y,Z)
+
+        #   c) Get the necessary parameter volumes (previously metabolic property maps)
+        t1 = self.parameter_volumes["T1"].volume                                                           # (M,X,Y,Z)
+        t2 = self.parameter_volumes["T2"].volume                                                           # (M,X,Y,Z)
+        concentration = self.parameter_volumes["concentration"].volume                                     # (M,X,Y,Z)
+
+        #   d) Also, quick check if there are NaNs present
+        if ArrayTools.check_nan(self.fid.signal, verbose=False):
+            Console.printf("warning", "FID signal array contains NaNs!")
+        if ArrayTools.check_nan(self.fid.time, verbose=False):
+            Console.printf("warning", "FID time vector contains NaNs!")
+        if ArrayTools.check_nan(t1, verbose=False):
+            Console.printf("warning", "T1 array contains NaNs!")
+        if ArrayTools.check_nan(t2, verbose=False):
+            Console.printf("warning", "T2 array contains NaNs!")
+        if ArrayTools.check_nan(concentration, verbose=False):
+            Console.printf("warning", "Concentration array contains NaNs!")
+
+        #   e) Transform to dask arrays
+        m_chunksize = len(self.fid.name)
+        t1_dask = DaskTools.to_dask(t1, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+        t2_dask = DaskTools.to_dask(t2, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+        concentration_dask = DaskTools.to_dask(concentration, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+
+        #   f) Transfer to desired device before computational actions
+        fid_dask, time_dask, mask_dask, t1_dask, t2_dask, concentration_dask = GPUTools.dask_map_blocks_many(
+            fid_dask,
+            time_dask,
+            mask_dask,
+            t1_dask,
+            t2_dask,
+            concentration_dask,
+            device=self.compute_on_device
         )
-        self.metabolic_property_maps[metabolic_property_map.chemical_compound_name] = metabolic_property_map
 
-    def add_metabolic_property_maps(self, metabolic_property_maps: dict[str, "MetabolicPropertyMap"]):
-        """
-        Multiple maps.
-        """
-        self.metabolic_property_maps.update(metabolic_property_maps)
+        # 2) Compute the data
+        #   a) Broadcast the data
+        fid_5d = fid_dask[:, :, None, None, None]                       # (M,T,1,1,1)
+        mask_5d = mask_dask[None, None, :, :, :]                        # (1,1,X,Y,Z)
+        concentration = concentration_dask[:, None, :, :, :]            # (M,1,X,Y,Z)
 
-        Console.add_lines("Adding the following metabolic property maps to the model:")
-        for i, (names, _) in enumerate(metabolic_property_maps.items()):
-            Console.add_lines(f"{i}: {names}")
-        Console.printf_collected_lines("success")
+        #   b) Apply pointwise transformations:
+        #      *) T1 recovery operator
+        #      *) T2 relaxation operator
+        #      *) Hadamard product with concentration
+        alpha = UnitTools.remove_unit(self.alpha) # to remove possible units
+        TR = UnitTools.remove_unit(self.TR)       # to remove possible units
+        TE = UnitTools.remove_unit(self.TE)       # to remove possible units
 
-    def assemble_graph(self, all_steps_output: bool = False):
-        """
-        Faster graph assembly:
-          - builds mask and (typically) a shared time vector once
-          - still uses GPUTools.dask_map_blocks for device placement
-          - applies T1/T2 using elementwise dask ops (fuses better than per-metabolite map_blocks)
-          - sums metabolites via a reduction tree (avoids long += chains)
+        t1_recovery = Model._steady_state_longitudinal(alpha, TR, t1_dask)                  # (M,1,X,Y,Z)
+        t2_decay    = Model._t2_echo_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
+        volume = fid_5d * mask_5d * t1_recovery * t2_decay * concentration    # (M,T,X,Y,Z)
 
-        Fixes your CuPy error by ensuring da.where never receives NumPy ndarrays as branches.
-        """
+        # Sum over all metabolites
+        volume = volume.sum(axis=0)
 
-        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}:")
+        # Return on desired device (use 'cpu' for large data!)
+        volume = GPUTools.dask_map_blocks(volume, device=self.return_on_device)
 
-        # ---- dtype selection ----
-        vol_dtype = np.dtype(self.data_type)
-        if vol_dtype in (np.complex64, np.float32):
-            real_dtype = np.float32
-        else:
-            real_dtype = np.float64
-
-        # ---- mask constant once ----
-        if self.mask is None:
-            raise ValueError("Mask is not set. Call add_mask(...) before assemble_graph().")
-
-        if isinstance(self.mask, da.Array):
-            mask = self.mask
-        else:
-            mask = da.from_array(self.mask, chunks=self.block_size[1:])
-
-        mask = mask.astype(real_dtype, copy=False)[None, ...]  # (1, x, y, z)
-        mask = mask.rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
-        mask = GPUTools.dask_map_blocks(mask, device=self.compute_on_device)
-
-        # ---- prepare fid iteration ----
-        fid_iter = iter(self.fid)
-        try:
-            first_fid = next(fid_iter)
-        except StopIteration:
-            raise ValueError("No FIDs added to the model. Call add_fid(...) before assemble_graph().")
-
-        # ---- time vector constant once (fallback per-fid if different) ----
-        base_time_1d = np.asarray(first_fid.time, dtype=real_dtype)
-        time_vector = da.from_array(base_time_1d, chunks=(self.block_size[0],))[:, None, None, None]  # (t,1,1,1)
-        time_vector = time_vector.rechunk((self.block_size[0], 1, 1, 1))
-        time_vector = GPUTools.dask_map_blocks(time_vector, device=self.compute_on_device)
-
-        # ---- scalar constants (numpy scalars are OK; avoid 0-d ndarrays) ----
-        alpha_rad = real_dtype(np.deg2rad(self.alpha))
-        sin_a = real_dtype(np.sin(alpha_rad))
-        cos_a = real_dtype(np.cos(alpha_rad))
-        TR = real_dtype(self.TR)
-        TE = real_dtype(self.TE)
-
-        # ---- accumulate per-metabolite graphs for tree reduction ----
-        vols_after_mask = []
-        vols_after_T1 = []
-        vols_after_T2 = []
-        vols_after_conc = []
-
-        total = len(self.fid.signal) if hasattr(self.fid, "signal") else None
-
-        import itertools
-        all_fids = itertools.chain([first_fid], fid_iter)
-
-        for fid in tqdm(all_fids, total=total):
-            metabolite_name = fid.name[0]
-
-            # FID signal -> (t,1,1,1)
-            sig_1d = np.asarray(fid.signal, dtype=vol_dtype)
-            fid_signal = da.from_array(sig_1d, chunks=(self.block_size[0],))[:, None, None, None]
-            fid_signal = fid_signal.rechunk((self.block_size[0], 1, 1, 1))
-            fid_signal = GPUTools.dask_map_blocks(fid_signal, device=self.compute_on_device)
-
-            # time vector fallback if needed
-            tv = time_vector
-            if np.asarray(fid.time).shape != base_time_1d.shape:
-                local_time_1d = np.asarray(fid.time, dtype=real_dtype)
-                tv = da.from_array(local_time_1d, chunks=(self.block_size[0],))[:, None, None, None]
-                tv = tv.rechunk((self.block_size[0], 1, 1, 1))
-                tv = GPUTools.dask_map_blocks(tv, device=self.compute_on_device)
-
-            # maps (already dask arrays per your note, but accept numpy too)
-            t1 = self.metabolic_property_maps[metabolite_name].t1
-            t2 = self.metabolic_property_maps[metabolite_name].t2
-            conc = self.metabolic_property_maps[metabolite_name].concentration
-
-            if not isinstance(t1, da.Array):
-                t1 = da.from_array(t1, chunks=self.block_size[1:])
-            if not isinstance(t2, da.Array):
-                t2 = da.from_array(t2, chunks=self.block_size[1:])
-            if not isinstance(conc, da.Array):
-                conc = da.from_array(conc, chunks=self.block_size[1:])
-
-            t1 = t1.astype(real_dtype, copy=False)
-            t2 = t2.astype(real_dtype, copy=False)
-            conc = conc.astype(real_dtype, copy=False)
-
-            # add singleton time axis: (1,x,y,z)
-            t1 = t1[None, ...].rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
-            t2 = t2[None, ...].rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
-            conc = conc[None, ...].rechunk((1, self.block_size[1], self.block_size[2], self.block_size[3]))
-
-            # move maps to compute device
-            t1 = GPUTools.dask_map_blocks(t1, device=self.compute_on_device)
-            t2 = GPUTools.dask_map_blocks(t2, device=self.compute_on_device)
-            conc = GPUTools.dask_map_blocks(conc, device=self.compute_on_device)
-
-            # (1) apply mask
-            v_mask = fid_signal * mask
-            if all_steps_output:
-                vols_after_mask.append(v_mask)
-
-            # (2) apply T1
-            # factor = sin(a) * (1 - e^{-TR/T1}) / (1 - cos(a) * e^{-TR/T1})
-            # with semantics: if T1==0 -> factor = 1
-            e1 = da.exp(-TR / t1)
-            t1_factor = sin_a * (1 - e1) / (1 - cos_a * e1)
-
-            # IMPORTANT: avoid scalar in da.where branch on GPU -> use ones_like(...)
-            t1_factor = da.where(t1 != 0, t1_factor, da.ones_like(t1_factor))
-
-            v_t1 = v_mask * t1_factor
-            if all_steps_output:
-                vols_after_T1.append(v_t1)
-
-            # (3) apply T2
-            # factor = exp(-(TE + t)/T2), with semantics: if T2==0 -> factor = 1
-            decay = da.exp(-(TE + tv) / t2)
-            t2_factor = da.where(t2 != 0, decay, da.ones_like(decay))
-
-            v_t2 = v_t1 * t2_factor
-            if all_steps_output:
-                vols_after_T2.append(v_t2)
-
-            # (4) concentration scaling
-            v_conc = v_t2 * conc
-            vols_after_conc.append(v_conc)
-
-        if len(vols_after_conc) == 0:
-            raise ValueError("No metabolite volumes were generated. Check FIDs and metabolic_property_maps alignment.")
-
-        # ---- reduction tree (faster than repeated +=) ----
-        split_every = 8
-        volume_after_concentration = da.stack(vols_after_conc, axis=0).sum(axis=0, split_every=split_every)
-
-        volume_after_mask = None
-        volume_after_T1 = None
-        volume_after_T2 = None
-        if all_steps_output:
-            volume_after_mask = da.stack(vols_after_mask, axis=0).sum(axis=0, split_every=split_every)
-            volume_after_T1 = da.stack(vols_after_T1, axis=0).sum(axis=0, split_every=split_every)
-            volume_after_T2 = da.stack(vols_after_T2, axis=0).sum(axis=0, split_every=split_every)
-
-        # ---- return device adjustment (keep your mechanism) ----
-        comp = (self.compute_on_device or "cpu").lower()
-        ret = (self.return_on_device or "cpu").lower()
-
-        if comp in ("cuda", "gpu") and ret == "cpu":
-            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cpu")
-            if all_steps_output:
-                volume_after_mask = GPUTools.dask_map_blocks(volume_after_mask, "cpu")
-                volume_after_T1 = GPUTools.dask_map_blocks(volume_after_T1, "cpu")
-                volume_after_T2 = GPUTools.dask_map_blocks(volume_after_T2, "cpu")
-
-        elif comp == "cpu" and ret in ("cuda", "gpu"):
-            volume_after_concentration = GPUTools.dask_map_blocks(volume_after_concentration, "cuda")
-            if all_steps_output:
-                volume_after_mask = GPUTools.dask_map_blocks(volume_after_mask, "cuda")
-                volume_after_T1 = GPUTools.dask_map_blocks(volume_after_T1, "cuda")
-                volume_after_T2 = GPUTools.dask_map_blocks(volume_after_T2, "cuda")
-
-        if not all_steps_output:
-            return volume_after_concentration
-
-        return (volume_after_mask, volume_after_T1, volume_after_T2, volume_after_concentration)
-
+        return volume
 
 
 class Simulator:
@@ -1067,6 +1637,12 @@ class Simulator:
         raise NotImplementedError("This method is not yet implemented")
 
     def water_suppression(self):
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+
+
         # TODO: Perform on signal of FID? Spectrum required?
 
         # TODO: Currently working on this.
@@ -1076,12 +1652,651 @@ class Simulator:
         raise NotImplementedError("This method is not yet implemented")
 
     def lipid_suppression(self):
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+        # TODO: DELETE; NOT RIGHT PLACE
+
         # TODO: Perform on signal of FID? Spectrum required?
         raise NotImplementedError("This method is not yet implemented")
 
 
+class LookupTableWET: # Note: was before LookupTableWET2
+    """
+    This class is for creating a lookup table for water suppression. The technique is WET.
+    The suppression is given as a ratio of suppressed signal to non-suppressed signal.
 
-class LookupTableWET:
+    The Bloch simulation is fully vectorized: all (B1, T1) combinations are computed
+    simultaneously using element-wise NumPy operations instead of per-voxel matrix multiplies.
+    """
+
+    def __init__(
+        self,
+        T1_range: np.ndarray | list = np.array([300, 5000]),
+        T1_step_size: float = 50.0,
+        T2: float = 250.0,
+        B1_scales_inhomogeneity: np.ndarray | list = np.array([0, 2]),
+        B1_scales_gauss: np.ndarray | list = np.array([0.01, 1]),
+        B1_scales_inhomogeneity_step_size: float = 0.05,
+        B1_scales_gauss_step_size: float = 0.05,
+        TR: float = 600.0,
+        TE: float = 0.0,
+        flip_angle_excitation_degree: float = 47.0,
+        flip_angles_WET_degree: np.ndarray | list = np.array([89.2, 83.4, 160.8]),
+        time_gaps_WET: np.ndarray | list = np.array([30, 30, 30]),
+        off_resonance: float = 0.0,
+    ):
+        # A) Fixed input variables for Bloch Simulation
+        self.TR = TR
+        self.TE = TE
+        self.T2 = T2
+        self.flip_angle_excitation_rad = np.deg2rad(flip_angle_excitation_degree)
+        self.flip_angles_WET_rad = np.deg2rad(flip_angles_WET_degree)
+        self.time_gaps_WET = np.asarray(time_gaps_WET, dtype=float)
+        self.off_resonance = off_resonance
+
+        # B) Variables containing ranges for generating the dictionary
+        self._T1_step_size = T1_step_size
+        self._T1_range = np.asarray(T1_range, dtype=float)
+        self.T1_values = np.arange(T1_range[0], T1_range[1] + T1_step_size, T1_step_size)
+
+        self._B1_scales_lower_border = min(B1_scales_gauss[0], B1_scales_inhomogeneity[0])
+        self._B1_scales_upper_border = max(B1_scales_gauss[1], B1_scales_inhomogeneity[1])
+        self._B1_scales_step_size = min(B1_scales_inhomogeneity_step_size, B1_scales_gauss_step_size)
+        self.B1_scales_effective_values = np.arange(
+            self._B1_scales_lower_border,
+            self._B1_scales_upper_border + self._B1_scales_step_size,
+            self._B1_scales_step_size,
+        )
+
+        # Storage
+        self.simulated_data: xr.DataArray  | None = None
+        self.residual_long_mag: np.ndarray | None = None
+
+    def create(self):
+        """
+        Populate the full lookup table (this vectorised over all B1 and T1 values to enhance computational speed")
+
+        :return: Nothing
+        """
+
+        Console.printf("info",
+            f"Start creating the Lookup Table for WET (water suppression enhanced through T1 effects)"
+            f"\n => Axis 1: B1 scale | Resolution: {self._B1_scales_step_size:>6.3f} | Range: {self._B1_scales_lower_border:>6.3f}:{self._B1_scales_upper_border:>6.3f}"
+            f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
+        )
+
+        Console.start_timer()
+
+        # (1) Creating the Block simulation object with the fixed variables
+        bloch_simulation = LookupTableWET._BlochSimulation(
+            flip_angles=self.flip_angles_WET_rad,
+            time_gaps=self.time_gaps_WET,
+            flip_final_excitation=self.flip_angle_excitation_rad,
+            T2=self.T2,
+            TE1=self.TE,
+            TR=self.TR,
+            off_resonance=self.off_resonance,
+        )
+
+        # (2) Broadcast the variable values to be able to compute all values at once (without loop)
+        b1 = self.B1_scales_effective_values[:, None]  # (41, 1)
+        t1 = self.T1_values[None, :]                   # (1, 95)
+
+        # (3) Compute for the B1 and T1 ranges the respective remaining signal with WET and without WET.
+        signal_with_WET, residual_long_mag = bloch_simulation.compute_signal_after_pulses(T1=t1, B1_scale=b1, with_WET=True)
+        signal_without_WET, _ = bloch_simulation.compute_signal_after_pulses(T1=t1, B1_scale=b1, with_WET=False)
+
+        # (4) Compute the remaining signal.
+        #     1 --> full signal for T1/B1 combination
+        #     0 --> no remaining signal for T1/B1 combination
+        #     Further: Just to ignore error message if divided by 0. Therefore, still yields inf if it happens.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            remaining_signal = np.abs(signal_with_WET) / np.abs(signal_without_WET)
+
+
+        # (5) Check if lookup table contains NaNs, Infs, zeros
+        tools.ArrayTools.check_nan(remaining_signal)
+        tools.ArrayTools.check_inf(remaining_signal)
+        tools.ArrayTools.count_zeros(remaining_signal)
+
+        # (6) Just for debugging, the remaining Mxy magnetisation after all WET pulses
+        self.residual_long_mag = residual_long_mag
+
+        # (7) Create the xarray out of the remaining signal with the desired axes:
+        #     axis 1: The effective B1+ scales
+        #     axis 2: The T1/TR values
+        self.simulated_data = xr.DataArray(
+            data=remaining_signal,
+            coords={
+                "B1_scale_effective": self.B1_scales_effective_values,
+                "T1_over_TR": self.T1_values / self.TR,
+            },
+            dims=["B1_scale_effective", "T1_over_TR"],
+        )
+
+        total_entries = self.simulated_data.size
+
+        Console.stop_timer()
+
+        Console.printf("success",
+                       f"Created WET lookup table with {total_entries} entries."
+                       f"Values Range: [{float(np.nanmin(remaining_signal))}, {float(np.nanmax(remaining_signal))}]")
+
+    def get(self, b1_scales, t1_over_tr, interpolation: str = "linear",
+            extrapolation: bool = True, device: str | None = None):
+        """
+        Fetch the remaining signal data from the lookup table for the desired B1 and T1/TR arrays.
+
+        Accepts NumPy AND CuPy inputs. The xarray '.interp' (scipy backend) needs NumPy, so cupy
+        inputs are moved to host for the interpolation and the result is moved back to the input's
+        device -- both via the project's GPUTools. No manual interpolation/chunking.
+
+        :param b1_scales: B1+ scale array (numpy or cupy)
+        :param t1_over_tr: T1/TR array (numpy or cupy), same shape as b1_scales
+        :param interpolation: interpolation method passed to xarray (default 'linear')
+        :param extrapolation: True -> nearest-value extrapolation; False -> NaNs outside the table
+        :param device: optional 'cpu' or 'gpu'/'cuda' for the RETURNED array. If None, the result
+                       is returned on the same device as the input.
+        :return: values from the table, same shape as inputs
+        """
+
+        # (0) Extrapolation handling (unchanged)
+        if extrapolation:
+            extrapolation_arg = {"fill_value": None}
+            Console.printf("info",
+                           "Extrapolation is activated (nearest-value extrapolation). Double check retrieved values outside the WET lookup table!")
+        else:
+            extrapolation_arg = {}
+            Console.printf("warning",
+                           "Extrapolation is deactivated. This yields NaNs for values outside the WET lookup table!")
+
+        # (1) Remember the input backend, then move inputs to NumPy for the scipy/xarray interp.
+        #     (This replaces the old hard-coded np.asarray and is the ONLY necessary change.)
+        input_backend = ArrayTools.get_backend(b1_scales)  # numpy or cupy module
+        return_device = device if device is not None else ("gpu" if input_backend is cp else "cpu")
+
+        b1_scales = GPUTools.to_numpy(b1_scales)
+        t1_over_tr = GPUTools.to_numpy(t1_over_tr)
+
+        # (2) Shape check (unchanged)
+        if b1_scales.shape != t1_over_tr.shape:
+            Console.printf("error", f"The B1 scales and the T1/TR arrays need the same shape, but: \n"
+                                    f"B1 scales: {b1_scales.shape} \n"
+                                    f"T1/TR: {t1_over_tr.shape}")
+            return None
+
+        # (2b) Matching shape -> interpolate (xarray/scipy does the work, no manual chunking)
+        original_shape = b1_scales.shape
+        retrieved_values = self.simulated_data.interp(
+            B1_scale_effective=xr.DataArray(b1_scales.ravel(), dims="points"),
+            T1_over_TR=xr.DataArray(t1_over_tr.ravel(), dims="points"),
+            method=interpolation,
+            kwargs=extrapolation_arg
+        ).values.reshape(original_shape)
+
+        # (3) Move the result to the requested/original device via the project tools
+        retrieved_values = GPUTools.to_device(retrieved_values, device=return_device)
+        return retrieved_values
+
+###    def get(self, b1_scales, t1_over_tr, interpolation:str ="linear", extrapolation:bool = True):
+###        """
+###        Fetch the remaining signal data from the created lookup table for the desired arrays of B1 and T1/TR values.
+###
+###        :param b1_scales: the B1+ values array
+###        :param t1_over_tr: the T1/TR values array
+###        :return: values from the table
+###        """
+###
+###        # (0) Check if extrapolation is desired, otherwise make warning that it might yield NaNs
+###        if extrapolation:
+###            extrapolation_arg = {"fill_value": None}
+###            Console.printf("info", "Extrapolation is activated (nearest-value extrapolation). Double check retrieved values outside the WET lookup table!")
+###        else:
+###            extrapolation_arg = {}
+###            Console.printf("warning", "Extrapolation is deactivated. This yields NaNs for values outside the WET lookup table!")
+###
+###        # (1) Make sure that the arrays are numpy arrays
+###        b1_scales = np.asarray(b1_scales)
+###        t1_over_tr = np.asarray(t1_over_tr)
+###
+###        # (2) Check if the shapes of both arrays are matching
+###        # (2a) Not matching shape
+###        if b1_scales.shape != t1_over_tr.shape:
+###            Console.printf("error", f"The B1 scales and the T1/TR arrays need the same shape, but: \n"
+###                                    f"B1 scales: {b1_scales.shape} \n"
+###                                    f"T1/TR: {t1_over_tr.shape}")
+###            return None
+###
+###        else:
+###            # (2b) Matching shape
+###            original_shape = b1_scales.shape
+###
+###            # (3) Interpolate values from dictionary
+###            # First flatten the b1_scales and t1_over_tr to fit the xarray interpolation function (scipy must be in background)
+###            # and then reshape it to the original shape (based on the b1_scales, but could also be the t1_over_tr).
+###            retrieved_values = self.simulated_data.interp(
+###                B1_scale_effective=xr.DataArray(b1_scales.ravel(), dims="points"),
+###                T1_over_TR=xr.DataArray(t1_over_tr.ravel(), dims="points"),
+###                method=interpolation,
+###                kwargs=extrapolation_arg
+###            ).values.reshape(original_shape)
+###
+###            ArrayTools.check_nan(retrieved_values)
+###            return retrieved_values
+
+    def plot(
+            self,
+            show_metabolites_position: bool = False,
+            metabolites_tissue: str = "both",
+    ):
+        """
+        PlotInterface the lookup table as a heatmap using matplotlib. Negative values
+        are overlaid in red, inf values in magenta, NaN values appear as white.
+
+        :param show_metabolites_position: If True, overlay metabolite T1/TR positions
+                                          as vertical dotted lines, with a top track
+                                          listing the metabolite names.
+        :param metabolites_tissue: 'WM', 'GM', or 'both'. Which tissue T1 to use for
+                                   the overlay. Only used if show_metabolites_position.
+        :return: Nothing
+        """
+        # Format tick labels.
+        T1_over_TR_formatted = [f"{val / self.TR:.2f}" for val in self.T1_values]
+        B1_scale_formatted = [f"{val:.2f}" for val in self.B1_scales_effective_values]
+
+        # Ensure the simulated data is a numpy array.
+        data = np.array(self.simulated_data)
+
+        # Create a figure and axis.
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Replace inf with NaN so imshow renders them as white.
+        inf_mask = np.isinf(data)
+        data_clean = np.where(inf_mask, np.nan, data)
+
+        # Create masked arrays:
+        pos_data = np.ma.masked_where((data_clean < 0) | np.isnan(data_clean), data_clean)
+        neg_data = np.ma.masked_where((data_clean >= 0) | np.isnan(data_clean), data_clean)
+
+        # PlotInterface non-negative values using the viridis colormap.
+        im1 = ax.imshow(pos_data, cmap='viridis', aspect='auto')
+
+        # Overlay negative values in red.
+        im2 = ax.imshow(neg_data, cmap=ListedColormap(['red']), aspect='auto')
+
+        # Overlay inf values in magenta.
+        if np.any(inf_mask):
+            im3 = ax.imshow(np.ma.masked_where(~inf_mask, inf_mask.astype(float)),
+                            cmap=ListedColormap(['magenta']), aspect='auto')
+
+        # Set x and y ticks with custom labels.
+        ax.set_xticks(np.arange(len(T1_over_TR_formatted)))
+        ax.set_xticklabels(T1_over_TR_formatted, fontsize=7, rotation=90, ha='right')
+        ax.set_yticks(np.arange(len(B1_scale_formatted)))
+        ax.set_yticklabels(B1_scale_formatted, fontsize=7)
+
+        # Add a colorbar for the viridis part.
+        cbar = fig.colorbar(im1, ax=ax)
+        cbar.ax.tick_params(labelsize=7)
+
+        # Set axis titles.
+        ax.set_title('Heatmap of Lookup Table')
+        ax.set_xlabel('T1/TR Value')
+        ax.set_ylabel('B1 Scale Value')
+
+        # Legend for special values.
+        from matplotlib.patches import Patch
+        ax.legend(handles=[
+            Patch(facecolor='white', edgecolor='black', label='NaN'),
+            Patch(facecolor='magenta', label='Inf'),
+            Patch(facecolor='red', label='Negative'),
+        ], loc='upper right', fontsize=7)
+
+        # Optional metabolite overlay (reference fixed to 7T / Xin / occipital, self.TR assumed in ms).
+        ax_top = None
+        if show_metabolites_position:
+            #import pint
+            #ureg = pint.UnitRegistry()
+            from units import u as ureg
+
+            # Load the compound database.
+            path = Path.cwd().parent / "docs" / "chemical_compounds_OLD.json"
+            with path.open("r", encoding="utf-8") as f:
+                compounds = json.load(f)
+
+            # Collect T1 midpoints per metabolite for the requested tissue(s).
+            # Use pint to convert from the JSON's stored unit into ms, so the
+            # metabolite T1 and self.TR share the same unit before forming T1/TR.
+            tissues = ["WM", "GM"] if metabolites_tissue.lower() == "both" else [metabolites_tissue]
+            metab_t1_dict = {}
+            for metab_name, metab_info in compounds["metabolites"].items():
+                t1_block = metab_info.get("T1", {}).get("7T", {}).get("Xin", {})
+                for tissue in tissues:
+                    entry = t1_block.get(tissue, {}).get("occipital", None)
+                    if entry is None:
+                        continue
+                    lo, hi = entry["range"]
+                    src_unit = entry.get("unit", "s")
+                    midpoint_q = (0.5 * (lo + hi)) * ureg(src_unit)
+                    midpoint_in_ms = midpoint_q.to("ms").magnitude
+                    label = f"{metab_name} ({tissue})" if len(tissues) > 1 else metab_name
+                    metab_t1_dict[label] = midpoint_in_ms
+
+            # Map T1/TR -> imshow column index via np.interp.
+            # Both metab_t1_dict[m] and self.TR are in ms, so the ratio is dimensionless.
+            if len(metab_t1_dict) > 0:
+                t1_over_tr_array = np.array(self.T1_values) / self.TR
+                positions_axis = np.arange(len(self.T1_values), dtype=float)
+                sort_idx = np.argsort(t1_over_tr_array)
+                xp_sorted = t1_over_tr_array[sort_idx]
+                fp_sorted = positions_axis[sort_idx]
+
+                from mpl_toolkits.axes_grid1 import make_axes_locatable
+                from matplotlib.transforms import blended_transform_factory
+
+                metabs = list(metab_t1_dict.keys())
+                cmap = plt.get_cmap("Dark2")
+                color_map = {m: cmap(i % cmap.N) for i, m in enumerate(metabs)}
+
+                # a) Vertical dotted line per metabolite across the heatmap.
+                y0, y1 = ax.get_ylim()
+                ymin, ymax = (y0, y1) if y0 < y1 else (y1, y0)
+                for m in metabs:
+                    ratio = metab_t1_dict[m] / self.TR
+                    if ratio < xp_sorted[0] or ratio > xp_sorted[-1]:
+                        continue  # outside the table's T1/TR range, skip
+                    xpos = float(np.interp(ratio, xp_sorted, fp_sorted))
+                    ax.vlines(xpos, ymin=ymin, ymax=ymax,
+                              colors=color_map[m], linestyles=":",
+                              linewidth=1.2, alpha=0.85, zorder=5)
+
+                # b) Top axis (track) above ax with a dot and the metabolite name.
+                divider = make_axes_locatable(ax)
+                ax_top = divider.append_axes("top", size="22%", pad=0.06, sharex=ax)
+                n = len(metabs)
+                ax_top.set_ylim(-0.5, n - 0.5)
+                ax_top.set_yticks([])
+                ax_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False,
+                                   top=False, labeltop=False)
+                for s in ["left", "right", "bottom"]:
+                    ax_top.spines[s].set_visible(False)
+
+                # x in axes fraction (0..1), y in row index units
+                trans = blended_transform_factory(ax_top.transAxes, ax_top.transData)
+                for i, m in enumerate(metabs):
+                    col = color_map[m]
+                    ratio = metab_t1_dict[m] / self.TR
+                    if xp_sorted[0] <= ratio <= xp_sorted[-1]:
+                        xpos = float(np.interp(ratio, xp_sorted, fp_sorted))
+                        ax_top.scatter([xpos], [i], s=22, color=col, alpha=0.9, linewidths=0)
+                    # top-left metabolite list (colored)
+                    ax_top.text(0.01, i, m, transform=trans, ha="left", va="center",
+                                color=col, alpha=0.95, fontsize=7, clip_on=True)
+
+                # optional subtle row guides
+                ax_top.hlines(np.arange(n),
+                              xmin=ax.get_xlim()[0], xmax=ax.get_xlim()[1],
+                              colors="k", alpha=0.06, lw=0.8)
+
+        plt.tight_layout()
+
+        # Give the figure a bit more headroom so the top labels do not get clipped.
+        if ax_top is not None:
+            plt.subplots_adjust(top=0.88)
+
+        plt.show()
+
+
+    # Inner class: vectorized Bloch simulation -------------------------------------------------------------------------
+    class _BlochSimulation:
+        """
+        Vectorized Bloch-equation simulator for a spoiled WET sequence.
+
+        Instead of building 3x3 matrices per voxel, magnetization is stored as
+        three separate arrays (mx, my, mz) of arbitrary batch shape. All rotations,
+        decays, and spoilers are applied element-wise via NumPy broadcasting.
+        """
+
+        def __init__(self, flip_angles, time_gaps, flip_final_excitation, T2, TE1, TR, off_resonance):
+            """
+            Initialize the simulation with constant parameters.
+
+            :param flip_angles: Sequence of flip angles (in radians) for each WET pulse.
+            :param time_gaps: Sequence of durations between pulses (ms).
+            :param flip_final_excitation: Flip angle (in radians) for the final excitation pulse.
+            :param T2: Transverse relaxation time (ms).
+            :param TE1: Echo time from the last pulse to acquisition (ms).
+            :param TR: Repetition time (ms).
+            :param off_resonance: Off-resonance frequency (Hz).
+            """
+            self.flip_angles = np.asarray(flip_angles, dtype=float)
+            self.time_gaps = np.asarray(time_gaps, dtype=float)
+            self.flip_final_excitation = flip_final_excitation
+            self.T2 = T2
+            self.TE1 = TE1
+            self.TR = TR
+            self.off_resonance = off_resonance
+
+        # -- vectorized rotation and precession -----------------------------------
+
+        @staticmethod
+        def y_rot(mx, my, mz, angle):
+            """
+            Apply rotation about the y-axis to magnetization components.
+            All inputs are arrays of the same (broadcastable) shape.
+
+            Generally, the rotation matrix is the following and yields the new magnetisation vector with:
+
+                     |  cos(α)   0    sin(α)  |       | Mx'|   | cos(α)  0  sin(α) |   | Mx |
+            Ry(α) =  |    0      1      0     |  ===> | My'| = |   0     1    0    | * | My |
+                     | -sin(α)   0    cos(α)  |       | Mz'|   |-sin(α)  0  cos(α) |   | Mz |
+
+            This yields then:
+
+                     Mx' = cos(α) * Mx  + 0 * My   + sin(α) * Mz = cos(α) * Mx + sin(α) * Mz
+                     My' = 0 * Mx       + 1 * My   + 0 * Mz      = My
+                     Mz' = -sin(α) * Mx + 0 * My   + cos(α) * Mz = -sin(α) * Mx + cos(α) * Mz
+
+            ... which can also be used in vectorised form! Therefore, calculate for all values at once.
+
+            """
+            c = np.cos(angle)
+            s = np.sin(angle)
+            mx_new = c * mx + s * mz
+            my_new = my.copy()
+            mz_new = -s * mx + c * mz
+            return mx_new, my_new, mz_new
+
+        @staticmethod
+        def z_rot(mx, my, mz, angle):
+            """
+            Apply rotation about the z-axis to magnetization components.
+
+            Generally, the rotation matrix is the following and yields the new magnetisation vector with:
+
+                     | cos(α)  -sin(α)   0 |       | Mx'|   | cos(α)  -sin(α)  0 |   | Mx |
+            Rz(α) =  | sin(α)   cos(α)   0 |  ===> | My'| = | sin(α)   cos(α)  0 | * | My |
+                     |   0        0      1 |       | Mz'|   |   0        0     1 |   | Mz |
+
+            This yields then:
+
+                     Mx' = cos(α) * Mx  - sin(α) * My  + 0 * Mz = cos(α) * Mx - sin(α) * My
+                     My' = sin(α) * Mx  + cos(α) * My  + 0 * Mz = sin(α) * Mx + cos(α) * My
+                     Mz' = 0 * Mx       + 0 * My       + 1 * Mz = Mz
+
+            ... which can also be used in vectorised form! Therefore, calculate for all values at once.
+
+            """
+            c = np.cos(angle)
+            s = np.sin(angle)
+            mx_new = c * mx - s * my
+            my_new = s * mx + c * my
+            mz_new = mz.copy()
+            return mx_new, my_new, mz_new
+
+        @staticmethod
+        def free_precess(mx, my, mz, time_interval, t1, t2, off_resonance):
+            """
+            Simulate free precession and decay over a given time interval. Applies T2 decay to transverse components,
+            T1 recovery to longitudinal component, and off-resonance z-rotation. All inputs are broadcastable arrays.
+
+            Generally, the free precession can be described the decay and recovery:
+
+            | Mx' |   | e2   0   0  |   | Mx |   |   0  |
+            | My' | = | 0   e2   0  | * | My | + |   0  |
+            | Mz' |   | 0    0   e1 |   | Mz |   | 1-e1 |
+
+            This yields then:
+
+               Mx' = Mx * e2
+               My' = My * e2
+               Mz' = Mz * e1 + (1 - e1) ....(includes T1 recovery toward equilibrium M0=1)
+
+            And if off-resonance z-rotation is included (at the end via ._BlochSimulation.z_rot):
+
+            | Mx''|   | cos(Δφ)  -sin(Δφ)  0 |   | Mx' |
+            | My''| = | sin(Δφ)   cos(Δφ)  0 | * | My' |
+            | Mz''|   |    0         0     1 |   | Mz' |
+
+            But note: when on-resonance (Δφ=0), this is identity and Mx''=Mx', My''=My'.
+
+
+            :param mx, my, mz: Magnetization components, arrays of shape (...).
+            :param time_interval: Time interval in ms (scalar).
+            :param t1: Longitudinal relaxation time in ms, array (...).
+            :param t2: Transverse relaxation time in ms (scalar or array).
+            :param off_resonance: Off-resonance frequency in Hz (scalar or array).
+            :return: Updated (mx, my, mz) tuple.
+            """
+            e1 = np.exp(-time_interval / t1)
+            e2 = np.exp(-time_interval / t2)
+            angle = 2.0 * np.pi * off_resonance * time_interval / 1000.0
+
+            # Decay
+            mx_d = e2 * mx
+            my_d = e2 * my
+            mz_d = e1 * mz + (1.0 - e1)
+
+            # If Off-resonance rotation around z (!), otherwise if angle=zeros, then just (mx_d, my_d, mz_d)
+            return LookupTableWET._BlochSimulation.z_rot(mx_d, my_d, mz_d, angle)
+
+        @staticmethod
+        def spoil(mx, my, mz):
+            """
+            Destroys the transverse magnetisation (gradient spoiler). Therefore, Mx & My == 0 !
+
+            :param mx: Mx
+            :param my: My
+            :param mz: Mz
+            :return: tuple of arrays, where Mx and My is zeroed
+            """
+
+            z = np.zeros_like(mx)
+            return z, z, mz
+
+        # -- main simulation -----------------------------------
+
+        def compute_signal_after_pulses(self, T1, B1_scale, with_WET=True, max_iterations=30, steady_state_convergence_tolerance=1e-12):
+            """
+            Compute the steady-state signal for arrays of T1 and B1_scale values.
+
+            :param T1: Array (...) of longitudinal relaxation times in ms.
+            :param B1_scale: Array (...) of B1 scaling factors, same shape as T1.
+            :param with_WET: If True, apply WET preparation pulses before excitation.
+            :return: Tuple (magnetization_fid_last, residual_long_mag) where both
+                     are arrays of the same shape as T1/B1_scale.
+            """
+
+
+            # (1) Broadcasting the shapes to represent all combinations of B1_scale and T1
+            # For example shapes:
+            #    T1.shape       = 61
+            #    B1_scale.shape = 95
+            #      ...the broadcasting would be for:
+            #           T1.shape       ----> (61x95)
+            #           B1_scale.shape ----> (61x95)
+            shape = np.broadcast_shapes(np.shape(T1), np.shape(B1_scale))
+            T1 = np.broadcast_to(np.asarray(T1, dtype=float), shape)
+            B1_scale = np.broadcast_to(np.asarray(B1_scale, dtype=float), shape)
+
+            # (2) Without WET the flip angles and time gaps are not present
+            flip_angles = self.flip_angles if with_WET else []
+            time_gaps = self.time_gaps if with_WET else []
+            n_wet_pulses = len(time_gaps)
+            total_delay = float(np.sum(time_gaps))
+
+            # (3) The initial magnetisations: with thermal equilibrium along +z
+            # Here building instead of the initial vector [Mx=0, Mx=0, Mz=1], a full arrays:
+            #   For the example above these yields the arrays
+            #      Mx = (61x95) shape of zeros
+            #      My = (61x95) shape of zeros
+            #      Mz = (61x95) shape of ones
+            #      ... and therefore the arrays are covering all combinations of T1 and B1_scales
+            mx = np.zeros(shape, dtype=float)
+            my = np.zeros(shape, dtype=float)
+            mz = np.ones(shape, dtype=float)
+
+            # Iterate to approach steady state
+            for i in range(max_iterations):
+
+                # Store Mz before this cycle to check convergence afterwards
+                mz_previous = mz.copy()
+
+                # --- WET pulses (only if with_WET is True) ---
+                # Most time not possible with one pulse to zero out Mz with one pulse (Mz=0) due to B1+ inhomogeneities,
+                # therefore multiple optimised pulses + recovery + spoiler gradient to approach Mz=0.
+                for u in range(n_wet_pulses):
+
+                    # (a) Bringing the signal to a certain extent from Mz to Bxy (therefore Mz decreases)
+                    #     => RF pulse (y-rotation scaled by B1)
+                    mx, my, mz = self.y_rot(mx, my, mz, B1_scale * flip_angles[u])
+
+                    # (b) Relaxation and Crusher-Gradient
+                    #     => This happens at the same time in reality during the proposed time gap
+                    #
+                    #         (1b) Free precession during gap
+                    mx, my, mz = self.free_precess(mx, my, mz, time_gaps[u], T1, self.T2, self.off_resonance)
+                    #         (2b) Spoiler gradient destroys transverse magnetization completely. Mx, My -> everywhere 0
+                    mx, my, mz = self.spoil(mx, my, mz)
+
+                # Mz just before excitation (diagnostic output)
+                residual_long_mag = mz.copy() # TODO: Maybe after final excitation pulse?
+
+                # (4) Final excitation pulse
+                #     After WET, Mz for water is assumed Mz=0. However, Mz for other chemical compounds like metabolites
+                #     still present. This pulse is flipping it to the transverse plane Mx. Therefore, everything where
+                #     Mz≠0, which depends on T1, will become a measurable signal. Ideally, no water signal.
+                mx, my, mz = self.y_rot(mx, my, mz, B1_scale * self.flip_final_excitation)
+
+                # (5) TE evolution (no spoiler - T2 acts here if TE > 0)
+                #     The time between excitation and readout. During this time the Mxy decays due to T2 decay, and T1
+                #     Recovery takes place. Signal readout in the next step (transverse signal).
+                mx, my, mz = self.free_precess(mx, my, mz, self.TE1, T1, self.T2, self.off_resonance)
+
+                # (6) Readout of the signal (Mx at echo) at this time point.
+                magnetization_fid_last = mx.copy()
+
+                # (7) Remaining TR + spoiler
+                #     The remaining time until the next TR cycle. Afterward, spoiling takes place to start with a fresh
+                #     cycle. Only Mz will be used in the current state (therefore, no spoiling) for the next iteration.
+                #     This might be important for the steady-state calculation.
+                dt_remaining = self.TR - self.TE1 - total_delay
+                mx, my, mz = self.free_precess(mx, my, mz, dt_remaining, T1, self.T2, self.off_resonance)
+                mx, my, mz = self.spoil(mx, my, mz)
+
+                # For comparing the current Mz array with them of the previous iteration (mz vs mz_previous) and if close
+                # with a certain tolerance, then break the loop.
+                if i > 0 and np.allclose(mz, mz_previous, atol=steady_state_convergence_tolerance):
+                    break
+
+
+            return magnetization_fid_last, residual_long_mag
+
+
+
+@deprecated(reason="Was just an experiment")
+class LookupTableWET_OLD:
     """
     This class is for creating a lookup table for water suppression. The technique is WET.
     The suppression is given as a ratio of suppressed signal to non-suppressed signal.
@@ -1136,26 +2351,30 @@ class LookupTableWET:
                                                                     TR=self.TR,
                                                                     off_resonance=off_resonance)
 
-        #D) TODO: Test:
-        self.simulated_data = tools.NamedAxesArray(input_array=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
-                                                   axis_values={
-                                                       "B1_scale_effective": self.B1_scales_effective_values,
-                                                       "T1_over_TR": self.T1_values / self.TR
-                                                   },
-                                                   device="cpu")
+        ####D) TODO: Test:
+        ###self.simulated_data = tools.NamedAxesArray(input_array=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
+        ###                                           axis_values={
+        ###                                               "B1_scale_effective": self.B1_scales_effective_values,
+        ###                                               "T1_over_TR": self.T1_values / self.TR
+        ###                                           },
+        ###                                           device="cpu")
+
+
+        # TODO: Just for plotting longitudinal magnetisation!
+        self.residual_long_mag = []
 
 
         # TODO: Delete after test usage!
         #self.negative_with_WET = 0
         #self.negative_without_WET = 0
-        ###self.simulated_data = xr.DataArray(
-        ###    data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
-        ###    coords={
-        ###        "B1_scale_effective": self.B1_scales_effective_values,
-        ###        "T1_over_TR": self.T1_values / self.TR
-        ###    },
-        ###    dims=["B1_scale_effective", "T1_over_TR"]
-        ###)
+        self.simulated_data = xr.DataArray(
+            data=np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float),
+            coords={
+                "B1_scale_effective": self.B1_scales_effective_values,
+                "T1_over_TR": self.T1_values / self.TR
+            },
+            dims=["B1_scale_effective", "T1_over_TR"]
+        )
         #self.simulated_data = np.full((len(self.B1_scales_effective_values), len(self.T1_values)), -111, dtype=float)
         #self.row_labels = np.asarray(self.B1_scales_effective_values)  # For B1 scales (rows)
         #self.col_labels = np.asarray(self.T1_values) / self.TR  # For T1/TR (columns)
@@ -1177,13 +2396,13 @@ class LookupTableWET:
 
         :return: attenuation value for just one T1 and B1-scale value.
         """
-        signal_without_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=False)
-        signal_with_WET, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=True)
+        signal_without_WET, _, _ = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=False)
+        signal_with_WET, _, residual_long_mag = self.bloch_simulation_WET.compute_signal_after_pulses(T1=T1, B1_scale=B1_scale, with_WET=True)
 
         with np.errstate(divide='ignore', invalid='ignore'):
             attenuation = np.divide(np.abs(signal_with_WET), np.abs(signal_without_WET))
 
-        return attenuation
+        return attenuation, residual_long_mag
 
 
     def create(self):
@@ -1199,20 +2418,27 @@ class LookupTableWET:
             f"\n => Axis 2: T1/TR    | Resolution: {self._T1_step_size / self.TR:>6.3f} | Range: {self._T1_range[0] / self.TR:>6.3f}:{self._T1_range[1] / self.TR:>6.3f}"
         )
 
+        # TODO: Maybe integrate better:
+        self.residual_long_mag = [] #TODO: Reset it
+
         for T1 in tqdm(self.T1_values):
             for B1_scale in self.B1_scales_effective_values:
 
                 # Compute the attenuation value
-                value = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+                value, residual_long_mag = self._compute_one_attenuation_value(T1=T1, B1_scale=B1_scale)
+
+                self.residual_long_mag.append(residual_long_mag) # TODO: Append residual long magnetisation
 
                 if np.isnan(value):
                     Console.printf("error",
                                    "NaN value occurred while creating dictionary. Check proposed ranges. Terminating program!")
                     sys.exit()
                 else:
-                    self.simulated_data.set_value(B1_scale_effective=B1_scale, # first axis
-                                                  T1_over_TR=T1/self.TR,       # second axis
-                                                  value=value)                 # and to axis coordinated according values
+                    ###self.simulated_data.set_value(B1_scale_effective=B1_scale, # first axis
+                    ###                              T1_over_TR=T1/self.TR,       # second axis
+                    ###                              value=value)                 # and to axis coordinated according values
+                    self.simulated_data.loc[{"B1_scale_effective": B1_scale, "T1_over_TR": T1 / self.TR}] = value
+
                     #self.simulated_data.loc[{"B1_scale_effective": B1_scale, "T1_over_TR": T1 / self.TR}] = value
 
         total_entries = self.simulated_data.size
@@ -1260,11 +2486,12 @@ class LookupTableWET:
             :return: Tuple (a_fp, b_fp) where:
                      a_fp (np.ndarray, 3x3): Rotation and relaxation matrix.
                      b_fp (np.ndarray, 3,): Recovery term added to the magnetization.
+
             """
 
             # angle = Δϕ=ωΔt with ω=2πf (and also off resonance); divided by 1000 to get from [ms] ->[s]
             angle = 2.0 * np.pi * off_resonance * time_interval / 1000.0  # radians
-            e1 = np.exp(-time_interval / t1) # Mz(t) = M0 * (1-e^(-t/T1)    # TODO
+            e1 = np.exp(-time_interval / t1) # Mz(t) = M0 * (1-e^(-t/T1)    # TODO ==> gehört hier nicht 1-e??? Naja, eher nicht?
             e2 = np.exp(-time_interval / t2) # Mxy(t) = Mxy(0) * e^(-t/T2)  # TODO
 
             decay_matrix = np.array([
@@ -1385,6 +2612,7 @@ class LookupTableWET:
                 a_exc_to_next_exc.append(spoiler_matrix @ a_fp)
                 b_exc_to_next_exc.append(b_fp)
 
+
             # Final excitation pulse.
             r_flip_last = LookupTableWET._BlochSimulation.y_rot(B1_scale * self.flip_final_excitation)
 
@@ -1434,6 +2662,9 @@ class LookupTableWET:
                 #sys.exit()
                 #------------------------------------------------------------------------------
 
+                # TODO: Additional added to reproduce Fig. 3b of WET paper:
+                residual_long_mag = magnetizations[idx][2]
+
                 # TODO: Last excitations after WET pulses
                 magnetizations[idx + 1] = r_flip_last @ magnetizations[idx]
                 idx += 1
@@ -1472,7 +2703,7 @@ class LookupTableWET:
 
             magnetization_fid_last = magnetizations_fid[n_wet_pulses][0]
 
-            return magnetization_fid_last, magnetization_fid_rest
+            return magnetization_fid_last, magnetization_fid_rest, residual_long_mag
 
 ###        def compute_signal_after_pulses(self, T1: float, B1_scale: float, with_WET: bool = True) -> tuple:
 ###            """
@@ -1817,21 +3048,22 @@ class LookupTableWET:
 if __name__ == '__main__':
 
     # ========================= TO LOAD THE MAPS ANS INTERPOLATE IT ====================================================
-    import file
-    configurator = file.Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
+    from inputs import Configurator
+    from file import ParameterMaps as FileParameterMaps
+    configurator = Configurator(path_folder="/home/mschuster/projects/Synthetic_MRSI/config/",
                                      file_name="paths_14032025.json")
     configurator.load()
 
-    loaded_B1_map = file.ParameterMaps(configurator=configurator, map_type_name="B1").load_file()
+    loaded_B1_map = FileParameterMaps(configurator=configurator, map_type_name="B1").load_file()
     loaded_B1_map_shape = loaded_B1_map.loaded_maps.shape
 
-    loaded_B0_map = file.ParameterMaps(configurator=configurator, map_type_name="B0").load_file()
+    loaded_B0_map = FileParameterMaps(configurator=configurator, map_type_name="B0").load_file()
     loaded_B0_map = loaded_B0_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
 
 
-    loaded_GM_map = file.ParameterMaps(configurator=configurator, map_type_name="GM_segmentation").load_file()
-    loaded_WM_map = file.ParameterMaps(configurator=configurator, map_type_name="WM_segmentation").load_file()
-    loaded_CSF_map = file.ParameterMaps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
+    loaded_GM_map = FileParameterMaps(configurator=configurator, map_type_name="GM_segmentation").load_file()
+    loaded_WM_map = FileParameterMaps(configurator=configurator, map_type_name="WM_segmentation").load_file()
+    loaded_CSF_map = FileParameterMaps(configurator=configurator, map_type_name="CSF_segmentation").load_file()
 
     loaded_GM_map = loaded_GM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
     loaded_WM_map = loaded_WM_map.interpolate_to_target_size(target_size=loaded_B1_map_shape, order=1)
