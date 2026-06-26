@@ -110,6 +110,63 @@ class FID:
 
         return fid
 
+    def rename_signal_by_name(self, old_name: str | list[str], new_name: str | list[str]):
+        """
+        Rename one or multiple chemical compounds in the FID. The old name(s) are matched against
+        the current names and replaced by the new name(s) at the same position. Thus, the i-th old
+        name is renamed to the i-th new name.
+
+        It is possible to either rename a single compound (pass two strings) or multiple compounds
+        at once (pass two lists of equal length).
+
+        Example usage:
+
+            fid.rename_signal_by_name(old_name="NAcetylAspartate (NAA)", new_name="NAA")
+
+            fid.rename_signal_by_name(old_name=["Creatine (Cr)", "Glutamate (Glu)"],
+                                      new_name=["Cr", "Glu"])
+
+        :param old_name: the current name(s) of the compound(s) to rename
+        :param new_name: the new name(s) of the compound(s)
+        :return: the object itself, containing the renamed compound(s)
+        """
+
+        # Check if names are of type string and if so put them in a list (to handle single and multiple equally)
+        if isinstance(old_name, str):
+            old_name = [old_name]
+        if isinstance(new_name, str):
+            new_name = [new_name]
+
+        # The number of old and new names has to match, otherwise the mapping old -> new is ambiguous
+        if len(old_name) != len(new_name):
+            Console.printf("error",
+                           f"Cannot rename: got {len(old_name)} old name(s) but {len(new_name)} new name(s). "
+                           f"They have to match! No changes applied.")
+            return self
+
+        # Check if all provided old names exist. If one is missing, find the closest match (typo / whitespace)
+        # and abort WITHOUT applying anything -- thus the rename stays atomic (all or nothing).
+        for name in old_name:
+            if name not in self.name:
+                available = list(self.name) if self.name is not None else []
+                suggestion = difflib.get_close_matches(name, available, n=1, cutoff=0.6)
+                suggestion_str = f" Did you mean: '{suggestion[0]}'?" if suggestion else ""
+                Console.printf("error",
+                               f"Cannot rename: unknown compound name '{name}'.{suggestion_str} No changes applied.")
+                return self
+
+        # Everything is valid -> resolve all indices BEFORE mutating, so renames don't interfere with each
+        # other (e.g. when a new name happens to equal a later old name).
+        indices = [self.name.index(name) for name in old_name]
+
+        # Apply the renaming and report each one individually
+        for index, old, new in zip(indices, old_name, new_name):
+            self.name[index] = new
+            Console.printf("success", f"Renamed compound from '{old}' to '{new}'.")
+
+        return self
+
+    @deprecated(reason="Not longer valid", replacement="use instead: crop_signal")
     def cut(self,
             length: int = None,
             interval: tuple = None,
