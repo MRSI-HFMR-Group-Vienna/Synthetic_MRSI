@@ -1,5 +1,3 @@
-import time
-
 from tools import JupyterPlotManager
 from tools import GPUTools, SortingTools, DaskTools, InterpolationTools
 from cupyx.scipy.ndimage import zoom as zoom_gpu
@@ -11,10 +9,11 @@ import dask.array as da
 from tqdm import tqdm
 import numpy as np
 import cupy as cp
+import copy
 import pint
 import sys
 
-from interface import InterpolationInterface
+from interface import InterpolationInterface, BackupInterface
 
 
 class Model:
@@ -40,6 +39,7 @@ class Model:
         raise NotImplementedError("This method is not yet implemented")
 
 
+
 class MetabolicAtlas:
     # TODO
     def __init__(self):
@@ -55,7 +55,7 @@ class MetabolicAtlas:
         raise NotImplementedError("This method is not yet implemented")
 
 
-class ParameterMap(InterpolationInterface):
+class ParameterMap(InterpolationInterface, BackupInterface):
     """
     This holds a map of a certain type (e.g., T1) of a certain metabolite (e.g., NAA). It's possible to interpolate
     the map to a certain target shape and to push it to the respective device (GPU <-> CPU). Ist also possible to
@@ -242,7 +242,7 @@ class ParameterMap(InterpolationInterface):
         return "\n"
 
 
-class ParameterVolume(InterpolationInterface):
+class ParameterVolume(InterpolationInterface, BackupInterface):
     """
     Can only be of one type of map (e.g., T1, or T2, ...), but it should be with multiple metabolites.
     """
@@ -256,6 +256,9 @@ class ParameterVolume(InterpolationInterface):
         self.names: list[str] = [] # list of names of the metabolites or other maps, corresponds to the 4D array (1st dimension)
         self.unit: list = []
         self.data_type = None
+
+        # For storing different versions of this object (e.g., of different resolution and so on)
+        self.backups: dict[str, ParameterVolume] = {}
 
     def add_map(self, map_object: ParameterMap, verbose: bool = False):
         """
@@ -278,8 +281,8 @@ class ParameterVolume(InterpolationInterface):
                            fill_value: int | float,
                            mask: np.ndarray | list[np.ndarray] = None,
                            unit: pint.Unit = None,
-                           device_interpolate: str ="cpu",
-                           target_gpu_interpolate: int =0,
+                           device_interpolate: str = "cpu",
+                           target_gpu_interpolate: int = 0,
                            verbose: bool = False):
         """
         To create a ParameterMap that will be added to this object of the same shape as the other ParameterMaps (based on the first
@@ -309,28 +312,38 @@ class ParameterVolume(InterpolationInterface):
                 return
 
         # The shape required for the final ParameterMap.
-        target_shape = self.maps[0].values.shape
+        if self.maps:
+            reference_values = self.maps[0].values
+            target_shape = (
+                next(iter(reference_values.values())) if isinstance(reference_values, dict) else reference_values).shape
+        elif mask is not None:
+            target_shape = mask[0].shape if isinstance(mask, list) else mask.shape
+        else:
+            Console.printf("error","Cannot create dummy map since no ParameterMap is available as reference and no mask was provided.")
+            return self
 
         # (!) Important to note: When mask(s) is/are provided then shape needs to be none for
         #                        ParameterMap.create_dummy_volume
-        shape_create_volume = None if mask is None else self.maps[0].values.shape
+        shape_create_volume = target_shape if mask is None else None
 
         # To create the dummy values Parameter Map
-        parameter_map = ParameterMap(map_type_name=self.maps_type, map_name=map_name).create_dummy_volume(shape=shape_create_volume, fill_value=fill_value, mask=mask, unit=unit)
+        parameter_map = ParameterMap(map_type_name=self.maps_type, map_name=map_name).create_dummy_volume(
+            shape=shape_create_volume, fill_value=fill_value, mask=mask, unit=unit)
 
         # If the shape of the created volume (in the ParameterMap) does not fit the shape of the
         # shape of the ParameterMaps already collected in this object (of Parameter _Volume).
         # (!) Please note: Interpolation after creating the ParameterMap.values since it is better
         #                  to interpolate the final results than multiple times multiple masks (if
         #                  provided)
-        if parameter_map.values.shape != self.maps[0].values.shape:
-            parameter_map.interpolate(target_size=target_shape, device=device_interpolate, target_gpu=target_gpu_interpolate)
+        if parameter_map.values.shape != target_shape:
+            parameter_map.interpolate(target_size=target_shape, compute_on_device=device_interpolate,
+                                      return_on_device=device_interpolate, target_gpu=target_gpu_interpolate, order=1)
 
         self.add_map(parameter_map)
 
         return self
 
-    def interpolate_maps(self, target_size: tuple, order: int = 3, compute_on_device: str = "cpu", target_gpu: int = 0, return_on_device: str = "cpu", verbose: bool = False):
+    def interpolate_maps(self, target_size: tuple, order: int = 3, compute_on_device: str = "cpu", target_gpu: int = 0, return_on_device: str = "cpu", verbose: bool = False, apply_to_volume: bool = True):
         """
         To interpolate to the desired target size with desired order. Note, that this is done for each map but not the volume.
 
@@ -345,13 +358,14 @@ class ParameterVolume(InterpolationInterface):
         for i, m in enumerate(self.maps):
             self.maps[i] = m.interpolate(target_size=target_size, order=order, compute_on_device=compute_on_device, target_gpu=target_gpu, return_on_device=return_on_device, verbose=verbose)
 
-        self.to_volume(verbose=verbose)
-        Console.printf("warning", "The individual maps are interpolated, and then the 4D volume is created again. This might slow down the process.")
+        if apply_to_volume:
+            self.to_volume(verbose=verbose)
+            Console.printf("warning", "The individual maps are interpolated, and then the 4D volume is created again. This might slow down the process.")
 
         return self
 
     # called previously interpolate_volume to distinguish between interpolate_maps but sice inherits from Interpolation it is not possible anymore....
-    def interpolate(self, target_size: tuple, order: int = 3, compute_on_device: str = "cpu", target_gpu: int = 0, return_on_device: str = "cpu", verbose: bool = False):
+    def interpolate(self, target_size: tuple, order: int = 3, compute_on_device: str = "cpu", target_gpu: int = 0, return_on_device: str = "cpu", verbose: bool = False, apply_to_maps: bool = True):
         """
         To interpolate to the desired target size with desired order. This is done for the whole 4D volume.
 
@@ -383,6 +397,11 @@ class ParameterVolume(InterpolationInterface):
                 target_gpu=target_gpu,
                 verbose=verbose
             )
+
+        # If also desired to apply also to individual maps
+        if apply_to_maps:
+            self.interpolate_maps(target_size=target_size[1:], order=order, compute_on_device=compute_on_device, return_on_device=return_on_device, verbose=False, apply_to_volume=False)
+            Console.printf("success", "Also applied the interpolation to the individual maps!")
 
         return self
 
@@ -664,7 +683,7 @@ class ParameterVolume(InterpolationInterface):
         return "\n"
 
 
-    def display_jupyter(self, display: str = "maps"):
+    def display_jupyter(self, display: str = "maps", **kwargs):
         """
         To display this volume interactive. Either the maps of the transformed volume is displayed. To distinguish only necessary
         if manually a change was made at maps or volume.
@@ -695,7 +714,7 @@ class ParameterVolume(InterpolationInterface):
                 # I assume this cas will never happen ;)
                 Console.printf("error", "An error occurred while trying to display the volume.")
 
-            JupyterPlotManager.volume_grid_viewer(vols=maps_volumes_list, rows=1, cols=len(maps_names_list), titles=maps_names_list)
+            JupyterPlotManager.volume_grid_viewer(vols=maps_volumes_list, rows=1, cols=len(maps_names_list), titles=maps_names_list, **kwargs)
 
 
 

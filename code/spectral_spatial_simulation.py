@@ -36,9 +36,10 @@ import os
 import difflib
 
 import xarray as xr
+from interface import BackupInterface
 
 
-class FID:
+class FID(BackupInterface):
     """
     The FID includes the basic attributes, including the signal and time vector, as
     well as the name of the chemical compound refereed to it. Further, the T2 value and
@@ -51,8 +52,6 @@ class FID:
                  time: np.ndarray | pint.Quantity = None,
                  name: list[str] = None,
                  signal_data_type: np.dtype = None):
-                 #sampling_period: float = None,
-                 #unit_time: pint.Unit = None):
         """
         A checks if the shape of the time vector equals the signal vector is performed. If false then the program quits.
         Further, it is also possible to instantiate a class containing just "None".

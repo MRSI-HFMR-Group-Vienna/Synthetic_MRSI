@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Any
+from typing import Generic, TypeVar, Any, Dict
+from typing_extensions import Self
+import copy
+
 
 
 class ResourceInterface(ABC):
@@ -88,3 +91,66 @@ class PlotInterface(ABC):
     def plot(self, cmap: str):
         """Subclasses must implement this."""
         ...
+
+
+class BackupInterface:
+    """
+    Use in: any module
+
+    Mixin class (see python documentation) for classes that should be able to
+    snapshot themselves and fetch those snapshots later.
+    This interface is NOT abstract: the backup logic is exactly the same for
+    every class, so it is implemented here once and simply inherited, instead
+    of forcing each subclass to rewrite identical code.
+
+    Each concrete class gets its OWN backup registry (see __init_subclass__),
+    so e.g. FID backups and ParameterMaps backups never land in the same dict.
+
+    (!) Backups are keyed by name and shared across all instances of a class.
+        Reusing a name overwrites the older snapshot.
+    (!) deepcopy of large arrays / volumes is memory-heavy, that is inherent
+        to snapshotting, not a bug.
+
+    For example:
+        volume = ParameterVolume(...)
+        volume.create_backup("before_interpolation")
+        volume.interpolate(...)
+        original = ParameterVolume.get_backup("before_interpolation")
+    """
+
+    # One dict per subclass, filled in below. Declared here only for typing;
+    # (!) Note: BackupInterface itself intentionally holds no shared dict!
+    _backups: Dict[str, "BackupInterface"]
+
+    # If a class inherits from this Interface then it gets its own empty "_backups" dictionary
+    def __init_subclass__(cls, **kwargs) -> None:
+        """
+        Give every subclass its own, independent backup dictionary.
+        """
+        super().__init_subclass__(**kwargs)  # cooperate with ABC etc.
+        cls._backups = {}
+
+    def create_backup(self, name: str) -> None:
+        """
+        Store a deep copy of the current instance under 'name'.
+
+        A deep copy will be cerated so that later changes to this instance do NOT
+        change the stored snapshot, they stay fully independent.
+
+        The backup dict lives on the class which implements this interface, not on
+        the instance, so it is not part of the copy. Therefore, backups never nest
+        inside other backups.
+
+        :param name: name of the backup as string
+        :return:
+        """
+        type(self)._backups[name] = copy.deepcopy(self)
+
+
+    @classmethod
+    def get_backup(cls, name: str) -> Self:
+        """
+        Return the snapshot stored under 'name'.
+        (!) Note: Raises KeyError if 'name' was never backed up!
+        """
+        return cls._backups[name]
