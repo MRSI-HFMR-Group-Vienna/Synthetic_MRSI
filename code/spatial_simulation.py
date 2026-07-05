@@ -13,7 +13,7 @@ import copy
 import pint
 import sys
 
-from interface import InterpolationInterface, BackupInterface
+from interface import InterpolationInterface, BackupInterface, PrecisionPureVolumeMixin
 
 
 class Model:
@@ -55,12 +55,15 @@ class MetabolicAtlas:
         raise NotImplementedError("This method is not yet implemented")
 
 
-class ParameterMap(InterpolationInterface, BackupInterface):
+class ParameterMap(InterpolationInterface, BackupInterface, PrecisionPureVolumeMixin):
     """
     This holds a map of a certain type (e.g., T1) of a certain metabolite (e.g., NAA). It's possible to interpolate
     the map to a certain target shape and to push it to the respective device (GPU <-> CPU). Ist also possible to
     change the unit and the data type.
     """
+
+    _precision_arrays = ("values",)
+
     def __init__(self,
                  map_type_name: str,
                  map_name: str,
@@ -242,10 +245,12 @@ class ParameterMap(InterpolationInterface, BackupInterface):
         return "\n"
 
 
-class ParameterVolume(InterpolationInterface, BackupInterface):
+class ParameterVolume(InterpolationInterface, BackupInterface, PrecisionPureVolumeMixin):
     """
     Can only be of one type of map (e.g., T1, or T2, ...), but it should be with multiple metabolites.
     """
+
+    _precision_arrays = ("volume",) # to change the precision of the volume. (!) Note: no effect to the individual ParameterMaps
 
     def __init__(self, maps_type):
         self.maps_type: str = maps_type # e.g, T1
@@ -672,7 +677,7 @@ class ParameterVolume(InterpolationInterface, BackupInterface):
         """
         display_unit = "MiB"
 
-        Console.add_lines(f"The parameter map contains the following properties:")
+        Console.add_lines(f"The parameter volume contains the following properties:")
         Console.add_lines(f" => {'maps type: ':.<20} {self.maps_type}")
         Console.add_lines(f" => {'maps names: ':.<20} {self.names}")
         Console.add_lines(f" => {'unit: ':.<20} {self.unit}")

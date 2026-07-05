@@ -36,10 +36,10 @@ import os
 import difflib
 
 import xarray as xr
-from interface import BackupInterface
+from interface import BackupInterface, PrecisionPureVolumeMixin
 
 
-class FID(BackupInterface):
+class FID(BackupInterface, PrecisionPureVolumeMixin):
     """
     The FID includes the basic attributes, including the signal and time vector, as
     well as the name of the chemical compound refereed to it. Further, the T2 value and
@@ -47,6 +47,9 @@ class FID(BackupInterface):
     Also, it is possible to get the signal in various data types and thus, if
     necessary, decrease the memory load.
     """
+
+    _precision_arrays = ("time", "signal") # for using .to_precision from PrecisionPureVolumeMixin to change precision!
+
     def __init__(self,
                  signal: np.ndarray | pint.Quantity = None,
                  time: np.ndarray | pint.Quantity = None,
@@ -1209,8 +1212,8 @@ class Model:
                  TE: float,
                  TR: float,
                  alpha: float,
+                 precision: int,
                  path_cache: str = None,
-                 data_type: str = "complex64",
                  compute_on_device: str = "cpu",
                  return_on_device: str = "cpu"):
 
@@ -1231,12 +1234,12 @@ class Model:
 
         self.fid = FID()
         self.parameter_volumes: dict[str, ParameterVolume] = {} # previously metabolic property map
-        self.mask = None
+        self.mask: ParameterVolume = None
 
         self.compute_on_device = compute_on_device
         self.return_on_device = return_on_device
 
-        self.data_type = data_type
+        self.precision = precision
 
         self.mapped_steps: list[str] = [] # To map which steps are already mapped (e.g. T1, T2, mask ...)
 
@@ -1250,7 +1253,7 @@ class Model:
         Console.add_lines(f" alpha       ... {self.alpha}")
         Console.add_lines(f" FID length  ... {len(self.fid.signal[0])}")
         Console.add_lines(f" Metabolites ... {len(self.parameter_volumes)}")
-        Console.add_lines(f" Model shape ... {self.mask.shape}")
+        Console.add_lines(f" Model shape ... {self.mask.volume.squeeze().shape}")
         Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
         Console.add_lines(f" Compute on  ... {self.compute_on_device}")
         Console.add_lines(f" Return on   ... {self.return_on_device}")
@@ -1261,6 +1264,7 @@ class Model:
     def add_fid(self, fid: "FID") -> None:
         try:
             self.fid = self.fid + fid
+            self.fid.to_precision(precision=self.precision, verbose=False)
             Console.add_lines("Added the following FID signals to the spectral spatial model:")
             for i, name in enumerate(fid.name):
                 Console.add_lines(f"{i}: {name}")
@@ -1268,8 +1272,9 @@ class Model:
         except Exception as e:
             Console.printf("error", f"Error in adding compound '{fid.name} to the spectral spatial model. Exception: {e}")
 
-    def add_mask(self, mask: np.ndarray) -> None:
+    def add_mask(self, mask: ParameterVolume) -> None:
         Console.printf("success", "Added mask to the spectral spatial model.")
+        mask.to_precision(precision=self.precision, verbose=False)
         self.mask = mask
 
 
@@ -1343,8 +1348,8 @@ class Model:
         #cm.cite("miller2014steady_state_sequences_spoiled_balanced")# TODO: Uncomment
         #cm.cite("miller2011steady_state_mri_methods_neuroimaging")  # TODO: Uncomment
 
-        a = da.radians(alpha)
-        e = da.exp(-TR / t1_da)
+        a = da.radians(alpha).astype(t1_da.dtype) # also ensure right datatype, since da.radius might upcast it (e.g. float32 -> float64)
+        e = da.exp(-TR / t1_da).astype(t1_da.dtype)
 
         decay_t1 = da.sin(a) * (1 - e) / (1 - da.cos(a) * e)
         return decay_t1[:, None, :, :, :]
@@ -1390,7 +1395,7 @@ class Model:
         t2_da = t2_da[:, None, :, :, :]
 
         # Create the 5D array (with the t2 of alle metabolites)
-        decay_t2 = da.where(t2_da != 0, da.exp(-(TE + time_da) / t2_da), 1, )
+        decay_t2 = da.where(t2_da != 0, da.exp(-(TE + time_da) / t2_da), 1, ).astype(t2_da.dtype) # also ensure right data type, since da.exp might upcast it (e.g. float32 -> float43).
         return decay_t2
 
 
@@ -1417,7 +1422,7 @@ class Model:
                     Console.printf("warning", "FID signal array contains NaNs!")
                 if ArrayTools.check_nan(self.fid.time, verbose=False):
                     Console.printf("warning", "FID time vector contains NaNs!")
-                if ArrayTools.check_nan(self.mask, verbose=False):
+                if ArrayTools.check_nan(self.mask.volume, verbose=False):
                     Console.printf("warning", "Mask contains NaNs!")
 
                 #   b) Transform to dask array and define the chunksize
@@ -1425,7 +1430,7 @@ class Model:
                 metabolites_chunksize = len(self.fid.name)  # (!) Critical for reducing worker <-> worker transfers on sum over metabolites:
                                                             #     -> keep metabolite axis as ONE chunk (or at least as few as possible).
                 fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))  # (M,T)
-                mask_dask = DaskTools.to_dask(self.mask, chunksize=(x_chunksize, y_chunksize, z_chunksize))       # (X,Y,Z)
+                mask_dask = DaskTools.to_dask(self.mask.volume.squeeze(), chunksize=(x_chunksize, y_chunksize, z_chunksize))       # (X,Y,Z)
 
                 #   c) Map to desired device before computational actions
                 fid_dask, mask_dask = GPUTools.dask_map_blocks_many(fid_dask, mask_dask, device=self.compute_on_device)
@@ -1634,7 +1639,7 @@ class Model:
         #   b) Wrap around the dask array and define the chunk size
         fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))   # (M,T)
         time_dask = DaskTools.to_dask(self.fid.time, chunksize=(time_chunksize,))                          # (T,)
-        mask_dask = DaskTools.to_dask(self.mask, chunksize=(x_chunksize, y_chunksize, z_chunksize))        # (X,Y,Z)
+        mask_dask = DaskTools.to_dask(self.mask.volume.squeeze(), chunksize=(x_chunksize, y_chunksize, z_chunksize))        # (X,Y,Z)
 
         #   c) Get the necessary parameter volumes (previously metabolic property maps)
         t1 = self.parameter_volumes["T1"].volume                                                           # (M,X,Y,Z)

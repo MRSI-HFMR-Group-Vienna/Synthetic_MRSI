@@ -1316,6 +1316,34 @@ class GPUTools:
 
 class DaskTools:
 
+
+    @staticmethod
+    def get_backend(array: da.Array):
+        """
+        Get the backend module of a dask array based on its meta array.
+        For standard dask arrays this returns either: numpy or cupy
+
+        :param array: input dask array
+        :return: numpy or cupy module
+        """
+        if hasattr(array, "magnitude") and hasattr(array, "units"):
+            Console.printf("error", "pint.Quantity is currently not supported for DaskTools.")
+            return
+
+        if not isinstance(array, da.Array):
+            Console.printf("error", f"Cannot get backend of non-dask array. Got: {type(array)!r}")
+            return
+
+        try:
+            return cp.get_array_module(array._meta)
+        except Exception as e:
+            Console.printf(
+                "error",
+                f"Could not determine backend from dask meta object of type {type(array._meta)!r}: {e}"
+            )
+            return
+
+
     @staticmethod
     def meta_for_map_blocks(array: da.Array, device: str):
         """
@@ -1430,6 +1458,118 @@ class DaskTools:
         :return: Nothing
         """
         return array.to_zarr(os.path.join(path, checkpoint_folder_name), overwrite=overwrite, compute=not lazy)
+
+
+    @staticmethod
+    def to_data_type(array: da.Array, data_type: str, verbose: bool = True) -> da.Array:
+        """
+        Lazily change the dtype of a Dask array. This does not compute the array. It only modifies the
+        dtype in the Dask graph.
+
+        :param array: input Dask array
+        :param data_type: target dtype as string (e.g. "float32", "float64", "complex128")
+        :param verbose: Print to console if True
+        :return: Dask array with changed dtype
+        """
+
+        if hasattr(array, "magnitude") and hasattr(array, "units"):
+            Console.printf("error",
+                           "pint.Quantity is currently not supported for DaskTools.")
+            return
+
+        if not isinstance(array, da.Array):
+            Console.printf("error",
+                           f"Cannot change dtype of non-dask array. Got: {type(array)!r}")
+            return
+
+        data_type_before = array.dtype
+        backend = DaskTools.get_backend(array)
+
+        if backend is None:
+            return
+
+        try:
+            # Validate dtype against the actual chunk backend without computing
+            validated_data_type = array._meta.astype(data_type, copy=False).dtype.name
+        except (TypeError, ValueError) as e:
+            Console.printf("error",
+                           f"Data type '{data_type}' is not supported for dask backend '{backend.__name__}': {e}")
+            return
+
+        array = array.astype(validated_data_type)
+        data_type_after = array.dtype
+
+        if data_type_before != data_type_after:
+            Console.printf("success",
+                           f"Scheduled dask array data type change: {data_type_before} -> {data_type_after}",
+                           mute=not verbose)
+        else:
+            Console.printf("warning",
+                           f"Dask array data type already {data_type_after}. No change was scheduled.",
+                           mute=not verbose)
+
+        return array
+
+
+    @staticmethod
+    def to_precision(array: da.Array, precision: int, verbose: bool = True) -> da.Array:
+        """
+        Lazily change the dtype precision of a Dask array. The precision is interpreted as the precision of
+        one scalar component.
+        Therefore:
+            precision=32 -> float32, int32, uint32 and complex64.
+
+        :param array: input Dask array
+        :param precision: target precision in bit
+        :param verbose: Print to console if True
+        :return: Dask array with changed precision
+        """
+        if hasattr(array, "magnitude") and hasattr(array, "units"):
+            Console.printf("error", "pint.Quantity is currently not supported for DaskTools.")
+            return
+
+        if not isinstance(array, da.Array):
+            Console.printf("error", f"Cannot change precision of non-dask array. Got: {type(array)!r}")
+            return
+
+        if not isinstance(precision, int):
+            Console.printf("error", "precision must be an integer!")
+            return
+
+        if precision <= 0:
+            Console.printf("error", "precision must be larger than 0")
+            return
+
+        data_type_before = array.dtype
+        data_type_kind = data_type_before.kind
+
+        if data_type_kind == "b":
+            data_type = "bool"
+
+        elif data_type_kind == "i":
+            data_type = f"int{precision}"
+
+        elif data_type_kind == "u":
+            data_type = f"uint{precision}"
+
+        elif data_type_kind == "f":
+            data_type = f"float{precision}"
+
+        elif data_type_kind == "c":
+            data_type = f"complex{2 * precision}"
+
+        else:
+            Console.printf(
+                "error",
+                f"Cannot change precision for data type {data_type_before}. "
+                f"Only bool, integer, unsigned integer, float and complex arrays are supported."
+            )
+            return
+
+        return DaskTools.to_data_type(array=array, data_type=data_type, verbose=verbose)
+
+
+
 
 
 class FourierTools:

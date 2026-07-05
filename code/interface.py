@@ -1,9 +1,19 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Any, Dict
+from typing import Generic, TypeVar, Any, Dict, ClassVar
 from typing_extensions import Self
+
 import copy
 
+from tools import ArrayTools, DaskTools
+from dask import array as da
 
+from prettyconsole import Console
+
+
+
+""" ####################################################################################################################
+Place for interfaces
+"""
 
 class ResourceInterface(ABC):
     """
@@ -154,3 +164,72 @@ class BackupInterface:
         (!) Note: Raises KeyError if 'name' was never backed up!
         """
         return cls._backups[name]
+
+
+""" ####################################################################################################################
+Place for Mixins.
+
+    Mixins are hailed as interfaces with behavioral reuse, more flexible interfaces, and more powerful interfaces. 
+    See the difference between "Abstract classes", "Interfaces" and "Mixins.
+    Link: https://stackoverflow.com/questions/918380/abstract-classes-vs-interfaces-vs-mixins
+"""
+
+
+class PrecisionPureVolumeMixin:
+    """
+    This will add to each class with array fields the 'to_precision' method to call.
+
+    (!) Important: Only possible to fields of pure arrays, no nested objects!
+
+    How to use it? For example having this class
+
+    class MyClass(PrecisionPureVolumeMixin):              <--- need to inherit the class
+
+        _precision_arrays = ("time", "signal")  <--- needs this class attribute to define the relevant fields
+
+        def __init__(self, time, signal):
+            self.time = time
+            self.signal = signal
+
+
+    The call it in the following way:
+    > my_class = MyClass(time, signal)
+    > my_class.to_precision(precision=32)      <--- to for example convert to precision 32 if desired
+
+    That's it.
+    """
+    _precision_arrays: ClassVar[tuple[str, ...]] = ()
+
+    def to_precision(self, precision: int, verbose: bool = True) -> None:
+        precisions_before = set()
+
+        for name in self._precision_arrays:
+            array = getattr(self, name)
+            if array is None:                       # z.B. volume vor to_volume()
+                continue
+
+            data_type_before = array.dtype
+            if data_type_before.kind == "c":
+                precisions_before.add(data_type_before.itemsize * 8 // 2)
+            elif data_type_before.kind != "b":
+                precisions_before.add(data_type_before.itemsize * 8)
+
+            if isinstance(array, da.Array):
+                new = DaskTools.to_precision(array, precision=precision, verbose=False)
+            else:
+                new = ArrayTools.to_precision(array, precision=precision, verbose=False)
+
+            if new is None:                       # Cast failed, field unchanged!
+                Console.printf("error", f"{type(self).__name__}.{name}: precision change failed; unchanged.")
+                continue
+
+            setattr(self, name, new) # set the field
+
+        if verbose:
+            if len(precisions_before) == 1:
+                precision_before = next(iter(precisions_before))
+                Console.printf("success", f"{type(self).__name__} --> precision {precision_before} -> {precision}")
+            elif len(precisions_before) > 1:
+                Console.printf("success", f"{type(self).__name__} --> precision {sorted(precisions_before)} -> {precision}")
+            else:
+                Console.printf("success", f"{type(self).__name__} --> precision -> {precision}")
