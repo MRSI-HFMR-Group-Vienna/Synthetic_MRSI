@@ -1,4 +1,6 @@
 from __future__ import annotations      #TODO: due to circular import. Maybe solve different!
+
+import copy
 from typing import TYPE_CHECKING        #TODO: due to circular import. Maybe solve different!
 
 from tools import deprecated
@@ -1360,7 +1362,7 @@ class Model:
                     Console.printf("warning", f"The {volume_type} volume exhibits negative values: {zero_or_negative}")
                     parameter_volume.volume = ArrayTools.enforce_min_eps(parameter_volume.volume, convert_zeros=False, convert_negative=True)
                 # Case T1 or T2
-                elif (zero_or_negative <= 0) and volume_type in ("T1", "T2"):
+                elif (zero_or_negative <= 0) and volume_type in ("T1", "T2", "B1"):
                     Console.printf("warning", f"The {volume_type} volume exhibits zero and/or negative values: {zero_or_negative}")
                     parameter_volume.volume = ArrayTools.enforce_min_eps(parameter_volume.volume, convert_zeros=True, convert_negative=True)
                 else:
@@ -1594,7 +1596,7 @@ class Model:
                 # 2) Compute the data
                 #   a) Broadcast the data
                 # this already happens inside '_t2_decay(..)'
-                #   b) Apply pointwise transformation
+                #   b) Apply pointwise transformationwet_lookup_table
                 TE = UnitTools.remove_unit(self.TE)  # to remove possible units
                 t2_decay    = Model._t2_echo_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
                 self.working_volume = self.working_volume * t2_decay
@@ -1755,14 +1757,15 @@ class Model:
                                flip_angle_excitation_degree,
                                flip_angles_WET_degree,
                                time_gaps_WET,
-                               off_resonance=0.0):
+                               off_resonance=0.0, plot=False):
         """
         Build & store the WET lookup table (physics table over (B1_scale, T1/TR)).
         TR and TE come from the model; everything else is passed here.
         T2 is a SCALAR (representative T2 for the suppression Bloch sim), not the T2 map.
         """
-        TR = UnitTools.remove_unit(self.TR)
-        TE = UnitTools.remove_unit(self.TE)
+
+        TR = UnitTools.remove_unit(self.TR.to("ms"))
+        TE = UnitTools.remove_unit(self.TE.to("ms"))
 
         self.wet_lookup_table = LookupTableWET(
             T1_range=T1_range, T1_step_size=T1_step_size, T2=T2,
@@ -1775,9 +1778,13 @@ class Model:
             flip_angles_WET_degree=flip_angles_WET_degree,
             time_gaps_WET=time_gaps_WET, off_resonance=off_resonance)
         self.wet_lookup_table.create()
+
+        if plot:
+            self.wet_lookup_table.plot()
+
         return self.wet_lookup_table
 
-    def build_WET_operator(self, wet_pulse_profile, target_angle=39.0, device=None):
+    def build_WET_operator(self, offset_pulse_profile, target_angle=39.0, device=None):
         """
         Lazy A_WET of shape (M, F, X, Y, Z), from:
           - self.wet_lookup_table
@@ -1787,55 +1794,82 @@ class Model:
           - frequency axis from self.fid (Hz)
         A_WET(m,f,r) = LUT( B1(r)/target_angle * P_wet(f), T1_m(r)/TR )
         """
+
+        # (1) Check if the LookUp table is already cerated
         if self.wet_lookup_table is None:
             Console.printf("error", "Build the LUT first (build_WET_lookup_table).")
             return
+
+        # (2) Check if T1 and B1 map is already available
         if "T1" not in self.parameter_volumes or "B1" not in self.parameter_volumes:
             Console.printf("error", "WET operator needs both T1 and B1 maps added to the model.")
             return
 
+        # (3) Define the device to compute on
         device = device if device is not None else self.compute_on_device
-        TR = UnitTools.remove_unit(self.TR)
-        #lut = self.wet_lookup_table
 
-        t1 = UnitTools.remove_unit(self.parameter_volumes["T1"].volume)            # (M,X,Y,Z)
-        b1 = UnitTools.remove_unit(self.parameter_volumes["B1"].volume).squeeze()  # (X,Y,Z)
+        # (4) Remove possible units (therefore extract from pint.Quantity the array/value)
+        TR = self.TR
+        TR = TR.to("ms")
+        t1 = copy.deepcopy(self.parameter_volumes["T1"])
+        t1_ms = t1.to_unit("ms")
+        t1_volume = UnitTools.remove_unit(t1_ms.volume)            # (M,X,Y,Z)
+        b1_volume = UnitTools.remove_unit(self.parameter_volumes["B1"].volume).squeeze()  # (X,Y,Z)
 
+        # (5) Get the frequency axis of the FID!
         # frequency axis in Hz from the FID = single source of truth; MUST be Hz (pulse is in Hz)
         frequency_vector = self.fid.get_frequency_vector(x_type="frequency")  # (F,), fftshift order
-        #F = frequency_vector.size
-        P = wet_pulse_profile.interp(frequency_offset=frequency_vector, method="linear",
-                                     kwargs={"bounds_error": False, "fill_value": 0.0}).values
-        P_np = P[None, :, None, None, None]  # (1,F,1,1,1)
 
-        _, x_c, y_c, z_c = self.block_size
-        #M = t1.shape[0]
+        # (6) Get the offset pulse profile & broadcast it
+        offset_pulse_profile = offset_pulse_profile.interp(
+            frequency_offset=frequency_vector,
+            method="linear",
+            kwargs={"bounds_error": False, "fill_value": 0.0}).values
 
-        t1_da = GPUTools.dask_map_blocks(
-            DaskTools.to_dask(t1 / TR, chunksize=(t1.shape[0], x_c, y_c, z_c)), device=device)  # (M,X,Y,Z)
-        b1_da_3d = GPUTools.dask_map_blocks(
-            DaskTools.to_dask(b1 / target_angle, chunksize=(x_c, y_c, z_c)), device=device)
-        b1_da = da.broadcast_to(b1_da_3d[None, ...], t1_da.shape, chunks=t1_da.chunks)          # (M,X,Y,Z) lazy
+        offset_pulse_profile = offset_pulse_profile[None, :, None, None, None]  # (1,F,1,1,1)
+
+        # Prepare T1 volume and B1 map. Also broadcast B1 map to volume!
+        t1_over_TR_dask = DaskTools.to_dask(t1_volume / TR, chunksize=(t1_volume.shape[0], self.block_size[1], self.block_size[2], self.block_size[3]))
+        t1_over_TR_dask = GPUTools.dask_map_blocks(t1_over_TR_dask, device=device)  # (M,X,Y,Z)
+
+        xp = ArrayTools.get_backend(b1_volume)
+        b1_scale = xp.broadcast_to(b1_volume[None, ...] / target_angle, t1_volume.shape)  # (M,X,Y,Z), lazy view
+        b1_scale_dask = DaskTools.to_dask(b1_scale, chunksize=(t1_volume.shape[0], self.block_size[1], self.block_size[2], self.block_size[3]))
+        b1_scale_dask = GPUTools.dask_map_blocks(b1_scale_dask, device=device)
+
+        # TODO TODO TODO: DELETE!!!!!!!
+        self.crazy_offset_pulse_profile = offset_pulse_profile
+        self.crazy_b1_scale_dask = b1_scale[:, None, ...]
 
 
         # Nested function, for using to map blocks!
         def _wet_block(b1_blk, t1_blk):  # both (m,x,y,z)
             xp = cp.get_array_module(b1_blk)  # numpy or cupy -> backend neutral
             eps = xp.finfo(xp.float32).eps
-            P_dev = xp.asarray(P_np)
-            b1_eff = b1_blk[:, None, ...] * P_dev  # (m,F,x,y,z) this block only
-            b1_eff = xp.where(b1_eff <= 0, eps, b1_eff)
-            t1_rep = xp.broadcast_to(t1_blk[:, None, ...], b1_eff.shape)
-            out = self.wet_lookup_table.get(b1_scales=b1_eff, t1_over_tr=t1_rep)  # device=None -> stays on block device
-            return xp.clip(out, 0.0, 1.0).astype(xp.float32)
 
+            # TODO TODO TODO TODO: Investigate this deeper!!!!!
+            P_dev = xp.asarray(offset_pulse_profile)
+            b1_eff = b1_blk[:, None, ...] * P_dev  # (m,F,x,y,z) this block only
+
+
+
+            b1_eff = xp.where(b1_eff <= 0, eps, b1_eff) #### TODO TODO TODO !!!!!!!
+            t1_rep = xp.broadcast_to(t1_blk[:, None, ...], b1_eff.shape)
+            out = self.wet_lookup_table.get(
+                b1_scales=b1_eff,
+                t1_over_tr=t1_rep)  # device=None -> stays on block device
+
+            return out.astype(xp.float32) #xp.clip(out, 0.0, 1.0).astype(xp.float32)
+
+        # TODO TODO TODO TODO TODO
         xp_meta = cp if device in ("gpu", "cuda") else np
         meta = xp_meta.empty((0,) * 5, dtype=np.float32)  # 5D output rank
 
         self.wet_operator = da.map_blocks(
-            _wet_block, b1_da, t1_da,
-            dtype=np.float32, new_axis=1,  # insert F between M and X
-            chunks=(t1_da.chunks[0], (frequency_vector.size,), t1_da.chunks[1], t1_da.chunks[2], t1_da.chunks[3]),
+            _wet_block, b1_scale_dask, t1_over_TR_dask,
+            dtype=np.float32,
+            new_axis=1,  # insert F between M and X
+            chunks=(t1_over_TR_dask.chunks[0], (frequency_vector.size,), t1_over_TR_dask.chunks[1], t1_over_TR_dask.chunks[2], t1_over_TR_dask.chunks[3]),
             meta=meta)
         return self.wet_operator
 
