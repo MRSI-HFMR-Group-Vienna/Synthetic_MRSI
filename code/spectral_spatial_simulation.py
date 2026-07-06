@@ -14,7 +14,7 @@ from datetime import datetime
 from functools import partial
 #from tools import CustomArray
 from prettyconsole import Console
-from tools import GPUTools, DaskTools, UnitTools, SpaceEstimator, ArrayTools
+from tools import GPUTools, DaskTools, UnitTools, SpaceEstimator, ArrayTools, FourierTools
 #from scipy.signal import resample
 from math import gcd
 from scipy.signal import resample_poly, resample
@@ -403,6 +403,44 @@ class FID(BackupInterface, PrecisionPureVolumeMixin):
             Console.printf("info", f"Get signal of {self.name} with precision of {np.finfo(signal.dtype).precision} decimal places")
 
         return signal
+
+    def get_frequency_vector(self, x_type: str = "frequency", *, reference_frequency: int = 297_223_042, ppm_center: int = 4.65):
+        """
+        To get the spectral x-axis in Hz or ppm.
+
+        :param x_type: string, whether 'frequency' or 'ppm'
+        :param reference_frequency:
+        :param ppm_center:
+        :return:
+        """
+        possible = ["frequency", "ppm"]
+        if x_type not in possible:
+            Console.printf("error", f"x_type must be one of {possible}, got '{x_type}'.")
+            sys.exit()
+
+        time = tools.UnitTools.remove_unit(self.time)
+        frequency_hz = np.fft.fftshift(np.fft.fftfreq(time.size, d=time[1] - time[0]))
+
+        if x_type == "ppm":
+            return (frequency_hz / reference_frequency) * 1e6 + ppm_center
+        return frequency_hz
+
+    def get_spectrum(self, x_type : str = "ppm", *, reference_frequency: int = 297_223_042, ppm_center: int = 4.65):
+        """
+        To get both the time and the signal in the spectral domain. Either with frequency vector in Hz or ppm.
+
+        :param x_type: String, either 'frequency' or 'ppm'
+        :param reference_frequency: The reference frequency, the Larmor Frequency
+        :param ppm_center: the center in ppm
+        :return:
+        """
+        x = self.get_frequency_vector(x_type=x_type, reference_frequency=reference_frequency, ppm_center=ppm_center)
+
+        signal = tools.UnitTools.remove_unit(self.signal)
+        if signal.ndim == 1:
+            signal = signal[np.newaxis, :]
+        spectrum = np.fft.fftshift(np.fft.fft(signal, axis=1), axes=1)
+        return {"x": x, "y": spectrum}
 
 
     def scale_signal_by_name(self, compound_name: str, scaling_factor: float):
@@ -1233,8 +1271,8 @@ class Model:
         self.alpha = alpha
 
         self.fid = FID()
-        self.parameter_volumes: dict[str, ParameterVolume] = {} # previously metabolic property map
-        self.mask: ParameterVolume = None
+        self.parameter_volumes: dict[str, ParameterVolume] = {} # holds, mask, T1, T2, concentration, B0, and so on...
+        #self.mask: ParameterVolume = None
 
         self.compute_on_device = compute_on_device
         self.return_on_device = return_on_device
@@ -1243,8 +1281,21 @@ class Model:
 
         self.mapped_steps: list[str] = [] # To map which steps are already mapped (e.g. T1, T2, mask ...)
 
-        self.volume_types_allowed = ["T1", "T2", "concentration"] # the volumes types allowed so far for this model
+        self.volume_types_allowed = ["T1", "T2", "concentration", "metabolic_mask", "B0", "B1"] # the volumes types allowed so far for this model
         self.working_volume: da.Array = None
+
+        self.domain = "time" # flipped by the FFT methods: "time" <-> "frequency"
+        self.wet_lookup_table = None  # set by build_WET_lookup_table
+        self.wet_operator = None      # set by build_WET_operator
+
+
+    def data_type(self):
+        Console.add_lines("Data types inside the model:")
+        if self.working_volume is not None:
+            Console.add_lines(f" {'Working volume':.<15}{self.working_volume.dtype}")
+        for key, value in self.parameter_volumes.items():
+            Console.add_lines(f" {key:.<15}{value.volume.dtype}")
+        Console.printf_collected_lines("info")
 
     def model_summary(self):
         Console.add_lines("Spectral-Spatial-Model Summary:")
@@ -1253,7 +1304,7 @@ class Model:
         Console.add_lines(f" alpha       ... {self.alpha}")
         Console.add_lines(f" FID length  ... {len(self.fid.signal[0])}")
         Console.add_lines(f" Metabolites ... {len(self.parameter_volumes)}")
-        Console.add_lines(f" Model shape ... {self.mask.volume.squeeze().shape}")
+        Console.add_lines(f" Model shape ... {self.parameter_volumes['metabolic_mask'].volume.squeeze().shape}")
         Console.add_lines(f" Block size  ... {self.block_size} [t,x,y,z]")
         Console.add_lines(f" Compute on  ... {self.compute_on_device}")
         Console.add_lines(f" Return on   ... {self.return_on_device}")
@@ -1271,11 +1322,6 @@ class Model:
             Console.printf_collected_lines("success")
         except Exception as e:
             Console.printf("error", f"Error in adding compound '{fid.name} to the spectral spatial model. Exception: {e}")
-
-    def add_mask(self, mask: ParameterVolume) -> None:
-        Console.printf("success", "Added mask to the spectral spatial model.")
-        mask.to_precision(precision=self.precision, verbose=False)
-        self.mask = mask
 
 
     def add_parameter_volume(self, volume_type: str, parameter_volume: ParameterVolume):
@@ -1300,9 +1346,20 @@ class Model:
             else:
                 zero_or_negative = np.min(parameter_volume.volume)
 
-                if (zero_or_negative < 0) and volume_type == "concentration":
+                # If case that it is mask, also check additionally that it is float instead of int! (Important)
+                if (zero_or_negative < 0) and volume_type == "metabolic_mask":
+                    Console.add_lines(f"The {volume_type} volume: \n"
+                                      f" -> exhibits negative values: {zero_or_negative}")
+                    parameter_volume.volume = np.abs(parameter_volume.volume)
+                    if np.issubdtype(parameter_volume.volume.dtype, np.integer): # Also make sure that it is float, otherwise upcasts later to complex 128 by default!
+                        parameter_volume.volume = parameter_volume.volume.astype(f"float{max(parameter_volume.volume.dtype.itemsize * 8, 16)}")
+                        Console.add_lines(f" -> and int is converted to float")
+                    Console.printf_collected_lines("warning")
+                # Case concentration
+                elif (zero_or_negative < 0) and volume_type == "concentration":
                     Console.printf("warning", f"The {volume_type} volume exhibits negative values: {zero_or_negative}")
                     parameter_volume.volume = ArrayTools.enforce_min_eps(parameter_volume.volume, convert_zeros=False, convert_negative=True)
+                # Case T1 or T2
                 elif (zero_or_negative <= 0) and volume_type in ("T1", "T2"):
                     Console.printf("warning", f"The {volume_type} volume exhibits zero and/or negative values: {zero_or_negative}")
                     parameter_volume.volume = ArrayTools.enforce_min_eps(parameter_volume.volume, convert_zeros=True, convert_negative=True)
@@ -1405,14 +1462,14 @@ class Model:
 
         :return:
         """
-        if "mask" in self.mapped_steps:
+        if "metabolic_mask" in self.mapped_steps:
             Console.printf("error", f"The step is already applied: apply mask!")
         else:
             check_steps = ["t1", "t2", "concentration"]
             if any(step in check_steps for step in self.mapped_steps):
                 Console.printf("error", f"Cannot apply mask after already one of this steps is applied: {check_steps}")
             else:
-                self.mapped_steps.append("mask")
+                self.mapped_steps.append("metabolic_mask")
 
                 # TODO: Now start here the process!
 
@@ -1422,17 +1479,21 @@ class Model:
                     Console.printf("warning", "FID signal array contains NaNs!")
                 if ArrayTools.check_nan(self.fid.time, verbose=False):
                     Console.printf("warning", "FID time vector contains NaNs!")
-                if ArrayTools.check_nan(self.mask.volume, verbose=False):
+                if ArrayTools.check_nan(self.parameter_volumes["metabolic_mask"].volume, verbose=False):
                     Console.printf("warning", "Mask contains NaNs!")
 
-                #   b) Transform to dask array and define the chunksize
+                #   c) If unit present (pint Quantity, extract the underlying array!)
+                mask_volume = UnitTools.remove_unit(self.parameter_volumes["metabolic_mask"].volume.squeeze())
+                fid_signal = UnitTools.remove_unit(self.fid.signal)
+
+                #   d) Transform to dask array and define the chunksize
                 time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
                 metabolites_chunksize = len(self.fid.name)  # (!) Critical for reducing worker <-> worker transfers on sum over metabolites:
                                                             #     -> keep metabolite axis as ONE chunk (or at least as few as possible).
-                fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))  # (M,T)
-                mask_dask = DaskTools.to_dask(self.mask.volume.squeeze(), chunksize=(x_chunksize, y_chunksize, z_chunksize))       # (X,Y,Z)
+                fid_dask = DaskTools.to_dask(fid_signal, chunksize=(metabolites_chunksize, time_chunksize))  # (M,T)
+                mask_dask = DaskTools.to_dask(mask_volume, chunksize=(x_chunksize, y_chunksize, z_chunksize))       # (X,Y,Z)
 
-                #   c) Map to desired device before computational actions
+                #   e) Map to desired device before computational actions
                 fid_dask, mask_dask = GPUTools.dask_map_blocks_many(fid_dask, mask_dask, device=self.compute_on_device)
 
                 # 2) Compute the data
@@ -1451,7 +1512,7 @@ class Model:
 
 
 
-    def apply_t1(self) -> da.Array:
+    def apply_T1(self) -> da.Array:
         """
         Incorporating the T1 map in a way to simulate the steady state. The steady state is the state to which
         the spins are relaxing via T1 decay and e.g., repeated measurements. Therefore, Mz ≠ M0 is possible.
@@ -1463,13 +1524,13 @@ class Model:
         if "t1" in self.mapped_steps:
             Console.printf("error", f"The step is already applied: apply t1!")
         else:
-            if "mask" not in self.mapped_steps:
+            if "metabolic_mask" not in self.mapped_steps:
                 Console.printf("error", "The mask must be applied beforehand!")
             else:
                 self.mapped_steps.append("t1")
 
-                # 0) Get the data
-                t1 = self.parameter_volumes["T1"].volume
+                # 0) Get the data & extract underlying array if pint Quantity
+                t1 = UnitTools.remove_unit(self.parameter_volumes["T1"].volume)
 
                 # 1) Prepare the data
                 #   a) Quick check if there are NaNs present!
@@ -1498,7 +1559,7 @@ class Model:
                 return self.working_volume
 
 
-    def apply_t2(self) -> da.Array:
+    def apply_T2(self) -> da.Array:
         """
         This incorporate the signal after T2 decay. For more information see comments in the method "_t2_echo_decay".
 
@@ -1507,13 +1568,13 @@ class Model:
         if "t2" in self.mapped_steps:
             Console.printf("error", f"The step is already applied: apply t2!")
         else:
-            if "mask" not in self.mapped_steps:
+            if "metabolic_mask" not in self.mapped_steps:
                 Console.printf("error", "The mask must be applied beforehand!")
             else:
                 self.mapped_steps.append("t2")
 
-                # 0) Get the data
-                t2 = self.parameter_volumes["T2"].volume
+                # 0) Get the data & extract underlying array if pint Quantity
+                t2 = UnitTools.remove_unit(self.parameter_volumes["T2"].volume)
 
                 # 1) Prepare the data
                 #   a) Quick check if there are NaNs present!
@@ -1553,15 +1614,15 @@ class Model:
         if "concentration" in self.mapped_steps:
             Console.printf("error", f"The step is already applied: apply concentration!")
         else:
-            if "mask" not in self.mapped_steps:
+            if "metabolic_mask" not in self.mapped_steps:
                 Console.printf("error", "The mask must be applied beforehand!")
             else:
                 self.mapped_steps.append("concentration")
 
                 # TODO: Now start here the process!
 
-                # 0) Get the data
-                concentration = self.parameter_volumes["concentration"].volume
+                # 0) Get the data & extract underlying array if pint Quantity
+                concentration = UnitTools.remove_unit(self.parameter_volumes["concentration"].volume)
 
                 # 1) Prepare the data
                 #   a) Quick check if there are NaNs present!
@@ -1587,6 +1648,41 @@ class Model:
 
                 return self.working_volume
 
+    def apply_B0(self) -> da.Array:
+        """
+        To incorporate B0 to each metabolite signal separatelly.
+
+        :return: Dask Array
+        """
+
+        if "B0" in self.mapped_steps:
+            Console.printf("error", "The step is already applied: apply B0!")
+        elif "metabolic_mask" not in self.mapped_steps:
+            Console.printf("error", "The mask must be applied beforehand!")
+        else:
+            self.mapped_steps.append("B0")
+
+            # 0) Get the data
+            b0 = UnitTools.remove_unit(self.parameter_volumes["B0"].volume)
+
+            # 1) Prepare the data
+            if ArrayTools.check_nan(b0, verbose=False):
+                Console.printf("warning", "B0 array contains NaNs!")
+
+            time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+            b0_dask = DaskTools.to_dask(b0.squeeze(), chunksize=(x_chunksize, y_chunksize, z_chunksize))  # (X,Y,Z)
+            b0_dask = GPUTools.dask_map_blocks(b0_dask, device=self.compute_on_device)
+
+            # 2) Compute
+            b0_5d = b0_dask[None, None, :, :, :]  # (1,1,X,Y,Z)
+            self.working_volume = self.working_volume * b0_5d
+
+            # 3) Return on desired device
+            self.working_volume = GPUTools.dask_map_blocks(self.working_volume, device=self.return_on_device)
+
+            return self.working_volume
+
+
     def sum_metabolites(self) -> da.Array:
         """
         To sum all metabolites from (metabolite, time, X, Y, Z) ==> (time, X, Y, Z). At the moment it only performs
@@ -1595,7 +1691,7 @@ class Model:
         :return: Dask Array
         """
 
-        if "mask" not in self.mapped_steps:
+        if "metabolic_mask" not in self.mapped_steps:
             Console.printf("error", "Cannot apply sum over all metabolites since at least the 'mask' step needs to be applied.")
         elif "sum_metabolites" in self.mapped_steps:
             Console.printf("error", f"The step is already applied: apply t1!")
@@ -1607,6 +1703,153 @@ class Model:
 
         return self.working_volume
 
+
+    def apply_fourier_transform(self, direction: str, axes: tuple, fft_shift: bool = True) -> da.Array:
+        """
+        Forward/inverse cartesian FFT along `axes`, reusing tools.FourierTools.
+
+        forward: time -> frequency    (axes=(1,) for (M,T,X,Y,Z); axes=(0,) for a summed (T,X,Y,Z))
+        inverse: frequency -> time    (axes=(0,) for (F,X,Y,Z))
+
+        self.domain tracks the state so later steps (WET) can check it.
+        """
+        if self.working_volume is None:
+            Console.printf("error", "No working volume present. Apply the physics steps first.")
+            return
+        if direction == "forward" and self.domain != "time":
+            Console.printf("error", f"Forward FFT expects time domain, but domain is '{self.domain}'.")
+            return
+        if direction == "inverse" and self.domain != "frequency":
+            Console.printf("error", f"Inverse FFT expects frequency domain, but domain is '{self.domain}'.")
+            return
+
+        self.working_volume = FourierTools.cartesian_FT_dask(
+            array=self.working_volume,
+            direction=direction,
+            fft_shift=fft_shift,
+            axes=axes,
+            device=self.compute_on_device,
+            data_type_output=None,  # keep complex precision (complex64 -> complex64)
+            verbose=True,
+        )
+        self.domain = "frequency" if direction == "forward" else "time"
+        self.mapped_steps.append(f"fft_{direction}")
+        return self.working_volume
+
+    def is_frequency_domain(self) -> bool:
+        """
+        True after a forward FFT with no inverse FFT since — i.e. the spectral domain.
+        :return: just boolean that is true if in frequency domain frequency domain
+        """
+        return self.domain == "frequency"
+
+
+    def build_WET_lookup_table(self,
+                               T1_range,
+                               T1_step_size,
+                               T2,
+                               B1_scales_inhomogeneity,
+                               B1_scales_gauss,
+                               B1_scales_inhomogeneity_step_size,
+                               B1_scales_gauss_step_size,
+                               flip_angle_excitation_degree,
+                               flip_angles_WET_degree,
+                               time_gaps_WET,
+                               off_resonance=0.0):
+        """
+        Build & store the WET lookup table (physics table over (B1_scale, T1/TR)).
+        TR and TE come from the model; everything else is passed here.
+        T2 is a SCALAR (representative T2 for the suppression Bloch sim), not the T2 map.
+        """
+        TR = UnitTools.remove_unit(self.TR)
+        TE = UnitTools.remove_unit(self.TE)
+
+        self.wet_lookup_table = LookupTableWET(
+            T1_range=T1_range, T1_step_size=T1_step_size, T2=T2,
+            B1_scales_inhomogeneity=B1_scales_inhomogeneity,
+            B1_scales_gauss=B1_scales_gauss,
+            B1_scales_inhomogeneity_step_size=B1_scales_inhomogeneity_step_size,
+            B1_scales_gauss_step_size=B1_scales_gauss_step_size,
+            TR=TR, TE=TE,
+            flip_angle_excitation_degree=flip_angle_excitation_degree,
+            flip_angles_WET_degree=flip_angles_WET_degree,
+            time_gaps_WET=time_gaps_WET, off_resonance=off_resonance)
+        self.wet_lookup_table.create()
+        return self.wet_lookup_table
+
+    def build_WET_operator(self, wet_pulse_profile, target_angle=39.0, device=None):
+        """
+        Lazy A_WET of shape (M, F, X, Y, Z), from:
+          - self.wet_lookup_table
+          - self.parameter_volumes["T1"] (M,X,Y,Z) and ["B1"] (X,Y,Z)
+          - wet_pulse_profile: xr.DataArray, WET suppression amplitude vs 'frequency_offset' [Hz]
+          - target_angle: nominal excitation to normalise B1 -> B1_scale
+          - frequency axis from self.fid (Hz)
+        A_WET(m,f,r) = LUT( B1(r)/target_angle * P_wet(f), T1_m(r)/TR )
+        """
+        if self.wet_lookup_table is None:
+            Console.printf("error", "Build the LUT first (build_WET_lookup_table).")
+            return
+        if "T1" not in self.parameter_volumes or "B1" not in self.parameter_volumes:
+            Console.printf("error", "WET operator needs both T1 and B1 maps added to the model.")
+            return
+
+        device = device if device is not None else self.compute_on_device
+        TR = UnitTools.remove_unit(self.TR)
+        #lut = self.wet_lookup_table
+
+        t1 = UnitTools.remove_unit(self.parameter_volumes["T1"].volume)            # (M,X,Y,Z)
+        b1 = UnitTools.remove_unit(self.parameter_volumes["B1"].volume).squeeze()  # (X,Y,Z)
+
+        # frequency axis in Hz from the FID = single source of truth; MUST be Hz (pulse is in Hz)
+        frequency_vector = self.fid.get_frequency_vector(x_type="frequency")  # (F,), fftshift order
+        #F = frequency_vector.size
+        P = wet_pulse_profile.interp(frequency_offset=frequency_vector, method="linear",
+                                     kwargs={"bounds_error": False, "fill_value": 0.0}).values
+        P_np = P[None, :, None, None, None]  # (1,F,1,1,1)
+
+        _, x_c, y_c, z_c = self.block_size
+        #M = t1.shape[0]
+
+        t1_da = GPUTools.dask_map_blocks(
+            DaskTools.to_dask(t1 / TR, chunksize=(t1.shape[0], x_c, y_c, z_c)), device=device)  # (M,X,Y,Z)
+        b1_da_3d = GPUTools.dask_map_blocks(
+            DaskTools.to_dask(b1 / target_angle, chunksize=(x_c, y_c, z_c)), device=device)
+        b1_da = da.broadcast_to(b1_da_3d[None, ...], t1_da.shape, chunks=t1_da.chunks)          # (M,X,Y,Z) lazy
+
+
+        # Nested function, for using to map blocks!
+        def _wet_block(b1_blk, t1_blk):  # both (m,x,y,z)
+            xp = cp.get_array_module(b1_blk)  # numpy or cupy -> backend neutral
+            eps = xp.finfo(xp.float32).eps
+            P_dev = xp.asarray(P_np)
+            b1_eff = b1_blk[:, None, ...] * P_dev  # (m,F,x,y,z) this block only
+            b1_eff = xp.where(b1_eff <= 0, eps, b1_eff)
+            t1_rep = xp.broadcast_to(t1_blk[:, None, ...], b1_eff.shape)
+            out = self.wet_lookup_table.get(b1_scales=b1_eff, t1_over_tr=t1_rep)  # device=None -> stays on block device
+            return xp.clip(out, 0.0, 1.0).astype(xp.float32)
+
+        xp_meta = cp if device in ("gpu", "cuda") else np
+        meta = xp_meta.empty((0,) * 5, dtype=np.float32)  # 5D output rank
+
+        self.wet_operator = da.map_blocks(
+            _wet_block, b1_da, t1_da,
+            dtype=np.float32, new_axis=1,  # insert F between M and X
+            chunks=(t1_da.chunks[0], (frequency_vector.size,), t1_da.chunks[1], t1_da.chunks[2], t1_da.chunks[3]),
+            meta=meta)
+        return self.wet_operator
+
+    def apply_WET(self):
+        if not self.is_frequency_domain():
+            Console.printf("error", "Apply the forward FFT before WET (working volume must be spectral).")
+            return
+        if self.wet_operator is None:
+            Console.printf("error", "Build the WET operator first (build_WET_operator).")
+            return
+        A = DaskTools.rechunk(self.wet_operator, self.working_volume.chunks)  # align all 5 axes
+        self.working_volume = self.working_volume * A
+        self.mapped_steps.append("wet")
+        return self.working_volume
 
     # apply_T1
     #   if "mask" in mapped_steps
@@ -1621,85 +1864,86 @@ class Model:
     #   mapped_steps = []
     #   mapped_steps.append("mask")
 
-    def assemble_graph(self): # TODO all_steps_output has no effect at the moment
-        """
-
-
-        :return:
-        """
-        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}")
-
-        # 1) Prepare the data
-
-        #   a) Define the chunk size (aka block size)
-        time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
-        metabolites_chunksize = len(self.fid.name) # (!) Critical for reducing worker <-> worker transfers on sum over metabolites:
-                                                   #     -> keep metabolite axis as ONE chunk (or at least as few as possible).
-
-        #   b) Wrap around the dask array and define the chunk size
-        fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))   # (M,T)
-        time_dask = DaskTools.to_dask(self.fid.time, chunksize=(time_chunksize,))                          # (T,)
-        mask_dask = DaskTools.to_dask(self.mask.volume.squeeze(), chunksize=(x_chunksize, y_chunksize, z_chunksize))        # (X,Y,Z)
-
-        #   c) Get the necessary parameter volumes (previously metabolic property maps)
-        t1 = self.parameter_volumes["T1"].volume                                                           # (M,X,Y,Z)
-        t2 = self.parameter_volumes["T2"].volume                                                           # (M,X,Y,Z)
-        concentration = self.parameter_volumes["concentration"].volume                                     # (M,X,Y,Z)
-
-        #   d) Also, quick check if there are NaNs present
-        if ArrayTools.check_nan(self.fid.signal, verbose=False):
-            Console.printf("warning", "FID signal array contains NaNs!")
-        if ArrayTools.check_nan(self.fid.time, verbose=False):
-            Console.printf("warning", "FID time vector contains NaNs!")
-        if ArrayTools.check_nan(t1, verbose=False):
-            Console.printf("warning", "T1 array contains NaNs!")
-        if ArrayTools.check_nan(t2, verbose=False):
-            Console.printf("warning", "T2 array contains NaNs!")
-        if ArrayTools.check_nan(concentration, verbose=False):
-            Console.printf("warning", "Concentration array contains NaNs!")
-
-        #   e) Transform to dask arrays
-        m_chunksize = len(self.fid.name)
-        t1_dask = DaskTools.to_dask(t1, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
-        t2_dask = DaskTools.to_dask(t2, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
-        concentration_dask = DaskTools.to_dask(concentration, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
-
-        #   f) Transfer to desired device before computational actions
-        fid_dask, time_dask, mask_dask, t1_dask, t2_dask, concentration_dask = GPUTools.dask_map_blocks_many(
-            fid_dask,
-            time_dask,
-            mask_dask,
-            t1_dask,
-            t2_dask,
-            concentration_dask,
-            device=self.compute_on_device
-        )
-
-        # 2) Compute the data
-        #   a) Broadcast the data
-        fid_5d = fid_dask[:, :, None, None, None]                       # (M,T,1,1,1)
-        mask_5d = mask_dask[None, None, :, :, :]                        # (1,1,X,Y,Z)
-        concentration = concentration_dask[:, None, :, :, :]            # (M,1,X,Y,Z)
-
-        #   b) Apply pointwise transformations:
-        #      *) T1 recovery operator
-        #      *) T2 relaxation operator
-        #      *) Hadamard product with concentration
-        alpha = UnitTools.remove_unit(self.alpha) # to remove possible units
-        TR = UnitTools.remove_unit(self.TR)       # to remove possible units
-        TE = UnitTools.remove_unit(self.TE)       # to remove possible units
-
-        t1_recovery = Model._steady_state_longitudinal(alpha, TR, t1_dask)                  # (M,1,X,Y,Z)
-        t2_decay    = Model._t2_echo_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
-        volume = fid_5d * mask_5d * t1_recovery * t2_decay * concentration    # (M,T,X,Y,Z)
-
-        # Sum over all metabolites
-        volume = volume.sum(axis=0)
-
-        # Return on desired device (use 'cpu' for large data!)
-        volume = GPUTools.dask_map_blocks(volume, device=self.return_on_device)
-
-        return volume
+#### OLD, maybe better to have split versions
+###    def assemble_graph(self): # TODO all_steps_output has no effect at the moment
+###        """
+###
+###
+###        :return:
+###        """
+###        Console.printf("info", f"Start to assemble whole graph on device {self.compute_on_device}")
+###
+###        # 1) Prepare the data
+###
+###        #   a) Define the chunk size (aka block size)
+###        time_chunksize, x_chunksize, y_chunksize, z_chunksize = self.block_size
+###        metabolites_chunksize = len(self.fid.name) # (!) Critical for reducing worker <-> worker transfers on sum over metabolites:
+###                                                   #     -> keep metabolite axis as ONE chunk (or at least as few as possible).
+###
+###        #   b) Wrap around the dask array and define the chunk size
+###        fid_dask = DaskTools.to_dask(self.fid.signal, chunksize=(metabolites_chunksize, time_chunksize))   # (M,T)
+###        time_dask = DaskTools.to_dask(self.fid.time, chunksize=(time_chunksize,))                          # (T,)
+###        mask_dask = DaskTools.to_dask(self.parameter_volumes["metabolic_mask"].volume.squeeze(), chunksize=(x_chunksize, y_chunksize, z_chunksize))        # (X,Y,Z)
+###
+###        #   c) Get the necessary parameter volumes (previously metabolic property maps)
+###        t1 = self.parameter_volumes["T1"].volume                                                           # (M,X,Y,Z)
+###        t2 = self.parameter_volumes["T2"].volume                                                           # (M,X,Y,Z)
+###        concentration = self.parameter_volumes["concentration"].volume                                     # (M,X,Y,Z)
+###
+###        #   d) Also, quick check if there are NaNs present
+###        if ArrayTools.check_nan(self.fid.signal, verbose=False):
+###            Console.printf("warning", "FID signal array contains NaNs!")
+###        if ArrayTools.check_nan(self.fid.time, verbose=False):
+###            Console.printf("warning", "FID time vector contains NaNs!")
+###        if ArrayTools.check_nan(t1, verbose=False):
+###            Console.printf("warning", "T1 array contains NaNs!")
+###        if ArrayTools.check_nan(t2, verbose=False):
+###            Console.printf("warning", "T2 array contains NaNs!")
+###        if ArrayTools.check_nan(concentration, verbose=False):
+###            Console.printf("warning", "Concentration array contains NaNs!")
+###
+###        #   e) Transform to dask arrays
+###        m_chunksize = len(self.fid.name)
+###        t1_dask = DaskTools.to_dask(t1, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+###        t2_dask = DaskTools.to_dask(t2, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+###        concentration_dask = DaskTools.to_dask(concentration, chunksize=(m_chunksize, x_chunksize, y_chunksize, z_chunksize))
+###
+###        #   f) Transfer to desired device before computational actions
+###        fid_dask, time_dask, mask_dask, t1_dask, t2_dask, concentration_dask = GPUTools.dask_map_blocks_many(
+###            fid_dask,
+###            time_dask,
+###            mask_dask,
+###            t1_dask,
+###            t2_dask,
+###            concentration_dask,
+###            device=self.compute_on_device
+###        )
+###
+###        # 2) Compute the data
+###        #   a) Broadcast the data
+###        fid_5d = fid_dask[:, :, None, None, None]                       # (M,T,1,1,1)
+###        mask_5d = mask_dask[None, None, :, :, :]                        # (1,1,X,Y,Z)
+###        concentration = concentration_dask[:, None, :, :, :]            # (M,1,X,Y,Z)
+###
+###        #   b) Apply pointwise transformations:
+###        #      *) T1 recovery operator
+###        #      *) T2 relaxation operator
+###        #      *) Hadamard product with concentration
+###        alpha = UnitTools.remove_unit(self.alpha) # to remove possible units
+###        TR = UnitTools.remove_unit(self.TR)       # to remove possible units
+###        TE = UnitTools.remove_unit(self.TE)       # to remove possible units
+###
+###        t1_recovery = Model._steady_state_longitudinal(alpha, TR, t1_dask)                  # (M,1,X,Y,Z)
+###        t2_decay    = Model._t2_echo_decay(TE, time_dask, t2_dask)                 # (M,T,X,Y,Z)
+###        volume = fid_5d * mask_5d * t1_recovery * t2_decay * concentration    # (M,T,X,Y,Z)
+###
+###        # Sum over all metabolites
+###        volume = volume.sum(axis=0)
+###
+###        # Return on desired device (use 'cpu' for large data!)
+###        volume = GPUTools.dask_map_blocks(volume, device=self.return_on_device)
+###
+###        return volume
 
 
 class Simulator:

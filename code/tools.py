@@ -1569,9 +1569,6 @@ class DaskTools:
         return DaskTools.to_data_type(array=array, data_type=data_type, verbose=verbose)
 
 
-
-
-
 class FourierTools:
     """
     For any kind of Fourier Transformation. In future should also contain non cartesian Fourier Transformation.
