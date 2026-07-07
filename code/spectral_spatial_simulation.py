@@ -1789,88 +1789,88 @@ class Model:
         Lazy A_WET of shape (M, F, X, Y, Z), from:
           - self.wet_lookup_table
           - self.parameter_volumes["T1"] (M,X,Y,Z) and ["B1"] (X,Y,Z)
-          - wet_pulse_profile: xr.DataArray, WET suppression amplitude vs 'frequency_offset' [Hz]
+          - offset_pulse_profile: xr.DataArray, WET suppression amplitude vs 'frequency_offset' [Hz]
           - target_angle: nominal excitation to normalise B1 -> B1_scale
           - frequency axis from self.fid (Hz)
         A_WET(m,f,r) = LUT( B1(r)/target_angle * P_wet(f), T1_m(r)/TR )
         """
 
-        # (1) Check if the LookUp table is already cerated
+        # (1) LUT must exist
         if self.wet_lookup_table is None:
             Console.printf("error", "Build the LUT first (build_WET_lookup_table).")
             return
 
-        # (2) Check if T1 and B1 map is already available
+        # (2) T1 and B1 maps must exist
         if "T1" not in self.parameter_volumes or "B1" not in self.parameter_volumes:
             Console.printf("error", "WET operator needs both T1 and B1 maps added to the model.")
             return
 
-        # (3) Define the device to compute on
+        # (3) Device to compute on
         device = device if device is not None else self.compute_on_device
 
-        # (4) Remove possible units (therefore extract from pint.Quantity the array/value)
-        TR = self.TR
-        TR = TR.to("ms")
-        t1 = copy.deepcopy(self.parameter_volumes["T1"])
-        t1_ms = t1.to_unit("ms")
-        t1_volume = UnitTools.remove_unit(t1_ms.volume)            # (M,X,Y,Z)
+        # (4) Strip ALL units to plain arrays/scalars — this is what Dask pickles.
+        #     TR was previously left as a pint.Quantity -> unpicklable once the graph
+        #     is serialized (distributed scheduler / spilling to path_cache).
+        TR = UnitTools.remove_unit(self.TR.to("ms"))  # plain float
+        t1_ms = copy.deepcopy(self.parameter_volumes["T1"]).to_unit("ms")
+        t1_volume = UnitTools.remove_unit(t1_ms.volume)  # (M,X,Y,Z)
         b1_volume = UnitTools.remove_unit(self.parameter_volumes["B1"].volume).squeeze()  # (X,Y,Z)
 
-        # (5) Get the frequency axis of the FID!
-        # frequency axis in Hz from the FID = single source of truth; MUST be Hz (pulse is in Hz)
-        frequency_vector = self.fid.get_frequency_vector(x_type="frequency")  # (F,), fftshift order
+        # (5) Frequency axis (Hz, fftshift order) from the FID — single source of truth.
+        frequency_vector = np.asarray(self.fid.get_frequency_vector(x_type="frequency"))  # (F,)
 
-        # (6) Get the offset pulse profile & broadcast it
-        offset_pulse_profile = offset_pulse_profile.interp(
+        # (6) Resample the WET pulse profile onto the FID frequency axis -> plain numpy (F,)
+        pulse_profile_1d = offset_pulse_profile.interp(
             frequency_offset=frequency_vector,
             method="linear",
-            kwargs={"bounds_error": False, "fill_value": 0.0}).values
+            kwargs={"bounds_error": False, "fill_value": 0.0},
+        ).values
 
-        offset_pulse_profile = offset_pulse_profile[None, :, None, None, None]  # (1,F,1,1,1)
+        # (7) T1/TR and B1_scale as lazy (M,X,Y,Z) dask arrays on the compute device.
+        m = t1_volume.shape[0]
+        spatial_chunks = (self.block_size[1], self.block_size[2], self.block_size[3])
 
-        # Prepare T1 volume and B1 map. Also broadcast B1 map to volume!
-        t1_over_TR_dask = DaskTools.to_dask(t1_volume / TR, chunksize=(t1_volume.shape[0], self.block_size[1], self.block_size[2], self.block_size[3]))
+        t1_over_TR_dask = DaskTools.to_dask(t1_volume / TR, chunksize=(m, *spatial_chunks))
         t1_over_TR_dask = GPUTools.dask_map_blocks(t1_over_TR_dask, device=device)  # (M,X,Y,Z)
 
         xp = ArrayTools.get_backend(b1_volume)
-        b1_scale = xp.broadcast_to(b1_volume[None, ...] / target_angle, t1_volume.shape)  # (M,X,Y,Z), lazy view
-        b1_scale_dask = DaskTools.to_dask(b1_scale, chunksize=(t1_volume.shape[0], self.block_size[1], self.block_size[2], self.block_size[3]))
+        b1_scale = xp.broadcast_to(b1_volume[None, ...] / target_angle, t1_volume.shape)  # (M,X,Y,Z) view
+        b1_scale_dask = DaskTools.to_dask(b1_scale, chunksize=(m, *spatial_chunks))
         b1_scale_dask = GPUTools.dask_map_blocks(b1_scale_dask, device=device)
 
-        # TODO TODO TODO: DELETE!!!!!!!
-        self.crazy_offset_pulse_profile = offset_pulse_profile
-        self.crazy_b1_scale_dask = b1_scale[:, None, ...]
+        # (8) Bind ONLY picklable locals for the closure — never `self`.
+        #     Capturing `self` drags the whole Model (incl. pint Quantities) into the graph.
+        lut = self.wet_lookup_table
+        lut._prepare_fast_interp()  # cache regular-grid LUT once
+        P = pulse_profile_1d[None, :, None, None, None].astype(np.float32)  # plain numpy (1,F,1,1,1)
 
-
-        # Nested function, for using to map blocks!
-        def _wet_block(b1_blk, t1_blk):  # both (m,x,y,z)
-            xp = cp.get_array_module(b1_blk)  # numpy or cupy -> backend neutral
+        def _wet_block(b1_blk, t1_blk):  # both (m, x, y, z) for THIS block
+            xp = ArrayTools.get_backend(b1_blk)  # numpy or cupy, backend-neutral
             eps = xp.finfo(xp.float32).eps
 
-            # TODO TODO TODO TODO: Investigate this deeper!!!!!
-            P_dev = xp.asarray(offset_pulse_profile)
-            b1_eff = b1_blk[:, None, ...] * P_dev  # (m,F,x,y,z) this block only
-
-
-
-            b1_eff = xp.where(b1_eff <= 0, eps, b1_eff) #### TODO TODO TODO !!!!!!!
+            b1_eff = b1_blk[:, None, ...] * xp.asarray(P)  # (m, F, x, y, z), this block only
+            b1_eff = xp.where(b1_eff <= 0, eps, b1_eff)  # guard interp/log domain
             t1_rep = xp.broadcast_to(t1_blk[:, None, ...], b1_eff.shape)
-            out = self.wet_lookup_table.get(
-                b1_scales=b1_eff,
-                t1_over_tr=t1_rep)  # device=None -> stays on block device
 
-            return out.astype(xp.float32) #xp.clip(out, 0.0, 1.0).astype(xp.float32)
+            out = lut.get_fast(b1_eff, t1_rep)  # on-device bilinear, no scipy / no host hop
+            return out.astype(xp.float32)
 
-        # TODO TODO TODO TODO TODO
-        xp_meta = cp if device in ("gpu", "cuda") else np
-        meta = xp_meta.empty((0,) * 5, dtype=np.float32)  # 5D output rank
+        # (9) Assemble the lazy operator. Insert F between M and X.
+        meta = (cp if device in ("gpu", "cuda") else np).empty((0,) * 5, dtype=np.float32)
 
         self.wet_operator = da.map_blocks(
             _wet_block, b1_scale_dask, t1_over_TR_dask,
             dtype=np.float32,
             new_axis=1,  # insert F between M and X
-            chunks=(t1_over_TR_dask.chunks[0], (frequency_vector.size,), t1_over_TR_dask.chunks[1], t1_over_TR_dask.chunks[2], t1_over_TR_dask.chunks[3]),
-            meta=meta)
+            chunks=(
+                t1_over_TR_dask.chunks[0],
+                (frequency_vector.size,),
+                t1_over_TR_dask.chunks[1],
+                t1_over_TR_dask.chunks[2],
+                t1_over_TR_dask.chunks[3],
+            ),
+            meta=meta,
+        )
         return self.wet_operator
 
     def apply_WET(self):
@@ -2252,6 +2252,29 @@ class LookupTableWET: # Note: was before LookupTableWET2
 ###
 ###            ArrayTools.check_nan(retrieved_values)
 ###            return retrieved_values
+
+    def _prepare_fast_interp(self):
+        """Cache the raw LUT + regular-grid params for on-device bilinear interp."""
+        sd = self.simulated_data
+        self._lut_vals = np.asarray(sd.values, dtype=np.float32)  # (nB1, nT1)
+        b1 = np.asarray(sd["B1_scale_effective"].values, dtype=np.float64)
+        tr = np.asarray(sd["T1_over_TR"].values, dtype=np.float64)
+        self._b1_0, self._b1_d = float(b1[0]), float(b1[1] - b1[0])
+        self._tr_0, self._tr_d = float(tr[0]), float(tr[1] - tr[0])
+
+    def get_fast(self, b1_scales, t1_over_tr):
+        """Bilinear interp on the regular LUT grid, staying on the input's device.
+        Matches get(method='linear', extrapolation=True): nearest-edge via mode='nearest'."""
+        xp = ArrayTools.get_backend(b1_scales)
+        if xp is cp:
+            from cupyx.scipy.ndimage import map_coordinates
+        else:
+            from scipy.ndimage import map_coordinates
+        vals = xp.asarray(self._lut_vals)  # tiny, moved once per block
+        fb = ((b1_scales - self._b1_0) / self._b1_d).astype(xp.float32)  # frac idx, B1 axis
+        ft = ((t1_over_tr - self._tr_0) / self._tr_d).astype(xp.float32)  # frac idx, T1/TR axis
+        coords = xp.stack((fb, ft), axis=0)  # (2, m,F,x,y,z)
+        return map_coordinates(vals, coords, order=1, mode="nearest")  # (m,F,x,y,z)
 
     def plot(
             self,
